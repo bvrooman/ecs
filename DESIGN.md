@@ -166,6 +166,31 @@ mutated during execution, so concurrent `resource<T>()` borrows from parallel
 systems are safe; the scheduler serializes any system declaring `writes_res<T>`
 against others touching the same resource.
 
+## 7. Deferred structural changes (command buffers)
+
+Structural edits -- spawn, destroy, add/remove component -- move data between
+archetype tables, which invalidates in-flight iteration and races with systems
+running on the schedule's pool. So they are *deferred*: a system records intent
+into `world.commands()` and the changes are replayed later, single-threaded.
+
+```cpp
+sched.add("spawn_particles", [](World& w) {
+  query<Emitter>(w).each([&](Entity, Emitter& e) {
+    if (e.fire) w.commands().spawn(Position{...}, Velocity{...});
+  });
+}, reads<Emitter>{});
+```
+
+A command is a type-erased `void(World&)` closure (`std::move_only_function`,
+so move-only captured values are fine). The buffer is internally mutex-guarded,
+so many systems on the same level record concurrently *without* being forced to
+serialize -- recording is a thread-safe side channel, not tracked
+component/resource state. The `Schedule` calls `apply_commands()` at every level
+barrier (no systems running), so changes recorded in level *N* are visible to
+level *N+1*; outside a schedule, call `world.apply_commands()` at a safe point.
+Typed helpers (`destroy`, `add`, `remove`) no-op if their target was already
+destroyed earlier in the same flush, so order-independent teardown is safe.
+
 ## Known limitations / next steps
 
 * Portable reflection treats a component as a flat aggregate of ≤32 scalar-ish
@@ -175,6 +200,10 @@ against others touching the same resource.
   accessors under P2996) is a natural follow-up.
 * The scheduler uses wavefront leveling (simple, correct, parallel). A full
   per-edge sender DAG would extract a little more overlap across levels.
-* Single-threaded structural edits: don't add/remove components while iterating
-  a query.
+* Structural edits during iteration/parallel execution must go through the
+  command buffer (§7); direct add/remove/destroy mid-query is still unsafe.
+* `commands().spawn(...)` cannot yet return a usable handle for same-frame
+  follow-up edits; entity reservation (handing back an id before apply) is the
+  natural next step. The buffer is mutex-guarded; per-thread buffers merged at
+  the barrier would cut contention for spawn-heavy workloads.
 ```

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "archetype.hpp"
+#include "command_buffer.hpp"
 #include "entity.hpp"
 #include "query.hpp"
 #include "reflect.hpp"

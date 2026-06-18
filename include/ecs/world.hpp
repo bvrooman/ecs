@@ -7,6 +7,7 @@
 #pragma once
 
 #include "archetype.hpp"
+#include "command_buffer.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
 
@@ -176,6 +177,13 @@ public:
     resources_.remove<T>();
   }
 
+  // --- deferred structural changes --------------------------------------
+  // Systems record create/destroy/add/remove here during the parallel phase;
+  // the Schedule flushes at each level barrier. Outside a schedule, call
+  // apply_commands() yourself at a safe point.
+  CommandBuffer& commands() { return commands_; }
+  void apply_commands() { commands_.apply(*this); }
+
   // --- archetype access (used by queries) -------------------------------
   const std::vector<std::unique_ptr<Archetype>>& archetypes() const {
     return archetypes_;
@@ -251,6 +259,7 @@ private:
     rec.row = new_row;
   }
 
+  CommandBuffer commands_;
   ResourceRegistry resources_;
   std::vector<std::unique_ptr<Archetype>> archetypes_;
   std::unordered_map<Signature, std::uint32_t, detail::SigHash> sig_index_;
@@ -259,5 +268,34 @@ private:
   std::uint32_t empty_archetype_ = 0;
   std::size_t alive_count_ = 0;
 };
+
+// --- CommandBuffer typed helpers (World is now complete) ------------------
+// Each guards on alive() so commands targeting an entity destroyed earlier in
+// the same flush become no-ops rather than asserting.
+
+inline void CommandBuffer::destroy(Entity e) {
+  record([e](World& w) { w.destroy(e); }); // World::destroy already no-ops if dead
+}
+
+template <class C>
+void CommandBuffer::add(Entity e, C value) {
+  record([e, value = std::move(value)](World& w) mutable {
+    if (w.alive(e)) w.add<C>(e, std::move(value));
+  });
+}
+
+template <class C>
+void CommandBuffer::remove(Entity e) {
+  record([e](World& w) {
+    if (w.alive(e)) w.remove<C>(e);
+  });
+}
+
+template <class... Cs>
+void CommandBuffer::spawn(Cs... comps) {
+  record([... comps = std::move(comps)](World& w) mutable {
+    w.create_with(std::move(comps)...);
+  });
+}
 
 } // namespace ecs

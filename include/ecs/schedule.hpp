@@ -108,6 +108,9 @@ public:
       }
       // Barrier: wait for this wavefront to drain before starting the next.
       stdexec::sync_wait(scope.on_empty());
+      // Apply any structural changes this level recorded, single-threaded,
+      // before the next level (or the caller) observes the world.
+      world.apply_commands();
     }
   }
 
