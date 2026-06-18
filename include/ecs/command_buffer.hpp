@@ -52,8 +52,11 @@ public:
   void add(Entity e, C value);
   template <class C>
   void remove(Entity e);
+  // Reserves an entity handle immediately (thread-safe) and returns it, so the
+  // caller can record further edits on it this frame; the entity's storage and
+  // components are created when the buffer is applied.
   template <class... Cs>
-  void spawn(Cs... comps);
+  Entity spawn(Cs... comps);
 
   // Replay all recorded commands in record order, then clear. Must be called
   // when no systems are executing (no recording happens concurrently).
@@ -73,8 +76,11 @@ public:
   bool empty() { return size() == 0; }
 
 private:
+  friend class World; // sets world_ and reaches reserve()/materialize()
+
   std::vector<Command> commands_;
   std::mutex mutex_;
+  World* world_ = nullptr; // owning world, set in World's constructor
 };
 
 } // namespace ecs

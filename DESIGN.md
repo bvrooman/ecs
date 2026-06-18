@@ -175,11 +175,21 @@ into `world.commands()` and the changes are replayed later, single-threaded.
 
 ```cpp
 sched.add("spawn_particles", [](World& w) {
-  query<Emitter>(w).each([&](Entity, Emitter& e) {
-    if (e.fire) w.commands().spawn(Position{...}, Velocity{...});
+  query<Emitter>(w).each([&](Entity, Emitter& em) {
+    if (em.fire) {
+      Entity p = w.commands().spawn(Position{...}, Velocity{...});
+      w.commands().add<Lifetime>(p, {...}); // edit the reserved handle now
+    }
   });
 }, reads<Emitter>{});
 ```
+
+`spawn(...)` reserves an entity handle immediately and returns it, so a system
+can record follow-up edits on a not-yet-created entity in the same frame.
+Reservation is thread-safe via a tiny locked critical section: new ids come
+from a monotonic counter (so concurrent reservers never grow `records_`
+mid-run) and reused ids carry the freed slot's already-bumped generation. The
+storage is created by `materialize()` when the spawn command is applied.
 
 A command is a type-erased `void(World&)` closure (`std::move_only_function`,
 so move-only captured values are fine). The buffer is internally mutex-guarded,
@@ -202,8 +212,6 @@ destroyed earlier in the same flush, so order-independent teardown is safe.
   per-edge sender DAG would extract a little more overlap across levels.
 * Structural edits during iteration/parallel execution must go through the
   command buffer (§7); direct add/remove/destroy mid-query is still unsafe.
-* `commands().spawn(...)` cannot yet return a usable handle for same-frame
-  follow-up edits; entity reservation (handing back an id before apply) is the
-  natural next step. The buffer is mutex-guarded; per-thread buffers merged at
-  the barrier would cut contention for spawn-heavy workloads.
+* The command buffer is mutex-guarded; per-thread buffers merged at the barrier
+  would cut contention for spawn-heavy workloads.
 ```

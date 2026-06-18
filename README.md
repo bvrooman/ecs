@@ -49,7 +49,7 @@ int main() {
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
-| Deferred structural edits | `world.commands().spawn/destroy/add/remove`; thread-safe recording, applied single-threaded at each schedule level barrier |
+| Deferred structural edits | `world.commands().spawn/destroy/add/remove`; thread-safe recording, applied single-threaded at each schedule level barrier. `spawn` reserves and returns a usable handle for same-frame follow-up edits |
 
 ## Build
 

@@ -59,6 +59,46 @@ static void deferred_spawn() {
   CHECK((query<Position>(w).count() == 2));
 }
 
+static void spawn_returns_usable_handle() {
+  World w;
+  // The handle is valid immediately and can receive further deferred edits in
+  // the same frame, even though storage is created only at apply.
+  Entity e = w.commands().spawn(Position{7, 8});
+  w.commands().add<Velocity>(e, Velocity{1, 2}); // edit the reserved entity
+  CHECK(!w.alive(e));                            // not materialized yet
+
+  w.apply_commands();
+  CHECK(w.alive(e));
+  CHECK(w.has<Velocity>(e));
+  CHECK(w.get<Position>(e).x == 7.f);
+  CHECK(w.get<Velocity>(e).dy == 2.f);
+}
+
+static void reserved_handles_are_distinct() {
+  World w;
+  Entity a = w.commands().spawn(Position{0, 0});
+  Entity b = w.commands().spawn(Position{0, 0});
+  Entity c = w.commands().spawn(Position{0, 0});
+  CHECK(!(a == b));
+  CHECK(!(b == c));
+  w.apply_commands();
+  CHECK(w.size() == 3);
+  CHECK(w.alive(a) && w.alive(b) && w.alive(c));
+}
+
+static void reserved_slot_reuse_bumps_generation() {
+  World w;
+  Entity first = w.create_with(Position{1, 1});
+  w.destroy(first); // frees the slot, bumps its generation
+
+  Entity reused = w.commands().spawn(Position{2, 2});
+  w.apply_commands();
+  CHECK(reused.index == first.index);          // slot reused
+  CHECK(reused.generation != first.generation); // fresh generation
+  CHECK(!w.alive(first));                        // stale handle stays dead
+  CHECK(w.alive(reused));
+}
+
 static void destroy_then_add_is_safe() {
   World w;
   Entity e = w.create_with(Position{0, 0});
@@ -98,6 +138,49 @@ static void schedule_flushes_between_levels() {
   CHECK(seen_by_consumer.load() == 7);   // consumer saw the flush from level 0
 }
 
+static void spawn_with_followup_edits_in_schedule() {
+  // A single system spawns entities and immediately records a follow-up add on
+  // each returned handle; both are applied at the level barrier.
+  World w;
+  Schedule sched;
+  sched.add("spawner", [](World& wr) {
+    for (int i = 0; i < 5; ++i) {
+      Entity e = wr.commands().spawn(Position{float(i), 0});
+      if (i % 2 == 0) wr.commands().add<Velocity>(e, Velocity{1, 1});
+    }
+  });
+
+  exec::static_thread_pool pool{4};
+  sched.run(w, pool.get_scheduler());
+  CHECK(w.size() == 5);
+  CHECK((query<Position>(w).count() == 5));
+  CHECK((query<Position, Velocity>(w).count() == 3)); // i = 0,2,4
+}
+
+static void concurrent_reserve_and_followup_edits() {
+  // Parallel systems each spawn-and-add via the returned handle; reservation
+  // must hand out unique slots across threads and every entity must end up
+  // with its Velocity.
+  World w;
+  Schedule sched;
+  constexpr int kSystems = 8;
+  constexpr int kPerSystem = 250;
+  for (int s = 0; s < kSystems; ++s)
+    sched.add("spawner", [](World& wr) {
+      for (int i = 0; i < kPerSystem; ++i) {
+        Entity e = wr.commands().spawn(Position{1, 1});
+        wr.commands().add<Velocity>(e, Velocity{2, 2});
+      }
+    });
+  CHECK(sched.level_count() == 1);
+
+  exec::static_thread_pool pool{8};
+  sched.run(w, pool.get_scheduler());
+  const std::size_t total = std::size_t(kSystems * kPerSystem);
+  CHECK(w.size() == total);
+  CHECK((query<Position, Velocity>(w).count() == total)); // no lost edits
+}
+
 static void concurrent_recording_is_thread_safe() {
   // Many systems on the same level record into the shared buffer concurrently;
   // they have disjoint component writes so they run in parallel.
@@ -123,8 +206,13 @@ int main() {
   RUN_SUITE(deferred_destroy_during_iteration);
   RUN_SUITE(deferred_add_and_remove);
   RUN_SUITE(deferred_spawn);
+  RUN_SUITE(spawn_returns_usable_handle);
+  RUN_SUITE(reserved_handles_are_distinct);
+  RUN_SUITE(reserved_slot_reuse_bumps_generation);
   RUN_SUITE(destroy_then_add_is_safe);
   RUN_SUITE(schedule_flushes_between_levels);
+  RUN_SUITE(spawn_with_followup_edits_in_schedule);
+  RUN_SUITE(concurrent_reserve_and_followup_edits);
   RUN_SUITE(concurrent_recording_is_thread_safe);
   return REPORT();
 }

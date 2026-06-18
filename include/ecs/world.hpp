@@ -15,6 +15,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +34,7 @@ public:
   World() {
     // Archetype 0 is the empty archetype (entities with no components).
     empty_archetype_ = make_archetype(Signature{}, [](Archetype&) {});
+    commands_.world_ = this; // so commands().spawn() can reserve handles
   }
 
   World(const World&) = delete;
@@ -40,23 +42,8 @@ public:
 
   // --- entity lifecycle -------------------------------------------------
   Entity create() {
-    std::uint32_t idx;
-    if (!free_.empty()) {
-      idx = free_.back();
-      free_.pop_back();
-    } else {
-      idx = static_cast<std::uint32_t>(records_.size());
-      records_.push_back(Record{});
-    }
-    auto& rec = records_[idx];
-    rec.alive = true;
-    Entity e{idx, rec.generation};
-
-    auto& a = *archetypes_[empty_archetype_];
-    rec.archetype = empty_archetype_;
-    rec.row = static_cast<std::uint32_t>(a.entities.size());
-    a.entities.push_back(e);
-    ++alive_count_;
+    Entity e = reserve();
+    materialize(e);
     return e;
   }
 
@@ -197,12 +184,44 @@ public:
   }
 
 private:
+  friend class CommandBuffer; // calls reserve()/materialize() for spawn()
+
   struct Record {
     std::uint32_t archetype = 0;
     std::uint32_t row = 0;
     std::uint32_t generation = 0;
     bool alive = false;
   };
+
+  // Hand out a fresh entity handle without creating storage. Thread-safe: many
+  // systems may reserve concurrently while recording spawn commands. New
+  // indices come from a monotonic counter (so reservers never grow records_
+  // mid-run); reused indices carry the slot's already-bumped generation.
+  Entity reserve() {
+    std::lock_guard lock(reserve_mutex_);
+    if (!free_.empty()) {
+      const std::uint32_t idx = free_.back();
+      free_.pop_back();
+      return Entity{idx, records_[idx].generation};
+    }
+    return Entity{reserve_high_++, 0};
+  }
+
+  // Give a reserved entity its storage (a row in the empty archetype). Runs
+  // single-threaded -- from create(), or from a spawn command at a barrier.
+  // resize() fills any gap with dead default slots that their own materialize()
+  // later activates, so out-of-order materialization is safe.
+  void materialize(Entity e) {
+    if (e.index >= records_.size()) records_.resize(e.index + 1);
+    auto& rec = records_[e.index];
+    rec.alive = true;
+    rec.generation = e.generation;
+    rec.archetype = empty_archetype_;
+    auto& a = *archetypes_[empty_archetype_];
+    rec.row = static_cast<std::uint32_t>(a.entities.size());
+    a.entities.push_back(e);
+    ++alive_count_;
+  }
 
   template <class Factory>
   std::uint32_t make_archetype(const Signature& sig, Factory&& makeColumns) {
@@ -267,6 +286,10 @@ private:
   std::vector<std::uint32_t> free_;
   std::uint32_t empty_archetype_ = 0;
   std::size_t alive_count_ = 0;
+
+  std::mutex reserve_mutex_;        // guards reserve() during the parallel phase
+  std::uint32_t reserve_high_ = 0;  // next brand-new index; == records_.size()
+                                    // when no reservations are outstanding
 };
 
 // --- CommandBuffer typed helpers (World is now complete) ------------------
@@ -292,10 +315,13 @@ void CommandBuffer::remove(Entity e) {
 }
 
 template <class... Cs>
-void CommandBuffer::spawn(Cs... comps) {
-  record([... comps = std::move(comps)](World& w) mutable {
-    w.create_with(std::move(comps)...);
+Entity CommandBuffer::spawn(Cs... comps) {
+  const Entity e = world_->reserve(); // hand the caller a usable handle now
+  record([e, ... comps = std::move(comps)](World& w) mutable {
+    w.materialize(e);
+    (w.add<Cs>(e, std::move(comps)), ...);
   });
+  return e;
 }
 
 } // namespace ecs
