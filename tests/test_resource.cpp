@@ -75,7 +75,7 @@ static void resource_and_component_conflicts_are_independent() {
 static void serialized_writers_run_without_races() {
   World w;
   w.emplace_resource<Counter>();
-  for (int i = 0; i < 10'000; ++i) w.create_with(Position{1.0f});
+  for (int i = 0; i < 10'000; ++i) w.spawn(Position{1.0f});
 
   // Both systems mutate the shared Counter; declaring writes_res<Counter>
   // forces them onto separate levels, so the unsynchronized ++ is safe.

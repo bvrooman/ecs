@@ -1,28 +1,26 @@
 // ecs/command_buffer.hpp
 //
-// Deferred structural changes (see also world.hpp for the typed helpers).
+// The deferral mechanism behind World's auto-deferring mutation API.
 //
-// Adding/removing components, spawning and destroying entities all move data
-// between archetype tables, which would invalidate any iteration in flight and
-// race with other systems running on the schedule's thread pool. So during the
-// parallel phase systems do not mutate structure directly -- they *record*
-// their intent here, and the recorded commands are replayed single-threaded at
-// a sync point (the Schedule flushes at every level barrier; see schedule.hpp).
+// Structural changes (spawn/destroy/add/remove) and value writes (set) move
+// data between archetype tables or into columns, which would invalidate
+// iteration in flight and race with systems on the schedule's thread pool. So
+// while a schedule is executing, World records each mutation here instead of
+// performing it; the recorded commands are replayed single-threaded at a sync
+// point (the Schedule flushes at every level barrier; World::defer_scope at
+// scope exit). Outside those contexts World mutates immediately.
 //
 // Recording is sharded per worker thread: each thread appends to its own shard
 // with no cross-thread contention on the hot path (shard lookup is a lock-free
 // atomic load; the per-shard mutex is uncontended unless more threads exist
 // than shards). apply() drains every shard single-threaded. Commands within one
 // thread's shard replay in record order; ordering *across* shards is
-// unspecified (matches per-system command semantics in other ECS designs).
+// unspecified.
 //
 // A command is a type-erased `void(World&)` closure (move_only_function, so
-// move-only captured component values are fine). The typed helpers are declared
-// here and defined in world.hpp where World is a complete type.
+// move-only captured component values are fine).
 
 #pragma once
-
-#include "entity.hpp"
 
 #include <array>
 #include <atomic>
@@ -51,8 +49,8 @@ class CommandBuffer {
 public:
   using Command = std::move_only_function<void(World&)>;
 
-  // Record an arbitrary deferred operation. Lock-free shard lookup; the only
-  // lock is the calling thread's own (normally uncontended) shard mutex.
+  // Record a deferred operation. Lock-free shard lookup; the only lock is the
+  // calling thread's own (normally uncontended) shard mutex.
   template <class F>
   void record(F&& f) {
     Shard& shard = local_shard();
@@ -60,23 +58,9 @@ public:
     shard.commands.emplace_back(std::forward<F>(f));
   }
 
-  // Typed conveniences (definitions in world.hpp). Each is a no-op at apply
-  // time if its target entity is no longer alive, so order-independent teardown
-  // (e.g. two systems both destroying the same entity) is safe.
-  void destroy(Entity e);
-  template <class C>
-  void add(Entity e, C value);
-  template <class C>
-  void remove(Entity e);
-  // Reserves an entity handle immediately (thread-safe) and returns it, so the
-  // caller can record further edits on it this frame; the entity's storage and
-  // components are created when the buffer is applied.
-  template <class... Cs>
-  Entity spawn(Cs... comps);
-
   // Replay all recorded commands, then clear. Must be called when no systems
-  // are executing (no recording happens concurrently). Drains shards in
-  // creation order; within a shard, in record order.
+  // are executing. Drains shards in creation order; within a shard, in record
+  // order.
   void apply(World& world) {
     std::lock_guard lock(create_mutex_);
     for (auto& shard : shards_) {
@@ -94,8 +78,6 @@ public:
   bool empty() { return size() == 0; }
 
 private:
-  friend class World; // sets world_ and reaches reserve()/materialize()
-
   static constexpr int kShards = 64;
 
   struct Shard {
@@ -118,7 +100,6 @@ private:
   std::array<std::atomic<Shard*>, kShards> slots_{}; // lock-free shard lookup
   std::vector<std::unique_ptr<Shard>> shards_;       // ownership + apply order
   std::mutex create_mutex_;                          // shard creation + apply
-  World* world_ = nullptr;                           // owning world (ctor-set)
 };
 
 } // namespace ecs

@@ -35,35 +35,68 @@ public:
   World() {
     // Archetype 0 is the empty archetype (entities with no components).
     empty_archetype_ = make_archetype(Signature{}, [](Archetype&) {});
-    commands_.world_ = this; // so commands().spawn() can reserve handles
   }
 
   World(const World&) = delete;
   World& operator=(const World&) = delete;
 
-  // --- entity lifecycle -------------------------------------------------
-  Entity create() {
-    Entity e = reserve();
-    materialize(e);
-    return e;
-  }
-
+  // --- mutation (auto-deferring) ----------------------------------------
+  // spawn/destroy/add/remove/set apply immediately when called with exclusive
+  // access, and automatically record into the command buffer when called while
+  // a schedule is executing (or inside a defer_scope), where direct mutation
+  // would be unsafe. The deferred changes are applied single-threaded at the
+  // next sync point. spawn() always returns a usable handle immediately (alive
+  // now in immediate mode; alive after the next flush in deferred mode).
   template <class... Cs>
-  Entity create_with(Cs... comps) {
-    Entity e = create();
-    (add<Cs>(e, std::move(comps)), ...);
+  Entity spawn(Cs... comps) {
+    const Entity e = reserve();
+    if (deferred()) {
+      commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
+        w.materialize(e);
+        (w.add_now<Cs>(e, std::move(comps)), ...);
+      });
+    } else {
+      materialize(e);
+      (add_now<Cs>(e, std::move(comps)), ...);
+    }
     return e;
   }
 
   void destroy(Entity e) {
-    if (!alive(e)) return;
-    auto& rec = records_[e.index];
-    remove_row(*archetypes_[rec.archetype], rec.row);
-    rec.alive = false;
-    ++rec.generation;
-    free_.push_back(e.index);
-    free_count_.store(free_.size(), std::memory_order_release);
-    --alive_count_;
+    if (deferred())
+      commands_.record([e](World& w) { w.destroy_now(e); });
+    else
+      destroy_now(e);
+  }
+
+  template <class C>
+  void add(Entity e, C value) {
+    if (deferred())
+      commands_.record([e, value = std::move(value)](World& w) mutable {
+        if (w.alive(e)) w.add_now<C>(e, std::move(value));
+      });
+    else
+      add_now<C>(e, std::move(value));
+  }
+
+  template <class C>
+  void remove(Entity e) {
+    if (deferred())
+      commands_.record([e](World& w) {
+        if (w.alive(e)) w.remove_now<C>(e);
+      });
+    else
+      remove_now<C>(e);
+  }
+
+  template <class C>
+  void set(Entity e, C value) {
+    if (deferred())
+      commands_.record([e, value = std::move(value)](World& w) mutable {
+        if (w.alive(e)) w.set_now<C>(e, std::move(value));
+      });
+    else
+      set_now<C>(e, std::move(value));
   }
 
   bool alive(Entity e) const {
@@ -73,52 +106,7 @@ public:
 
   std::size_t size() const noexcept { return alive_count_; }
 
-  // --- components -------------------------------------------------------
-  template <class C>
-  void add(Entity e, C value) {
-    assert(alive(e));
-    auto& rec = records_[e.index];
-    const ComponentId cid = component_id<C>;
-    if (archetypes_[rec.archetype]->has(cid)) {
-      archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
-      return;
-    }
-    Signature sig = archetypes_[rec.archetype]->signature;
-    sig.insert(std::upper_bound(sig.begin(), sig.end(), cid), cid);
-
-    const auto from = rec.archetype;
-    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
-      for (auto& [id, col] : archetypes_[from]->columns)
-        b.columns.emplace(id, col->clone_empty());
-      b.columns.emplace(cid, std::make_unique<Column<C>>());
-    });
-
-    relocate(e, to, [&](Archetype& b) {
-      b.template column<C>().store.push_back(value);
-    });
-  }
-
-  template <class C>
-  void remove(Entity e) {
-    assert(alive(e));
-    auto& rec = records_[e.index];
-    const ComponentId cid = component_id<C>;
-    if (!archetypes_[rec.archetype]->has(cid)) return;
-
-    Signature sig;
-    sig.reserve(archetypes_[rec.archetype]->signature.size() - 1);
-    for (ComponentId id : archetypes_[rec.archetype]->signature)
-      if (id != cid) sig.push_back(id);
-
-    const auto from = rec.archetype;
-    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
-      for (auto& [id, col] : archetypes_[from]->columns)
-        if (id != cid) b.columns.emplace(id, col->clone_empty());
-    });
-
-    relocate(e, to, [](Archetype&) {});
-  }
-
+  // --- reads ------------------------------------------------------------
   template <class C>
   bool has(Entity e) const {
     return alive(e) &&
@@ -130,12 +118,6 @@ public:
   C get(Entity e) const {
     const auto& rec = records_[e.index];
     return archetypes_[rec.archetype]->template column<C>().store.gather(rec.row);
-  }
-
-  template <class C>
-  void set(Entity e, const C& value) {
-    const auto& rec = records_[e.index];
-    archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
   }
 
   // --- resources (singletons not owned by any entity) -------------------
@@ -166,12 +148,46 @@ public:
     resources_.remove<T>();
   }
 
-  // --- deferred structural changes --------------------------------------
-  // Systems record create/destroy/add/remove here during the parallel phase;
-  // the Schedule flushes at each level barrier. Outside a schedule, call
-  // apply_commands() yourself at a safe point.
+  // --- deferral ---------------------------------------------------------
+  // Whether mutations are currently recorded (true while a schedule runs or
+  // inside a defer_scope) rather than applied immediately.
+  bool deferred() const { return deferred_.load(std::memory_order_acquire); }
+
+  // The underlying command buffer (advanced: record custom deferred closures).
   CommandBuffer& commands() { return commands_; }
+  // Apply all recorded commands now. Normally driven by the Schedule / a
+  // defer_scope; call manually only if you record into commands() directly.
   void apply_commands() { commands_.apply(*this); }
+
+  // RAII guard that turns on deferral for the current (single) thread and
+  // flushes on exit, so structural edits are safe during a manual query loop:
+  //   { auto g = world.defer_scope();
+  //     query<...>(world).each([&](Entity e, ...){ world.destroy(e); }); }
+  // No-op (and no flush) if deferral is already active, so it nests safely.
+  class DeferScope {
+  public:
+    explicit DeferScope(World& w)
+        : world_(&w), entered_(!w.deferred()) {
+      if (entered_) world_->set_deferred(true);
+    }
+    ~DeferScope() {
+      if (entered_) {
+        world_->set_deferred(false);
+        world_->apply_commands();
+      }
+    }
+    DeferScope(DeferScope&& o) noexcept
+        : world_(o.world_), entered_(o.entered_) {
+      o.entered_ = false;
+    }
+    DeferScope(const DeferScope&) = delete;
+    DeferScope& operator=(const DeferScope&) = delete;
+
+  private:
+    World* world_;
+    bool entered_;
+  };
+  [[nodiscard]] DeferScope defer_scope() { return DeferScope(*this); }
 
   // --- archetype access (used by queries) -------------------------------
   const std::vector<std::unique_ptr<Archetype>>& archetypes() const {
@@ -186,7 +202,7 @@ public:
   }
 
 private:
-  friend class CommandBuffer; // calls reserve()/materialize() for spawn()
+  friend class Schedule;  // toggles deferred mode around system execution
 
   struct Record {
     std::uint32_t archetype = 0;
@@ -194,6 +210,75 @@ private:
     std::uint32_t generation = 0;
     bool alive = false;
   };
+
+  void set_deferred(bool on) {
+    deferred_.store(on, std::memory_order_release);
+  }
+
+  // Immediate mutation primitives. The public spawn/destroy/add/remove/set
+  // dispatch to these when not deferred, and the command closures call them at
+  // apply time -- so these always run with exclusive, single-threaded access.
+  void destroy_now(Entity e) {
+    if (!alive(e)) return;
+    auto& rec = records_[e.index];
+    remove_row(*archetypes_[rec.archetype], rec.row);
+    rec.alive = false;
+    ++rec.generation;
+    free_.push_back(e.index);
+    free_count_.store(free_.size(), std::memory_order_release);
+    --alive_count_;
+  }
+
+  template <class C>
+  void add_now(Entity e, C value) {
+    assert(alive(e));
+    auto& rec = records_[e.index];
+    const ComponentId cid = component_id<C>;
+    if (archetypes_[rec.archetype]->has(cid)) {
+      archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
+      return;
+    }
+    Signature sig = archetypes_[rec.archetype]->signature;
+    sig.insert(std::upper_bound(sig.begin(), sig.end(), cid), cid);
+
+    const auto from = rec.archetype;
+    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
+      for (auto& [id, col] : archetypes_[from]->columns)
+        b.columns.emplace(id, col->clone_empty());
+      b.columns.emplace(cid, std::make_unique<Column<C>>());
+    });
+
+    relocate(e, to, [&](Archetype& b) {
+      b.template column<C>().store.push_back(value);
+    });
+  }
+
+  template <class C>
+  void remove_now(Entity e) {
+    assert(alive(e));
+    auto& rec = records_[e.index];
+    const ComponentId cid = component_id<C>;
+    if (!archetypes_[rec.archetype]->has(cid)) return;
+
+    Signature sig;
+    sig.reserve(archetypes_[rec.archetype]->signature.size() - 1);
+    for (ComponentId id : archetypes_[rec.archetype]->signature)
+      if (id != cid) sig.push_back(id);
+
+    const auto from = rec.archetype;
+    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
+      for (auto& [id, col] : archetypes_[from]->columns)
+        if (id != cid) b.columns.emplace(id, col->clone_empty());
+    });
+
+    relocate(e, to, [](Archetype&) {});
+  }
+
+  template <class C>
+  void set_now(Entity e, const C& value) {
+    const auto& rec = records_[e.index];
+    archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
+  }
 
   // Hand out a fresh entity handle without creating storage. Thread-safe and
   // lock-free on the common (growth) path: a brand-new index is a single atomic
@@ -299,38 +384,7 @@ private:
                                                // reservations are outstanding
   std::atomic<std::size_t> free_count_{0};     // free_.size(), for a lock-free
                                                // "anything to recycle?" check
+  std::atomic<bool> deferred_{false};          // record mutations vs apply now
 };
-
-// --- CommandBuffer typed helpers (World is now complete) ------------------
-// Each guards on alive() so commands targeting an entity destroyed earlier in
-// the same flush become no-ops rather than asserting.
-
-inline void CommandBuffer::destroy(Entity e) {
-  record([e](World& w) { w.destroy(e); }); // World::destroy already no-ops if dead
-}
-
-template <class C>
-void CommandBuffer::add(Entity e, C value) {
-  record([e, value = std::move(value)](World& w) mutable {
-    if (w.alive(e)) w.add<C>(e, std::move(value));
-  });
-}
-
-template <class C>
-void CommandBuffer::remove(Entity e) {
-  record([e](World& w) {
-    if (w.alive(e)) w.remove<C>(e);
-  });
-}
-
-template <class... Cs>
-Entity CommandBuffer::spawn(Cs... comps) {
-  const Entity e = world_->reserve(); // hand the caller a usable handle now
-  record([e, ... comps = std::move(comps)](World& w) mutable {
-    w.materialize(e);
-    (w.add<Cs>(e, std::move(comps)), ...);
-  });
-  return e;
-}
 
 } // namespace ecs

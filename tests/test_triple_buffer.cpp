@@ -84,7 +84,7 @@ using PositionSnapshot = std::vector<Position>;
 
 static void world_extraction_handoff() {
   World w;
-  for (int i = 0; i < 1000; ++i) w.create_with(Position{float(i), 0});
+  for (int i = 0; i < 1000; ++i) w.spawn(Position{float(i), 0});
   w.emplace_resource<TripleBuffer<PositionSnapshot>>();
 
   std::atomic<bool> stop{false};

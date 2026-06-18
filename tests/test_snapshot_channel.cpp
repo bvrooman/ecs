@@ -105,7 +105,7 @@ using Snapshot = std::vector<Position>;
 
 static void world_extraction_fans_out_to_two_consumers() {
   World w;
-  for (int i = 0; i < 500; ++i) w.create_with(Position{float(i), 0});
+  for (int i = 0; i < 500; ++i) w.spawn(Position{float(i), 0});
   w.emplace_resource<SnapshotChannel<Snapshot>>();
 
   std::atomic<bool> stop{false};

@@ -10,9 +10,9 @@ struct Frozen {}; // tag
 
 static void create_and_query() {
   World w;
-  auto a = w.create_with(Position{0, 0}, Velocity{1, 2});
-  auto b = w.create_with(Position{10, 10});
-  auto c = w.create_with(Position{5, 5}, Velocity{-1, -1}, Frozen{});
+  auto a = w.spawn(Position{0, 0}, Velocity{1, 2});
+  auto b = w.spawn(Position{10, 10});
+  auto c = w.spawn(Position{5, 5}, Velocity{-1, -1}, Frozen{});
   CHECK(w.size() == 3);
   CHECK(w.has<Velocity>(a));
   CHECK(!w.has<Velocity>(b));
@@ -28,7 +28,7 @@ static void create_and_query() {
 
 static void add_remove_moves_archetype_preserving_data() {
   World w;
-  auto b = w.create_with(Position{10, 20});
+  auto b = w.spawn(Position{10, 20});
   CHECK((query<Position, Velocity>(w).count() == 0));
 
   w.add<Velocity>(b, Velocity{3, 3});
@@ -44,15 +44,15 @@ static void add_remove_moves_archetype_preserving_data() {
 
 static void destroy_and_generation_reuse() {
   World w;
-  auto a = w.create_with(Position{1, 1});
-  auto a2 = w.create_with(Position{2, 2});
+  auto a = w.spawn(Position{1, 1});
+  auto a2 = w.spawn(Position{2, 2});
   (void)a2;
   Entity old = a;
   w.destroy(a);
   CHECK(!w.alive(old));
   CHECK(w.size() == 1);
 
-  auto d = w.create();
+  auto d = w.spawn();
   CHECK(d.index == old.index);          // slot reused
   CHECK(d.generation != old.generation); // stale handle won't match
   CHECK(!w.alive(old));
@@ -60,7 +60,7 @@ static void destroy_and_generation_reuse() {
 
 static void soa_fast_path() {
   World w;
-  for (int i = 0; i < 4; ++i) w.create_with(Position{float(i), 0});
+  for (int i = 0; i < 4; ++i) w.spawn(Position{float(i), 0});
   query<Position>(w).for_each_chunk(
       [](std::span<Entity>, soa_storage<Position>& pos) {
         for (auto& x : pos.column<0>()) x += 100.f;

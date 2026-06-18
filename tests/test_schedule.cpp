@@ -36,7 +36,7 @@ static void parallel_systems_are_independent_levels() {
 static void run_on_thread_pool_executes_all_systems() {
   World w;
   for (int i = 0; i < 1000; ++i)
-    w.create_with(Position{0, 0}, Velocity{1, 2}, Health{100});
+    w.spawn(Position{0, 0}, Velocity{1, 2}, Health{100});
 
   std::atomic<int> render_calls{0};
   Schedule sched;

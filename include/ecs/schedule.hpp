@@ -97,6 +97,10 @@ public:
   template <class Scheduler>
   void run(World& world, Scheduler scheduler) {
     rebuild();
+    // Systems mutate the world only through its auto-deferring API; turning on
+    // deferral makes every spawn/destroy/add/remove/set during execution record
+    // instead of mutate, so it is safe to run them concurrently.
+    world.set_deferred(true);
     exec::async_scope scope;
     for (const auto& level : levels_) {
       for (std::size_t idx : level) {
@@ -108,10 +112,11 @@ public:
       }
       // Barrier: wait for this wavefront to drain before starting the next.
       stdexec::sync_wait(scope.on_empty());
-      // Apply any structural changes this level recorded, single-threaded,
-      // before the next level (or the caller) observes the world.
+      // Apply the changes this level recorded, single-threaded, before the next
+      // level (or the caller) observes the world.
       world.apply_commands();
     }
+    world.set_deferred(false);
   }
 
 private:

@@ -37,7 +37,7 @@ entity between archetype tables (dynamic archetypes, like flecs/EnTT):
 
 ```cpp
 World w;
-Entity e = w.create_with(Position{0,0,0}, Velocity{1,0,0}); // archetype {P,V}
+Entity e = w.spawn(Position{0,0,0}, Velocity{1,0,0});      // archetype {P,V}
 w.add<Frozen>(e);                                           // -> archetype {P,V,Frozen}
 w.remove<Velocity>(e);                                      // -> archetype {P,Frozen}
 ```
@@ -166,26 +166,43 @@ mutated during execution, so concurrent `resource<T>()` borrows from parallel
 systems are safe; the scheduler serializes any system declaring `writes_res<T>`
 against others touching the same resource.
 
-## 7. Deferred structural changes (command buffers)
+## 7. One auto-deferring mutation API (command buffers)
 
 Structural edits -- spawn, destroy, add/remove component -- move data between
 archetype tables, which invalidates in-flight iteration and races with systems
-running on the schedule's pool. So they are *deferred*: a system records intent
-into `world.commands()` and the changes are replayed later, single-threaded.
+running on the schedule's pool; `set` writes a column in place. There is a
+**single** mutation API on `World` -- `spawn`/`destroy`/`add`/`remove`/`set` --
+and it does the right thing automatically:
+
+* with **exclusive access** (setup, between frames) it mutates **immediately**;
+* while a **schedule is executing** (or inside a `world.defer_scope()`) it
+  **records** the edit into the command buffer, to be replayed single-threaded
+  at the next sync point.
+
+So the same code is correct in both contexts and there is no separate
+"thread-safe" entry point to remember:
 
 ```cpp
 sched.add("spawn_particles", [](World& w) {
   query<Emitter>(w).each([&](Entity, Emitter& em) {
     if (em.fire) {
-      Entity p = w.commands().spawn(Position{...}, Velocity{...});
-      w.commands().add<Lifetime>(p, {...}); // edit the reserved handle now
+      Entity p = w.spawn(Position{...}, Velocity{...}); // auto-deferred here
+      w.add<Lifetime>(p, {...});                        // edit the handle now
     }
   });
 }, reads<Emitter>{});
+
+// outside a schedule, the same calls are immediate -- unless you opt into
+// deferral to mutate safely during a manual query loop:
+{ auto g = world.defer_scope();
+  query<Doomed>(world).each([&](Entity e, Doomed&){ world.destroy(e); }); }
 ```
 
-`spawn(...)` reserves an entity handle immediately and returns it, so a system
-can record follow-up edits on a not-yet-created entity in the same frame.
+A `World::deferred()` flag (set by the `Schedule` around execution, or by a
+`defer_scope`) selects the path; the immediate primitives stay private and are
+what the command closures call at apply time. `spawn(...)` reserves an entity
+handle immediately and returns it, so a system can record follow-up edits on a
+not-yet-created entity in the same frame.
 Reservation is thread-safe via a tiny locked critical section: new ids come
 from a monotonic counter (so concurrent reservers never grow `records_`
 mid-run) and reused ids carry the freed slot's already-bumped generation. The
@@ -198,12 +215,11 @@ thread**: shard lookup is a lock-free atomic load and each shard has its own
 concurrently with effectively no contention -- recording is a thread-safe side
 channel, not tracked component/resource state. `apply()` drains every shard
 single-threaded; commands within one thread's shard replay in record order,
-ordering *across* shards is unspecified. The `Schedule` calls
-`apply_commands()` at every level barrier (no systems running), so changes
-recorded in level *N* are visible to level *N+1*; outside a schedule, call
-`world.apply_commands()` at a safe point. Typed helpers (`destroy`, `add`,
-`remove`) no-op if their target was already destroyed earlier in the same
-flush, so order-independent teardown is safe.
+ordering *across* shards is unspecified. The `Schedule` flushes at every level
+barrier (no systems running), so changes recorded in level *N* are visible to
+level *N+1*; a `defer_scope` flushes when it exits. `destroy`/`add`/`remove`
+no-op if their target was already destroyed earlier in the same flush, so
+order-independent teardown is safe.
 
 `spawn()` itself is contention-light: `World::reserve()` is lock-free on the
 growth path (a brand-new index is a single atomic `fetch_add`) and only takes a
@@ -282,8 +298,9 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
   accessors under P2996) is a natural follow-up.
 * The scheduler uses wavefront leveling (simple, correct, parallel). A full
   per-edge sender DAG would extract a little more overlap across levels.
-* Structural edits during iteration/parallel execution must go through the
-  command buffer (§7); direct add/remove/destroy mid-query is still unsafe.
+* Mutation is safe during scheduled execution (auto-deferred) and, with a
+  `defer_scope`, during a manual query loop. Mutating mid-query *without* a
+  defer_scope and *outside* a schedule still applies immediately and is unsafe.
 * The command buffer shards over `kShards` (64) lanes; with more concurrent
   worker threads than shards, threads share a shard and contend its mutex (still
   correct, just less scalable).

@@ -48,7 +48,7 @@ int main() {
   World world;
   for (int i = 0; i < kParticles; ++i) {
     float f = float(i);
-    world.create_with(Position{f, -f, 0.5f * f},
+    world.spawn(Position{f, -f, 0.5f * f},
                       Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f});
   }
   world.emplace_resource<Gravity>(-9.81f);
@@ -77,10 +77,10 @@ int main() {
   // using the handle reservation hands back to attach follow-up components.
   schedule.add("emitter", [](World& w) {
     for (int i = 0; i < kEmitPerTick; ++i) {
-      Entity e = w.commands().spawn(Position{0, 0, 0},
+      Entity e = w.spawn(Position{0, 0, 0},
                                     Velocity{float(i % 7) - 3, 5, 0}, Mass{1});
-      w.commands().add<Lifetime>(e, Lifetime{kTracerLife});
-      w.commands().add<Tracer>(e, Tracer{});
+      w.add<Lifetime>(e, Lifetime{kTracerLife});
+      w.add<Tracer>(e, Tracer{});
     }
   });
 
@@ -89,7 +89,7 @@ int main() {
       "reaper",
       [](World& w) {
         query<Lifetime>(w).each([&](Entity e, Lifetime& l) {
-          if (--l.ticks <= 0) w.commands().destroy(e);
+          if (--l.ticks <= 0) w.destroy(e);
         });
       },
       reads<Lifetime>{}, writes<Lifetime>{});
