@@ -34,10 +34,10 @@ public:
   template <class F>
   void each(F&& fn) {
     for (auto& arch_ptr : world_.archetypes()) {
-      Archetype& arch = *arch_ptr;
+      auto& arch = *arch_ptr;
       if (!matches(arch)) continue;
       auto stores = std::tie(arch.template column<Cs>().store...);
-      const std::size_t n = arch.size();
+      const auto n = arch.size();
       for (std::size_t row = 0; row < n; ++row)
         invoke_row(fn, arch.entities[row], row, stores,
                    std::index_sequence_for<Cs...>{});
@@ -47,7 +47,7 @@ public:
   template <class F>
   void for_each_chunk(F&& fn) {
     for (auto& arch_ptr : world_.archetypes()) {
-      Archetype& arch = *arch_ptr;
+      auto& arch = *arch_ptr;
       if (!matches(arch)) continue;
       fn(std::span<Entity>(arch.entities),
          arch.template column<Cs>().store...);

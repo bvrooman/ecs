@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <type_traits>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -76,13 +77,12 @@ struct Archetype {
 
   bool has(ComponentId id) const { return columns.contains(id); }
 
-  template <class T>
-  Column<T>& column() {
-    return static_cast<Column<T>&>(*columns.at(component_id<T>));
-  }
-  template <class T>
-  const Column<T>& column() const {
-    return static_cast<const Column<T>&>(*columns.at(component_id<T>));
+  template <class T, class Self>
+  auto& column(this Self&& self) {
+    using Col = std::conditional_t<
+        std::is_const_v<std::remove_reference_t<Self>>, const Column<T>,
+        Column<T>>;
+    return static_cast<Col&>(*self.columns.at(component_id<T>));
   }
 
   std::size_t size() const { return entities.size(); }

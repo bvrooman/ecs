@@ -98,25 +98,18 @@ public:
   std::size_t emplace_default() { return push_back(T{}); }
 
   // Contiguous view over the I-th field across all elements: the SoA payoff.
-  template <std::size_t I>
-  std::span<reflect::field_type_t<T, I>> column() noexcept {
-    auto& c = std::get<I>(columns_);
-    return {c.data(), c.size()};
-  }
-  template <std::size_t I>
-  std::span<const reflect::field_type_t<T, I>> column() const noexcept {
-    const auto& c = std::get<I>(columns_);
-    return {c.data(), c.size()};
+  // The explicit object parameter lets one definition serve both const and
+  // mutable callers -- the span's element constness follows that of `self`.
+  template <std::size_t I, class Self>
+  auto column(this Self&& self) noexcept {
+    auto& c = std::get<I>(self.columns_);
+    return std::span(c.data(), c.size());
   }
 
 private:
-  template <class F>
-  void apply_columns(F&& f) {
-    std::apply([&](auto&... col) { f(col...); }, columns_);
-  }
-  template <class F>
-  void apply_columns(F&& f) const {
-    std::apply([&](auto&... col) { f(col...); }, columns_);
+  template <class Self, class F>
+  void apply_columns(this Self&& self, F&& f) {
+    std::apply([&](auto&... col) { f(col...); }, self.columns_);
   }
 
   detail::columns_t<T> columns_{};

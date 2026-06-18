@@ -46,11 +46,11 @@ public:
       idx = static_cast<std::uint32_t>(records_.size());
       records_.push_back(Record{});
     }
-    Record& rec = records_[idx];
+    auto& rec = records_[idx];
     rec.alive = true;
     Entity e{idx, rec.generation};
 
-    Archetype& a = *archetypes_[empty_archetype_];
+    auto& a = *archetypes_[empty_archetype_];
     rec.archetype = empty_archetype_;
     rec.row = static_cast<std::uint32_t>(a.entities.size());
     a.entities.push_back(e);
@@ -67,7 +67,7 @@ public:
 
   void destroy(Entity e) {
     if (!alive(e)) return;
-    Record& rec = records_[e.index];
+    auto& rec = records_[e.index];
     remove_row(*archetypes_[rec.archetype], rec.row);
     rec.alive = false;
     ++rec.generation;
@@ -86,7 +86,7 @@ public:
   template <class C>
   void add(Entity e, C value) {
     assert(alive(e));
-    Record& rec = records_[e.index];
+    auto& rec = records_[e.index];
     const ComponentId cid = component_id<C>;
     if (archetypes_[rec.archetype]->has(cid)) {
       archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
@@ -95,8 +95,8 @@ public:
     Signature sig = archetypes_[rec.archetype]->signature;
     sig.insert(std::upper_bound(sig.begin(), sig.end(), cid), cid);
 
-    const std::uint32_t from = rec.archetype;
-    const std::uint32_t to = get_or_create_archetype(sig, [&](Archetype& b) {
+    const auto from = rec.archetype;
+    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
       for (auto& [id, col] : archetypes_[from]->columns)
         b.columns.emplace(id, col->clone_empty());
       b.columns.emplace(cid, std::make_unique<Column<C>>());
@@ -110,7 +110,7 @@ public:
   template <class C>
   void remove(Entity e) {
     assert(alive(e));
-    Record& rec = records_[e.index];
+    auto& rec = records_[e.index];
     const ComponentId cid = component_id<C>;
     if (!archetypes_[rec.archetype]->has(cid)) return;
 
@@ -119,8 +119,8 @@ public:
     for (ComponentId id : archetypes_[rec.archetype]->signature)
       if (id != cid) sig.push_back(id);
 
-    const std::uint32_t from = rec.archetype;
-    const std::uint32_t to = get_or_create_archetype(sig, [&](Archetype& b) {
+    const auto from = rec.archetype;
+    const auto to = get_or_create_archetype(sig, [&](Archetype& b) {
       for (auto& [id, col] : archetypes_[from]->columns)
         if (id != cid) b.columns.emplace(id, col->clone_empty());
     });
@@ -137,13 +137,13 @@ public:
   // Read a component by value (gathered from its per-field columns).
   template <class C>
   C get(Entity e) const {
-    const Record& rec = records_[e.index];
+    const auto& rec = records_[e.index];
     return archetypes_[rec.archetype]->template column<C>().store.gather(rec.row);
   }
 
   template <class C>
   void set(Entity e, const C& value) {
-    const Record& rec = records_[e.index];
+    const auto& rec = records_[e.index];
     archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
   }
 
@@ -155,7 +155,7 @@ public:
 
   // Internal: locate an entity's archetype/row (used by queries' callbacks).
   std::pair<std::uint32_t, std::uint32_t> locate(Entity e) const {
-    const Record& rec = records_[e.index];
+    const auto& rec = records_[e.index];
     return {rec.archetype, rec.row};
   }
 
@@ -169,7 +169,7 @@ private:
 
   template <class Factory>
   std::uint32_t make_archetype(const Signature& sig, Factory&& makeColumns) {
-    const std::uint32_t idx = static_cast<std::uint32_t>(archetypes_.size());
+    const auto idx = static_cast<std::uint32_t>(archetypes_.size());
     auto arch = std::make_unique<Archetype>();
     arch->signature = sig;
     makeColumns(*arch);
@@ -190,7 +190,7 @@ private:
   // entity's record. Heap-allocated archetypes keep stable addresses, so
   // references stay valid across archetypes_ growth.
   void remove_row(Archetype& a, std::uint32_t row) {
-    const std::uint32_t last = static_cast<std::uint32_t>(a.entities.size() - 1);
+    const auto last = static_cast<std::uint32_t>(a.entities.size() - 1);
     for (auto& [id, col] : a.columns) col->swap_remove(row);
     if (row != last) {
       a.entities[row] = a.entities[last];
@@ -203,10 +203,10 @@ private:
   // columns and letting `addExtra` append any newly-added component.
   template <class AddExtra>
   void relocate(Entity e, std::uint32_t to, AddExtra&& addExtra) {
-    Record& rec = records_[e.index];
-    const std::uint32_t from = rec.archetype;
-    Archetype& a = *archetypes_[from];
-    Archetype& b = *archetypes_[to];
+    auto& rec = records_[e.index];
+    const auto from = rec.archetype;
+    auto& a = *archetypes_[from];
+    auto& b = *archetypes_[to];
 
     for (auto& [id, col] : a.columns) {
       if (auto it = b.columns.find(id); it != b.columns.end())
@@ -214,7 +214,7 @@ private:
     }
     addExtra(b);
 
-    const std::uint32_t new_row = static_cast<std::uint32_t>(b.entities.size());
+    const auto new_row = static_cast<std::uint32_t>(b.entities.size());
     b.entities.push_back(e);
 
     remove_row(a, rec.row);

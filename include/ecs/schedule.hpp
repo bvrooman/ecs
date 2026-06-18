@@ -76,7 +76,7 @@ public:
     exec::async_scope scope;
     for (const auto& level : levels_) {
       for (std::size_t idx : level) {
-        System& sys = systems_[idx];
+        auto& sys = systems_[idx];
         scope.spawn(stdexec::starts_on(
             scheduler, stdexec::then(stdexec::just(), [&sys, &world] {
               sys.run(world);
