@@ -50,7 +50,7 @@ int main() {
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
 | Deferred structural edits | `world.commands().spawn/destroy/add/remove`; per-thread sharded recording (lock-free lookup) applied single-threaded at each schedule level barrier. `spawn` reserves and returns a usable handle for same-frame follow-up edits |
-| Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>` to hand an extracted snapshot to a consumer thread (renderer/audio/anything) with no tearing or blocking |
+| Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>`, plus `SnapshotChannel<T>` for multi-consumer fan-out, to hand extracted snapshots to consumer threads (renderer/audio/anything) with no tearing or blocking |
 
 ## Build
 

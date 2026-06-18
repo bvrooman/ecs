@@ -242,6 +242,37 @@ is what makes the SPSC handoff correct (a two-atomic flag/index split races).
 Single producer, single consumer; "latest value wins" if the producer outruns
 the consumer.
 
+### Fan-out to many consumers: `SnapshotChannel<T>`
+
+When several subsystems need the same snapshot (a renderer *and* an audio
+mixer, plus telemetry), `TripleBuffer` -- being strictly single-consumer --
+can't serve them. `SnapshotChannel<T>` does: the producer fills `back()` and
+`publish()`es it as an immutable `std::shared_ptr<const T>` into an atomic; any
+number of consumer threads `load()` it (via a per-consumer `Reader` that
+advances only on new data) and hold their own reference while they read.
+
+```cpp
+world.emplace_resource<SnapshotChannel<Snapshot>>();
+sched.add("extract", [](World& w){
+  auto& ch = w.resource<SnapshotChannel<Snapshot>>();
+  fill(ch.back(), w);
+  ch.publish();
+}, reads<Position, Mesh>{}, writes_res<SnapshotChannel<Snapshot>>{});
+// each consumer thread, independently:
+auto r = channel.reader();
+while (running) if (r.poll()) consume(*r.get());
+```
+
+Because a published snapshot is immutable, all consumers read it concurrently
+with no tearing, and a buffer is reclaimed automatically once the producer has
+moved on and every consumer has dropped it. The trade vs `TripleBuffer` is an
+allocation per publish and reliance on `std::atomic<shared_ptr>` (which the
+standard library may back with an internal lock pool rather than true
+lock-freedom) -- the price of unlimited consumers. Still single-producer.
+
+The `nbody` example wires the whole thing together: an extract system publishes
+tracer positions that a mock "renderer" and "audio" thread both consume.
+
 ## Known limitations / next steps
 
 * Portable reflection treats a component as a flat aggregate of ≤32 scalar-ish
@@ -256,7 +287,9 @@ the consumer.
 * The command buffer shards over `kShards` (64) lanes; with more concurrent
   worker threads than shards, threads share a shard and contend its mutex (still
   correct, just less scalable).
-* `TripleBuffer` is strictly single-producer/single-consumer. Fan-out to several
-  consumers (renderer *and* audio reading the same snapshot) would need one
-  buffer per consumer or a different primitive.
+* Both snapshot primitives are single-*producer*. Multiple producers feeding one
+  channel would need external synchronization or a different design.
+* `SnapshotChannel` allocates a buffer per publish; a buffer pool that recycles
+  snapshots whose last reader has dropped them would remove the steady-state
+  allocations.
 ```
