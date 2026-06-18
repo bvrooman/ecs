@@ -31,32 +31,56 @@
 
 namespace ecs {
 
-// Declarative access lists, e.g. reads<Position>, writes<Position, Velocity>.
+// What a declarative access tag refers to, and whether it reads or writes.
+enum class AccessKind { ComponentRead, ComponentWrite, ResourceRead, ResourceWrite };
+
+// Declarative access lists. Components: reads<Position>, writes<Velocity>.
+// Resources: reads_res<Clock>, writes_res<RenderQueue>.
 template <class... Cs>
 struct reads {
-  static std::vector<ComponentId> ids() { return {component_id<Cs>...}; }
+  static constexpr AccessKind kind = AccessKind::ComponentRead;
+  static std::vector<std::uint32_t> ids() { return {component_id<Cs>...}; }
 };
 template <class... Cs>
 struct writes {
-  static std::vector<ComponentId> ids() { return {component_id<Cs>...}; }
+  static constexpr AccessKind kind = AccessKind::ComponentWrite;
+  static std::vector<std::uint32_t> ids() { return {component_id<Cs>...}; }
+};
+template <class... Rs>
+struct reads_res {
+  static constexpr AccessKind kind = AccessKind::ResourceRead;
+  static std::vector<std::uint32_t> ids() { return {resource_id<Rs>...}; }
+};
+template <class... Rs>
+struct writes_res {
+  static constexpr AccessKind kind = AccessKind::ResourceWrite;
+  static std::vector<std::uint32_t> ids() { return {resource_id<Rs>...}; }
 };
 
 class Schedule {
 public:
   struct System {
     std::string name;
-    std::vector<ComponentId> reads;
-    std::vector<ComponentId> writes;
+    std::vector<std::uint32_t> reads;       // component ids
+    std::vector<std::uint32_t> writes;      // component ids
+    std::vector<std::uint32_t> res_reads;   // resource ids
+    std::vector<std::uint32_t> res_writes;  // resource ids
     std::function<void(World&)> run;
     std::size_t level = 0;
   };
 
-  // Register a system. Access sets default to empty (a system declaring no
-  // writes never conflicts and is maximally parallel).
-  template <class Reads = reads<>, class Writes = writes<>, class Fn>
-  Schedule& add(std::string name, Reads, Writes, Fn&& fn) {
-    systems_.push_back(System{std::move(name), Reads::ids(), Writes::ids(),
-                              std::forward<Fn>(fn), 0});
+  // Register a system: its callable followed by any number of access tags, in
+  // any order. A system declaring no writes never conflicts and so is
+  // maximally parallel. Example:
+  //   sched.add("render", extract_fn,
+  //             reads<Transform, Mesh>{}, writes_res<RenderQueue>{});
+  template <class Fn, class... Access>
+  Schedule& add(std::string name, Fn&& fn, Access... access) {
+    System sys;
+    sys.name = std::move(name);
+    sys.run = std::forward<Fn>(fn);
+    (apply_access(sys, access), ...);
+    systems_.push_back(std::move(sys));
     dirty_ = true;
     return *this;
   }
@@ -88,17 +112,40 @@ public:
   }
 
 private:
-  // Two systems conflict if one's write set intersects the other's read or
-  // write set.
-  static bool intersects(const std::vector<ComponentId>& a,
-                         const std::vector<ComponentId>& b) {
-    for (ComponentId x : a)
+  using IdList = std::vector<std::uint32_t>;
+
+  // Route one access tag into the matching set on the system.
+  template <class A>
+  static void apply_access(System& sys, A) {
+    auto append = [](IdList& dst, IdList src) {
+      dst.insert(dst.end(), src.begin(), src.end());
+    };
+    if constexpr (A::kind == AccessKind::ComponentRead)
+      append(sys.reads, A::ids());
+    else if constexpr (A::kind == AccessKind::ComponentWrite)
+      append(sys.writes, A::ids());
+    else if constexpr (A::kind == AccessKind::ResourceRead)
+      append(sys.res_reads, A::ids());
+    else
+      append(sys.res_writes, A::ids());
+  }
+
+  static bool intersects(const IdList& a, const IdList& b) {
+    for (std::uint32_t x : a)
       if (std::find(b.begin(), b.end(), x) != b.end()) return true;
     return false;
   }
+
+  // A write/read or write/write overlap on the same id space is a conflict.
+  static bool conflicts_on(const IdList& aw, const IdList& ar, const IdList& bw,
+                           const IdList& br) {
+    return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
+  }
+
+  // Two systems conflict if they conflict on components OR on resources.
   static bool conflict(const System& a, const System& b) {
-    return intersects(a.writes, b.reads) || intersects(a.writes, b.writes) ||
-           intersects(b.writes, a.reads);
+    return conflicts_on(a.writes, a.reads, b.writes, b.reads) ||
+           conflicts_on(a.res_writes, a.res_reads, b.res_writes, b.res_reads);
   }
 
   void rebuild() {

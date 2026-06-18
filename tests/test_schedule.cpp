@@ -13,10 +13,9 @@ struct Health { int hp; };
 
 static void leveling_respects_conflicts() {
   Schedule sched;
-  sched.add("physics", reads<Velocity>{}, writes<Position>{},
-            [](World&) {});
-  sched.add("damage", reads<>{}, writes<Health>{}, [](World&) {});
-  sched.add("render", reads<Position>{}, writes<>{}, [](World&) {});
+  sched.add("physics", [](World&) {}, reads<Velocity>{}, writes<Position>{});
+  sched.add("damage", [](World&) {}, writes<Health>{});
+  sched.add("render", [](World&) {}, reads<Position>{});
   // physics & damage are independent -> level 0; render reads Position that
   // physics writes -> level 1.
   CHECK(sched.level_count() == 2);
@@ -28,9 +27,9 @@ static void leveling_respects_conflicts() {
 static void parallel_systems_are_independent_levels() {
   Schedule sched;
   // Three systems with disjoint writes -> all level 0, fully parallel.
-  sched.add("a", reads<>{}, writes<Position>{}, [](World&) {});
-  sched.add("b", reads<>{}, writes<Velocity>{}, [](World&) {});
-  sched.add("c", reads<>{}, writes<Health>{}, [](World&) {});
+  sched.add("a", [](World&) {}, writes<Position>{});
+  sched.add("b", [](World&) {}, writes<Velocity>{});
+  sched.add("c", [](World&) {}, writes<Health>{});
   CHECK(sched.level_count() == 1);
 }
 
@@ -41,15 +40,23 @@ static void run_on_thread_pool_executes_all_systems() {
 
   std::atomic<int> render_calls{0};
   Schedule sched;
-  sched.add("physics", reads<Velocity>{}, writes<Position>{}, [](World& wr) {
-    query<Position, Velocity>(wr).each(
-        [](Entity, Position& p, Velocity& v) { p.x += v.dx; p.y += v.dy; });
-  });
-  sched.add("damage", reads<>{}, writes<Health>{}, [](World& wr) {
-    query<Health>(wr).each([](Entity, Health& h) { h.hp -= 1; });
-  });
-  sched.add("render", reads<Position>{}, writes<>{},
-            [&](World&) { render_calls.fetch_add(1, std::memory_order_relaxed); });
+  sched.add("physics",
+            [](World& wr) {
+              query<Position, Velocity>(wr).each([](Entity, Position& p,
+                                                    Velocity& v) {
+                p.x += v.dx;
+                p.y += v.dy;
+              });
+            },
+            reads<Velocity>{}, writes<Position>{});
+  sched.add("damage",
+            [](World& wr) {
+              query<Health>(wr).each([](Entity, Health& h) { h.hp -= 1; });
+            },
+            writes<Health>{});
+  sched.add("render",
+            [&](World&) { render_calls.fetch_add(1, std::memory_order_relaxed); },
+            reads<Position>{});
 
   exec::static_thread_pool pool{4};
   auto scheduler = pool.get_scheduler();

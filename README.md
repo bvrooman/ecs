@@ -21,7 +21,8 @@ int main() {
 
   exec::static_thread_pool pool{8};
   Schedule schedule;
-  schedule.add("integrate", reads<Velocity>{}, writes<Position>{},
+  // A system: its callable, then the components/resources it reads & writes.
+  schedule.add("integrate",
                [](World& w) {
                  query<Position, Velocity>(w).for_each_chunk(
                      [](std::span<Entity>, soa_storage<Position>& pos,
@@ -31,7 +32,8 @@ int main() {
                        for (std::size_t i = 0; i < px.size(); ++i)
                          px[i] += vx[i];          // tight, vectorizable loop
                      });
-               });
+               },
+               reads<Velocity>{}, writes<Position>{});
 
   schedule.run(world, pool.get_scheduler());     // runs on the async runtime
 }
@@ -46,6 +48,7 @@ int main() {
 | AoS → SoA automatically via reflection | `soa_storage<T>` splits each struct into per-field columns using the reflection facade |
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
+| Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
 
 ## Build
 

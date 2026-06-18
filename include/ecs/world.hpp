@@ -8,6 +8,7 @@
 
 #include "archetype.hpp"
 #include "entity.hpp"
+#include "resource.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -147,6 +148,34 @@ public:
     archetypes_[rec.archetype]->template column<C>().store.set(rec.row, value);
   }
 
+  // --- resources (singletons not owned by any entity) -------------------
+  // Set up resources before running a schedule; like structural edits, do not
+  // add/remove resources while a schedule is executing.
+  template <class T, class... Args>
+  T& emplace_resource(Args&&... args) {
+    return resources_.emplace<T>(std::forward<Args>(args)...);
+  }
+  template <class T>
+  T& resource() {
+    return resources_.get<T>();
+  }
+  template <class T>
+  const T& resource() const {
+    return resources_.get<T>();
+  }
+  template <class T>
+  T* try_resource() {
+    return resources_.try_get<T>();
+  }
+  template <class T>
+  bool has_resource() const {
+    return resources_.contains<T>();
+  }
+  template <class T>
+  void remove_resource() {
+    resources_.remove<T>();
+  }
+
   // --- archetype access (used by queries) -------------------------------
   const std::vector<std::unique_ptr<Archetype>>& archetypes() const {
     return archetypes_;
@@ -222,6 +251,7 @@ private:
     rec.row = new_row;
   }
 
+  ResourceRegistry resources_;
   std::vector<std::unique_ptr<Archetype>> archetypes_;
   std::unordered_map<Signature, std::uint32_t, detail::SigHash> sig_index_;
   std::vector<Record> records_;

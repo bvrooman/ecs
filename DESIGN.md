@@ -120,20 +120,24 @@ query<Position, Velocity>(w).for_each_chunk(
 
 ## 5. Async-runtime compatible (std::execution / P2300)
 
-A *system* is `void(World&)` plus the component sets it **reads** and **writes**:
+A *system* is `void(World&)` plus the sets of components and resources it
+**reads** and **writes** (the callable first, then any number of access tags):
 
 ```cpp
 Schedule s;
-s.add("gravity",   reads<Mass>{},     writes<Velocity>{}, gravity_fn);
-s.add("integrate", reads<Velocity>{}, writes<Position>{}, integrate_fn);
+s.add("gravity",   gravity_fn,   reads<Mass>{},     writes<Velocity>{},
+                                 reads_res<Gravity>{});
+s.add("integrate", integrate_fn, reads<Velocity>{}, writes<Position>{});
 s.run(world, scheduler);   // scheduler is any P2300 scheduler
 ```
 
 Conflict analysis: two systems conflict when one's write set intersects the
-other's read-or-write set. Each system is assigned a **level** equal to
-`1 + max(level)` over earlier-registered conflicting systems. Same-level systems
-are provably conflict-free and therefore run concurrently; levels are separated
-by a barrier.
+other's read-or-write set — evaluated independently over the component id space
+and the resource id space, so a shared mutable resource serializes two systems
+even when their component access is disjoint. Each system is assigned a
+**level** equal to `1 + max(level)` over earlier-registered conflicting systems.
+Same-level systems are provably conflict-free and therefore run concurrently;
+levels are separated by a barrier.
 
 Execution is pure senders/receivers: each system becomes
 `starts_on(scheduler, then(just(), run))`, spawned into an
@@ -142,6 +146,25 @@ P2300 scheduler plugs in — `exec::static_thread_pool` here, but equally a GPU
 scheduler or an Asio-backed one — which is what "async-runtime compatible"
 means in practice. The reference P2300 implementation (NVIDIA `stdexec`) is
 pulled in via CMake `FetchContent`.
+
+## 6. Resources (singletons)
+
+Not all state belongs to an entity. Engine services (renderer, audio engine,
+physics world), the frame clock, command buffers and config are **resources**:
+exactly one instance of a type, borrowed by reference.
+
+```cpp
+world.emplace_resource<Gravity>(-9.81f);   // construct in place
+float g = world.resource<Gravity>().accel; // borrow inside a system
+```
+
+Resources are stored type-erased in a `ResourceRegistry` (one `unique_ptr` per
+type, keyed by a `resource_id<T>` in a separate id space from components). They
+are never required to be copyable, so move-only services (a GPU device, an audio
+stream) store directly. The registry is set up before a schedule runs and is not
+mutated during execution, so concurrent `resource<T>()` borrows from parallel
+systems are safe; the scheduler serializes any system declaring `writes_res<T>`
+against others touching the same resource.
 
 ## Known limitations / next steps
 

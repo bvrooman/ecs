@@ -22,6 +22,9 @@ struct Velocity { float x, y, z; };
 struct Mass { float kg; };
 struct Renderable {}; // tag component
 
+// --- resources are singletons, not attached to any entity -----------------
+struct Gravity { float accel; }; // shared simulation parameter
+
 int main() {
   constexpr int kParticles = 200'000;
   constexpr int kTicks = 60;
@@ -37,42 +40,51 @@ int main() {
   }
   std::printf("spawned %zu entities\n", world.size());
 
+  // A resource the systems share by reference.
+  world.emplace_resource<Gravity>(-9.81f);
+
   exec::static_thread_pool pool{std::max(1u, std::thread::hardware_concurrency())};
   auto scheduler = pool.get_scheduler();
 
   Schedule schedule;
 
-  // Gravity: read Mass, write Velocity.
-  schedule.add("gravity", reads<Mass>{}, writes<Velocity>{}, [&](World& w) {
-    query<Velocity, Mass>(w).for_each_chunk(
-        [](std::span<Entity>, soa_storage<Velocity>& vel, soa_storage<Mass>&) {
-          // SoA fast path: pull the contiguous y-velocity column and update it
-          // in a tight, vectorizer-friendly loop.
-          for (float& vy : vel.column<1>()) vy += -9.81f * kDt;
-        });
-  });
+  // Gravity: read the Gravity resource and Mass, write Velocity.
+  schedule.add(
+      "gravity",
+      [](World& w) {
+        const float a = w.resource<Gravity>().accel; // resource access
+        query<Velocity, Mass>(w).for_each_chunk(
+            [a](std::span<Entity>, soa_storage<Velocity>& vel,
+                soa_storage<Mass>&) {
+              // SoA fast path: pull the contiguous y-velocity column and
+              // update it in a tight, vectorizer-friendly loop.
+              for (float& vy : vel.column<1>()) vy += a * kDt;
+            });
+      },
+      reads<Mass>{}, writes<Velocity>{}, reads_res<Gravity>{});
 
-  // Integrate: read Velocity, write Position. Conflicts with nothing that
-  // writes Velocity in the same... actually it reads Velocity that gravity
-  // writes, so the scheduler puts it on a later level automatically.
-  schedule.add("integrate", reads<Velocity>{}, writes<Position>{},
-               [&](World& w) {
-                 query<Position, Velocity>(w).for_each_chunk(
-                     [](std::span<Entity>, soa_storage<Position>& pos,
-                        soa_storage<Velocity>& vel) {
-                       auto px = pos.column<0>();
-                       auto py = pos.column<1>();
-                       auto pz = pos.column<2>();
-                       auto vx = vel.column<0>();
-                       auto vy = vel.column<1>();
-                       auto vz = vel.column<2>();
-                       for (std::size_t i = 0; i < px.size(); ++i) {
-                         px[i] += vx[i] * kDt;
-                         py[i] += vy[i] * kDt;
-                         pz[i] += vz[i] * kDt;
-                       }
-                     });
-               });
+  // Integrate: read Velocity, write Position. Because it reads Velocity that
+  // gravity writes, the scheduler places it on a later level automatically.
+  schedule.add(
+      "integrate",
+      [](World& w) {
+        query<Position, Velocity>(w).for_each_chunk(
+            [](std::span<Entity>, soa_storage<Position>& pos,
+               soa_storage<Velocity>& vel) {
+              auto px = pos.column<0>();
+              auto py = pos.column<1>();
+              auto pz = pos.column<2>();
+              auto vx = vel.column<0>();
+              auto vy = vel.column<1>();
+              auto vz = vel.column<2>();
+              for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] += vx[i] * kDt;
+                py[i] += vy[i] * kDt;
+                pz[i] += vz[i] * kDt;
+              }
+            });
+      },
+      reads<Velocity>{}, writes<Position>{});
 
   std::printf("schedule: %zu systems across %zu parallel levels\n",
               schedule.size(), schedule.level_count());
