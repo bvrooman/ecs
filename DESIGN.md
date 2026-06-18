@@ -212,10 +212,24 @@ locked critical section (new ids come from a monotonic counter so concurrent
 reservers never grow `records_` mid-run; reused ids carry the freed slot's
 already-bumped generation), and storage is created by `materialize()` at flush.
 
-Note that value mutation *through a query* (`each`/`for_each_chunk` writing the
-component references it was handed) is not a structural change and is not routed
-through the buffer: it is a system writing its own data, which the scheduler has
-already proven conflict-free. Only the explicit `world.*` mutators defer.
+For large populations, `spawn_n(n, factory)` records a **single** command rather
+than one closure per entity: at flush it loops `i = 0..n`, building each
+entity's components from `factory(i)` (a `std::tuple` of components, or a single
+component). This keeps bulk setup allocation-free beyond the one closure:
+
+```cpp
+world.run_once([&](World& w) {
+  w.spawn_n(200'000, [](std::size_t i) {
+    float f = float(i);
+    return std::tuple{Position{f, -f, 0}, Velocity{0,0,0}, Mass{1+0.001f*f}};
+  });
+});
+```
+
+Value mutation *through a query* (`each`/`for_each_chunk` writing the component
+references it was handed) is not a structural change and is not routed through
+the buffer: it is a system writing its own data, which the scheduler has already
+proven conflict-free. Only the explicit `world.*` mutators defer.
 
 ### One-shot and removable systems
 
@@ -226,11 +240,20 @@ should populate the world once and then stop:
 
 ```cpp
 Schedule sched;
-sched.add_once("startup", [](World& w){ /* spawn the initial scene */ });
-sched.add("gameplay", gameplay_fn, ...);
-sched.run(world, scheduler);   // startup runs once, then drops out
+sched.add_once("startup", setup_fn, phase<-1>{}); // runs before everything, once
+sched.add("gameplay", gameplay_fn, ...);           // default phase 0
+sched.run(world, scheduler);   // startup runs (and flushes) first, then gameplay
 sched.run(world, scheduler);   // only gameplay from here on
 ```
+
+**Phases** give coarse ordering independent of access conflicts. A `phase<N>`
+tag puts a system in phase `N` (default 0); the schedule runs phases in
+ascending order with a barrier between them, and within a phase the usual
+conflict-based wavefront leveling applies. So `add_once(..., phase<-1>{})` is a
+startup phase guaranteed to run -- and have its spawns flushed -- before any
+phase-0 system observes the world; `phase<1>` is a teardown/late phase. Without
+a phase tag, a one-shot system is leveled by conflicts like any other, which is
+often enough but does not guarantee it precedes an unrelated system.
 
 A command is a type-erased `void(World&)` closure (`std::move_only_function`,
 so move-only captured values are fine). Recording is **sharded per worker

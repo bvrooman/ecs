@@ -51,8 +51,8 @@ int main() {
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
-| Command-buffer-only mutation | `world.spawn/destroy/add/remove/set` only record (never mutate directly), applied single-threaded at each schedule barrier or when `world.run_once(fn)` returns; callable only inside a run context (asserted). `spawn` returns a usable handle immediately. Mid-iteration edits are always safe |
-| One-shot & removable systems | `Schedule::add` returns a `SystemId`; `remove(id)` unschedules; `add_once(...)` runs once then drops out (idiomatic startup/setup) |
+| Command-buffer-only mutation | `world.spawn/destroy/add/remove/set` only record (never mutate directly), applied single-threaded at each schedule barrier or when `world.run_once(fn)` returns; callable only inside a run context (asserted). `spawn` returns a usable handle immediately; `spawn_n(n, factory)` bulk-creates in one command. Mid-iteration edits are always safe |
+| Systems: one-shot, removable, phased | `Schedule::add` returns a `SystemId`; `remove(id)` unschedules; `add_once(...)` runs once then drops out; a `phase<N>` tag orders systems across barriers (e.g. `phase<-1>` startup before normal systems) |
 | Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>`, plus `SnapshotChannel<T>` for multi-consumer fan-out, to hand extracted snapshots to consumer threads (renderer/audio/anything) with no tearing or blocking |
 
 ## Build

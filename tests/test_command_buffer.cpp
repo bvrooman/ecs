@@ -191,6 +191,53 @@ static void add_once_runs_once_then_removed() {
   CHECK(w.size() == 2);
 }
 
+// spawn_n: bulk creation as a single recorded command.
+static void spawn_n_bulk() {
+  World w;
+  w.run_once([&](World& wr) {
+    // tuple factory -> multiple components, varying per index
+    wr.spawn_n(1000, [](std::size_t i) {
+      return std::tuple{Position{float(i), 0}, Velocity{1, 1}};
+    });
+    // single-component factory
+    wr.spawn_n(50, [](std::size_t i) { return Position{float(i), -1}; });
+  });
+  CHECK(w.size() == 1050);
+  CHECK((query<Position, Velocity>(w).count() == 1000));
+  CHECK((query<Position>(w).count() == 1050));
+
+  // values landed correctly: sum of x over the Velocity-bearing entities
+  double sum_x = 0;
+  query<Position, Velocity>(w).each(
+      [&](Entity, Position& p, Velocity&) { sum_x += p.x; });
+  CHECK(sum_x == double(999) * 1000 / 2); // 0+1+...+999
+}
+
+// Phases order systems across barriers regardless of conflicts: a phase<-1>
+// startup system runs (and flushes) before phase 0 systems.
+static void phase_orders_startup_before_update() {
+  World w;
+  Schedule sched;
+  std::atomic<int> seen{-1};
+  sched.add_once("startup", [](World& wr) { wr.spawn(Position{0, 0}); },
+                 phase<-1>{});
+  sched.add("update",
+            [&](World& wr) {
+              seen.store(int(query<Position>(wr).count()),
+                         std::memory_order_relaxed);
+            },
+            phase<0>{});
+
+  // wave 0 = startup (phase -1), wave 1 = update (phase 0)
+  CHECK(sched.level_count() == 2);
+  exec::static_thread_pool pool{4};
+  sched.run(w, pool.get_scheduler());
+
+  CHECK(seen.load() == 1);  // update saw the entity startup spawned
+  CHECK(w.size() == 1);
+  CHECK(sched.size() == 1); // startup (one-shot) removed; update remains
+}
+
 // remove(): unschedule a system by its handle.
 static void remove_unschedules_system() {
   World w;
@@ -221,6 +268,8 @@ int main() {
   RUN_SUITE(schedule_flushes_between_levels);
   RUN_SUITE(concurrent_reserve_and_followup_edits);
   RUN_SUITE(add_once_runs_once_then_removed);
+  RUN_SUITE(spawn_n_bulk);
+  RUN_SUITE(phase_orders_startup_before_update);
   RUN_SUITE(remove_unschedules_system);
   return REPORT();
 }

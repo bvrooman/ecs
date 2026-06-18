@@ -23,7 +23,9 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <exec/async_scope.hpp>
@@ -31,8 +33,14 @@
 
 namespace ecs {
 
-// What a declarative access tag refers to, and whether it reads or writes.
-enum class AccessKind { ComponentRead, ComponentWrite, ResourceRead, ResourceWrite };
+// What a declarative tag means.
+enum class AccessKind {
+  ComponentRead,
+  ComponentWrite,
+  ResourceRead,
+  ResourceWrite,
+  PhaseTag
+};
 
 // Declarative access lists. Components: reads<Position>, writes<Velocity>.
 // Resources: reads_res<Clock>, writes_res<RenderQueue>.
@@ -57,6 +65,15 @@ struct writes_res {
   static std::vector<std::uint32_t> ids() { return {resource_id<Rs>...}; }
 };
 
+// Ordering tag: systems run in ascending phase order, with a barrier between
+// phases; within a phase they are leveled by conflicts as usual. Default phase
+// is 0, so e.g. phase<-1> runs before normal systems (startup), phase<1> after.
+template <int N>
+struct phase {
+  static constexpr AccessKind kind = AccessKind::PhaseTag;
+  static constexpr int value = N;
+};
+
 // Stable handle to a registered system, returned by add()/add_once().
 using SystemId = std::uint64_t;
 
@@ -70,7 +87,8 @@ public:
     std::vector<std::uint32_t> res_reads;   // resource ids
     std::vector<std::uint32_t> res_writes;  // resource ids
     std::function<void(World&)> run;
-    std::size_t level = 0;
+    int phase = 0;                          // coarse ordering across barriers
+    std::size_t level = 0;                  // intra-phase conflict wavefront
     bool once = false;                      // removed after it next runs
   };
 
@@ -102,9 +120,12 @@ public:
   }
 
   std::size_t size() const noexcept { return systems_.size(); }
+  // Number of sequential waves (barriers) a run() will execute: ascending
+  // (phase, conflict-level) groups. With all systems in the default phase this
+  // is just the conflict-level count.
   std::size_t level_count() {
     rebuild();
-    return levels_.size();
+    return waves_.size();
   }
   const std::vector<System>& systems() const { return systems_; }
 
@@ -118,8 +139,8 @@ public:
     rebuild();
     world.set_executing(true);
     exec::async_scope scope;
-    for (const auto& level : levels_) {
-      for (std::size_t idx : level) {
+    for (const auto& wave : waves_) {
+      for (std::size_t idx : wave) {
         auto& sys = systems_[idx];
         scope.spawn(stdexec::starts_on(
             scheduler, stdexec::then(stdexec::just(), [&sys, &world] {
@@ -167,8 +188,10 @@ private:
       append(sys.writes, A::ids());
     else if constexpr (A::kind == AccessKind::ResourceRead)
       append(sys.res_reads, A::ids());
-    else
+    else if constexpr (A::kind == AccessKind::ResourceWrite)
       append(sys.res_writes, A::ids());
+    else if constexpr (A::kind == AccessKind::PhaseTag)
+      sys.phase = A::value;
   }
 
   static bool intersects(const IdList& a, const IdList& b) {
@@ -191,25 +214,30 @@ private:
 
   void rebuild() {
     if (!dirty_) return;
-    // Level of system i = 1 + max level over earlier conflicting systems.
+    // Intra-phase level: 1 + max level over earlier conflicting systems in the
+    // *same* phase. Cross-phase ordering is handled by the phase barrier, so
+    // conflicts only matter within a phase.
     for (std::size_t i = 0; i < systems_.size(); ++i) {
       std::size_t lvl = 0;
       for (std::size_t j = 0; j < i; ++j)
-        if (conflict(systems_[i], systems_[j]))
+        if (systems_[j].phase == systems_[i].phase &&
+            conflict(systems_[i], systems_[j]))
           lvl = std::max(lvl, systems_[j].level + 1);
       systems_[i].level = lvl;
     }
-    levels_.clear();
-    for (std::size_t i = 0; i < systems_.size(); ++i) {
-      if (systems_[i].level >= levels_.size())
-        levels_.resize(systems_[i].level + 1);
-      levels_[systems_[i].level].push_back(i);
-    }
+    // Waves run in ascending (phase, level) order with a barrier between each;
+    // a std::map keys them in exactly that order.
+    std::map<std::pair<int, std::size_t>, std::vector<std::size_t>> groups;
+    for (std::size_t i = 0; i < systems_.size(); ++i)
+      groups[{systems_[i].phase, systems_[i].level}].push_back(i);
+    waves_.clear();
+    waves_.reserve(groups.size());
+    for (auto& [key, idxs] : groups) waves_.push_back(std::move(idxs));
     dirty_ = false;
   }
 
   std::vector<System> systems_;
-  std::vector<std::vector<std::size_t>> levels_;
+  std::vector<std::vector<std::size_t>> waves_; // ordered groups, barrier between
   SystemId next_id_ = 0;
   bool dirty_ = true;
 };

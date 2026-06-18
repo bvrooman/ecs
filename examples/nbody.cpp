@@ -46,14 +46,14 @@ int main() {
   constexpr int kTracerLife = 8;
 
   World world;
-  // Initial population is a one-shot setup run: spawns are recorded and applied
-  // when run_once returns.
+  // Initial population: one bulk command (one closure, not kParticles) inside a
+  // one-shot setup run, applied when run_once returns.
   world.run_once([&](World& w) {
-    for (int i = 0; i < kParticles; ++i) {
+    w.spawn_n(kParticles, [](std::size_t i) {
       float f = float(i);
-      w.spawn(Position{f, -f, 0.5f * f}, Velocity{0.1f, -0.2f, 0.05f},
-              Mass{1.0f + 0.001f * f});
-    }
+      return std::tuple{Position{f, -f, 0.5f * f},
+                        Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f}};
+    });
   });
   world.emplace_resource<Gravity>(-9.81f);
   world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
