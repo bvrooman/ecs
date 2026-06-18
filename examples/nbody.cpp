@@ -46,11 +46,15 @@ int main() {
   constexpr int kTracerLife = 8;
 
   World world;
-  for (int i = 0; i < kParticles; ++i) {
-    float f = float(i);
-    world.spawn(Position{f, -f, 0.5f * f},
-                      Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f});
-  }
+  // Initial population is a one-shot setup run: spawns are recorded and applied
+  // when run_once returns.
+  world.run_once([&](World& w) {
+    for (int i = 0; i < kParticles; ++i) {
+      float f = float(i);
+      w.spawn(Position{f, -f, 0.5f * f}, Velocity{0.1f, -0.2f, 0.05f},
+              Mass{1.0f + 0.001f * f});
+    }
+  });
   world.emplace_resource<Gravity>(-9.81f);
   world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
   std::printf("spawned %zu entities\n", world.size());

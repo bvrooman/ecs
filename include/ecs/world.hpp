@@ -41,62 +41,69 @@ public:
   World& operator=(const World&) = delete;
 
   // --- mutation (auto-deferring) ----------------------------------------
-  // spawn/destroy/add/remove/set apply immediately when called with exclusive
-  // access, and automatically record into the command buffer when called while
-  // a schedule is executing (or inside a defer_scope), where direct mutation
-  // would be unsafe. The deferred changes are applied single-threaded at the
-  // next sync point. spawn() always returns a usable handle immediately (alive
-  // now in immediate mode; alive after the next flush in deferred mode).
+  // --- mutation (command-buffer-only) -----------------------------------
+  // spawn/destroy/add/remove/set never mutate directly: they record into the
+  // command buffer and take effect when it is flushed -- at each Schedule level
+  // barrier, or when a World::run_once(fn) returns. They must therefore be
+  // called inside a run context (a system, or the run_once callback); doing so
+  // outside one is a programming error (asserted in debug builds). Because every
+  // structural edit is deferred, mutating mid-iteration is always safe.
+  // spawn() returns a usable handle immediately (alive after the next flush).
   template <class... Cs>
   Entity spawn(Cs... comps) {
+    assert(executing_ && "spawn() must be called inside Schedule::run or "
+                         "World::run_once");
     const Entity e = reserve();
-    if (deferred()) {
-      commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
-        w.materialize(e);
-        (w.add_now<Cs>(e, std::move(comps)), ...);
-      });
-    } else {
-      materialize(e);
-      (add_now<Cs>(e, std::move(comps)), ...);
-    }
+    commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
+      w.materialize(e);
+      (w.add_now<Cs>(e, std::move(comps)), ...);
+    });
     return e;
   }
 
   void destroy(Entity e) {
-    if (deferred())
-      commands_.record([e](World& w) { w.destroy_now(e); });
-    else
-      destroy_now(e);
+    assert(executing_ && "destroy() must be called inside a run context");
+    commands_.record([e](World& w) { w.destroy_now(e); });
   }
 
   template <class C>
   void add(Entity e, C value) {
-    if (deferred())
-      commands_.record([e, value = std::move(value)](World& w) mutable {
-        if (w.alive(e)) w.add_now<C>(e, std::move(value));
-      });
-    else
-      add_now<C>(e, std::move(value));
+    assert(executing_ && "add() must be called inside a run context");
+    commands_.record([e, value = std::move(value)](World& w) mutable {
+      if (w.alive(e)) w.add_now<C>(e, std::move(value));
+    });
   }
 
   template <class C>
   void remove(Entity e) {
-    if (deferred())
-      commands_.record([e](World& w) {
-        if (w.alive(e)) w.remove_now<C>(e);
-      });
-    else
-      remove_now<C>(e);
+    assert(executing_ && "remove() must be called inside a run context");
+    commands_.record([e](World& w) {
+      if (w.alive(e)) w.remove_now<C>(e);
+    });
   }
 
   template <class C>
   void set(Entity e, C value) {
-    if (deferred())
-      commands_.record([e, value = std::move(value)](World& w) mutable {
-        if (w.alive(e)) w.set_now<C>(e, std::move(value));
-      });
-    else
-      set_now<C>(e, std::move(value));
+    assert(executing_ && "set() must be called inside a run context");
+    commands_.record([e, value = std::move(value)](World& w) mutable {
+      if (w.alive(e)) w.set_now<C>(e, std::move(value));
+    });
+  }
+
+  // Run fn once inside a fresh run context, then flush the recorded mutations
+  // single-threaded -- the way to do setup/teardown without a full Schedule:
+  //   world.run_once([&](World& w){ for (...) w.spawn(...); });
+  // Entities created inside are live once run_once returns. Nests safely (only
+  // the outermost context flushes, so it is a no-op wrapper inside a schedule).
+  template <class Fn>
+  void run_once(Fn&& fn) {
+    const bool entered = !executing_;
+    if (entered) set_executing(true);
+    fn(*this);
+    if (entered) {
+      apply_commands();
+      set_executing(false);
+    }
   }
 
   bool alive(Entity e) const {
@@ -148,46 +155,16 @@ public:
     resources_.remove<T>();
   }
 
-  // --- deferral ---------------------------------------------------------
-  // Whether mutations are currently recorded (true while a schedule runs or
-  // inside a defer_scope) rather than applied immediately.
-  bool deferred() const { return deferred_.load(std::memory_order_acquire); }
+  // --- command buffer ---------------------------------------------------
+  // Whether a run context is active (a schedule running, or run_once). Mutators
+  // require this; reads/resources do not.
+  bool executing() const { return executing_.load(std::memory_order_acquire); }
 
   // The underlying command buffer (advanced: record custom deferred closures).
   CommandBuffer& commands() { return commands_; }
-  // Apply all recorded commands now. Normally driven by the Schedule / a
-  // defer_scope; call manually only if you record into commands() directly.
+  // Apply all recorded commands now. Driven by the Schedule at each barrier and
+  // by run_once; call manually only if you record into commands() directly.
   void apply_commands() { commands_.apply(*this); }
-
-  // RAII guard that turns on deferral for the current (single) thread and
-  // flushes on exit, so structural edits are safe during a manual query loop:
-  //   { auto g = world.defer_scope();
-  //     query<...>(world).each([&](Entity e, ...){ world.destroy(e); }); }
-  // No-op (and no flush) if deferral is already active, so it nests safely.
-  class DeferScope {
-  public:
-    explicit DeferScope(World& w)
-        : world_(&w), entered_(!w.deferred()) {
-      if (entered_) world_->set_deferred(true);
-    }
-    ~DeferScope() {
-      if (entered_) {
-        world_->set_deferred(false);
-        world_->apply_commands();
-      }
-    }
-    DeferScope(DeferScope&& o) noexcept
-        : world_(o.world_), entered_(o.entered_) {
-      o.entered_ = false;
-    }
-    DeferScope(const DeferScope&) = delete;
-    DeferScope& operator=(const DeferScope&) = delete;
-
-  private:
-    World* world_;
-    bool entered_;
-  };
-  [[nodiscard]] DeferScope defer_scope() { return DeferScope(*this); }
 
   // --- archetype access (used by queries) -------------------------------
   const std::vector<std::unique_ptr<Archetype>>& archetypes() const {
@@ -211,8 +188,8 @@ private:
     bool alive = false;
   };
 
-  void set_deferred(bool on) {
-    deferred_.store(on, std::memory_order_release);
+  void set_executing(bool on) {
+    executing_.store(on, std::memory_order_release);
   }
 
   // Immediate mutation primitives. The public spawn/destroy/add/remove/set
@@ -384,7 +361,7 @@ private:
                                                // reservations are outstanding
   std::atomic<std::size_t> free_count_{0};     // free_.size(), for a lock-free
                                                // "anything to recycle?" check
-  std::atomic<bool> deferred_{false};          // record mutations vs apply now
+  std::atomic<bool> executing_{false};         // is a run context active?
 };
 
 } // namespace ecs

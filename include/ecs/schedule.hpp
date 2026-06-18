@@ -57,9 +57,13 @@ struct writes_res {
   static std::vector<std::uint32_t> ids() { return {resource_id<Rs>...}; }
 };
 
+// Stable handle to a registered system, returned by add()/add_once().
+using SystemId = std::uint64_t;
+
 class Schedule {
 public:
   struct System {
+    SystemId id = 0;
     std::string name;
     std::vector<std::uint32_t> reads;       // component ids
     std::vector<std::uint32_t> writes;      // component ids
@@ -67,22 +71,34 @@ public:
     std::vector<std::uint32_t> res_writes;  // resource ids
     std::function<void(World&)> run;
     std::size_t level = 0;
+    bool once = false;                      // removed after it next runs
   };
 
   // Register a system: its callable followed by any number of access tags, in
-  // any order. A system declaring no writes never conflicts and so is
-  // maximally parallel. Example:
+  // any order. Returns a handle that remove() can later unschedule. A system
+  // declaring no writes never conflicts and so is maximally parallel. Example:
   //   sched.add("render", extract_fn,
   //             reads<Transform, Mesh>{}, writes_res<RenderQueue>{});
   template <class Fn, class... Access>
-  Schedule& add(std::string name, Fn&& fn, Access... access) {
-    System sys;
-    sys.name = std::move(name);
-    sys.run = std::forward<Fn>(fn);
-    (apply_access(sys, access), ...);
-    systems_.push_back(std::move(sys));
-    dirty_ = true;
-    return *this;
+  SystemId add(std::string name, Fn&& fn, Access... access) {
+    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false,
+                   access...);
+  }
+
+  // Register a one-shot system: it runs on the next run() and is then removed.
+  // The natural way to do setup -- spawn the initial world, then stop running.
+  template <class Fn, class... Access>
+  SystemId add_once(std::string name, Fn&& fn, Access... access) {
+    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true,
+                   access...);
+  }
+
+  // Unschedule a system by handle. Returns true if it was present.
+  bool remove(SystemId id) {
+    const auto n = std::erase_if(systems_,
+                                 [id](const System& s) { return s.id == id; });
+    if (n) dirty_ = true;
+    return n != 0;
   }
 
   std::size_t size() const noexcept { return systems_.size(); }
@@ -93,14 +109,14 @@ public:
   const std::vector<System>& systems() const { return systems_; }
 
   // Run every system on `scheduler`, respecting conflicts, blocking until all
-  // have completed. Independent systems within a level run concurrently.
+  // have completed. Independent systems within a level run concurrently. Opens
+  // a run context for the duration so systems' spawn/destroy/add/remove/set
+  // record into the command buffer, flushed at each level barrier. One-shot
+  // systems (add_once) are removed afterwards.
   template <class Scheduler>
   void run(World& world, Scheduler scheduler) {
     rebuild();
-    // Systems mutate the world only through its auto-deferring API; turning on
-    // deferral makes every spawn/destroy/add/remove/set during execution record
-    // instead of mutate, so it is safe to run them concurrently.
-    world.set_deferred(true);
+    world.set_executing(true);
     exec::async_scope scope;
     for (const auto& level : levels_) {
       for (std::size_t idx : level) {
@@ -116,11 +132,28 @@ public:
       // level (or the caller) observes the world.
       world.apply_commands();
     }
-    world.set_deferred(false);
+    world.set_executing(false);
+
+    // Drop one-shot systems now that they have run.
+    if (std::erase_if(systems_, [](const System& s) { return s.once; }))
+      dirty_ = true;
   }
 
 private:
   using IdList = std::vector<std::uint32_t>;
+
+  template <class Fn, class... Access>
+  SystemId emplace(std::string name, Fn&& fn, bool once, Access... access) {
+    System sys;
+    sys.id = ++next_id_;
+    sys.name = std::move(name);
+    sys.run = std::forward<Fn>(fn);
+    sys.once = once;
+    (apply_access(sys, access), ...);
+    systems_.push_back(std::move(sys));
+    dirty_ = true;
+    return sys.id;
+  }
 
   // Route one access tag into the matching set on the system.
   template <class A>
@@ -177,6 +210,7 @@ private:
 
   std::vector<System> systems_;
   std::vector<std::vector<std::size_t>> levels_;
+  SystemId next_id_ = 0;
   bool dirty_ = true;
 };
 

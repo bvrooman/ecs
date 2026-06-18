@@ -16,8 +16,10 @@ struct Velocity { float x, y, z; };
 
 int main() {
   World world;
-  for (int i = 0; i < 100'000; ++i)            // an entity is whatever
-    world.spawn(Position{}, Velocity{1, 0, 0}); // components you give it
+  world.run_once([](World& w) {                // setup is a one-shot run context
+    for (int i = 0; i < 100'000; ++i)          // an entity is whatever
+      w.spawn(Position{}, Velocity{1, 0, 0});  // components you give it
+  });
 
   exec::static_thread_pool pool{8};
   Schedule schedule;
@@ -49,7 +51,8 @@ int main() {
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
-| One auto-deferring mutation API | `world.spawn/destroy/add/remove/set` apply immediately with exclusive access and auto-record into the command buffer during scheduled execution (or a `defer_scope`), applied single-threaded at each barrier. `spawn` returns a usable handle immediately for same-frame follow-up edits |
+| Command-buffer-only mutation | `world.spawn/destroy/add/remove/set` only record (never mutate directly), applied single-threaded at each schedule barrier or when `world.run_once(fn)` returns; callable only inside a run context (asserted). `spawn` returns a usable handle immediately. Mid-iteration edits are always safe |
+| One-shot & removable systems | `Schedule::add` returns a `SystemId`; `remove(id)` unschedules; `add_once(...)` runs once then drops out (idiomatic startup/setup) |
 | Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>`, plus `SnapshotChannel<T>` for multi-consumer fan-out, to hand extracted snapshots to consumer threads (renderer/audio/anything) with no tearing or blocking |
 
 ## Build

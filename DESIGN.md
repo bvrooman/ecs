@@ -166,47 +166,71 @@ mutated during execution, so concurrent `resource<T>()` borrows from parallel
 systems are safe; the scheduler serializes any system declaring `writes_res<T>`
 against others touching the same resource.
 
-## 7. One auto-deferring mutation API (command buffers)
+## 7. Command-buffer-only mutation
 
 Structural edits -- spawn, destroy, add/remove component -- move data between
 archetype tables, which invalidates in-flight iteration and races with systems
-running on the schedule's pool; `set` writes a column in place. There is a
-**single** mutation API on `World` -- `spawn`/`destroy`/`add`/`remove`/`set` --
-and it does the right thing automatically:
+running on the schedule's pool; `set` writes a column. So `World`'s mutators --
+`spawn`/`destroy`/`add`/`remove`/`set` -- **never mutate directly**: they record
+into the command buffer and take effect only when it is flushed. There is no
+immediate path, which means a single uniform rule ("changes apply at the next
+flush") and that mutating mid-iteration is *always* safe.
 
-* with **exclusive access** (setup, between frames) it mutates **immediately**;
-* while a **schedule is executing** (or inside a `world.defer_scope()`) it
-  **records** the edit into the command buffer, to be replayed single-threaded
-  at the next sync point.
+A mutator may therefore only be called inside a **run context**, of which there
+are two:
 
-So the same code is correct in both contexts and there is no separate
-"thread-safe" entry point to remember:
+* **`Schedule::run`** -- opens the context for the duration, flushes at every
+  level barrier (so edits from level *N* are visible to level *N+1*);
+* **`World::run_once(fn)`** -- runs `fn` once, single-threaded, then flushes;
+  the way to do setup/teardown without standing up a schedule.
+
+Calling a mutator outside any context is a programming error, asserted in debug
+builds.
 
 ```cpp
+// setup: a one-shot run context
+world.run_once([&](World& w) {
+  for (...) w.spawn(Position{...}, Velocity{...});   // live once run_once returns
+});
+
+// per frame: the same calls inside systems record and flush at barriers
 sched.add("spawn_particles", [](World& w) {
   query<Emitter>(w).each([&](Entity, Emitter& em) {
     if (em.fire) {
-      Entity p = w.spawn(Position{...}, Velocity{...}); // auto-deferred here
+      Entity p = w.spawn(Position{...}, Velocity{...}); // recorded
       w.add<Lifetime>(p, {...});                        // edit the handle now
     }
   });
 }, reads<Emitter>{});
-
-// outside a schedule, the same calls are immediate -- unless you opt into
-// deferral to mutate safely during a manual query loop:
-{ auto g = world.defer_scope();
-  query<Doomed>(world).each([&](Entity e, Doomed&){ world.destroy(e); }); }
 ```
 
-A `World::deferred()` flag (set by the `Schedule` around execution, or by a
-`defer_scope`) selects the path; the immediate primitives stay private and are
-what the command closures call at apply time. `spawn(...)` reserves an entity
-handle immediately and returns it, so a system can record follow-up edits on a
-not-yet-created entity in the same frame.
-Reservation is thread-safe via a tiny locked critical section: new ids come
-from a monotonic counter (so concurrent reservers never grow `records_`
-mid-run) and reused ids carry the freed slot's already-bumped generation. The
-storage is created by `materialize()` when the spawn command is applied.
+The immediate primitives (`*_now`, `materialize`) stay private and are what the
+command closures call at flush time. `spawn(...)` reserves an entity handle
+immediately and returns it, so a system can record follow-up edits on a
+not-yet-created entity in the same frame; reservation is thread-safe via a tiny
+locked critical section (new ids come from a monotonic counter so concurrent
+reservers never grow `records_` mid-run; reused ids carry the freed slot's
+already-bumped generation), and storage is created by `materialize()` at flush.
+
+Note that value mutation *through a query* (`each`/`for_each_chunk` writing the
+component references it was handed) is not a structural change and is not routed
+through the buffer: it is a system writing its own data, which the scheduler has
+already proven conflict-free. Only the explicit `world.*` mutators defer.
+
+### One-shot and removable systems
+
+`Schedule::add` returns a `SystemId`; `Schedule::remove(id)` unschedules a
+system. `Schedule::add_once(...)` registers a system that runs on the next
+`run()` and is then removed -- the idiomatic way to express startup work that
+should populate the world once and then stop:
+
+```cpp
+Schedule sched;
+sched.add_once("startup", [](World& w){ /* spawn the initial scene */ });
+sched.add("gameplay", gameplay_fn, ...);
+sched.run(world, scheduler);   // startup runs once, then drops out
+sched.run(world, scheduler);   // only gameplay from here on
+```
 
 A command is a type-erased `void(World&)` closure (`std::move_only_function`,
 so move-only captured values are fine). Recording is **sharded per worker
@@ -217,8 +241,8 @@ channel, not tracked component/resource state. `apply()` drains every shard
 single-threaded; commands within one thread's shard replay in record order,
 ordering *across* shards is unspecified. The `Schedule` flushes at every level
 barrier (no systems running), so changes recorded in level *N* are visible to
-level *N+1*; a `defer_scope` flushes when it exits. `destroy`/`add`/`remove`
-no-op if their target was already destroyed earlier in the same flush, so
+level *N+1*; `run_once` flushes when it returns. `destroy`/`add`/`remove` no-op
+if their target was already destroyed earlier in the same flush, so
 order-independent teardown is safe.
 
 `spawn()` itself is contention-light: `World::reserve()` is lock-free on the
@@ -298,9 +322,9 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
   accessors under P2996) is a natural follow-up.
 * The scheduler uses wavefront leveling (simple, correct, parallel). A full
   per-edge sender DAG would extract a little more overlap across levels.
-* Mutation is safe during scheduled execution (auto-deferred) and, with a
-  `defer_scope`, during a manual query loop. Mutating mid-query *without* a
-  defer_scope and *outside* a schedule still applies immediately and is unsafe.
+* All structural mutation is deferred to a flush point, so it is always safe
+  (including mid-iteration); the trade is that nothing takes effect until a
+  `Schedule` barrier or `run_once` returns, and mutators require a run context.
 * The command buffer shards over `kShards` (64) lanes; with more concurrent
   worker threads than shards, threads share a shard and contend its mutex (still
   correct, just less scalable).
