@@ -1,0 +1,10 @@
+function(ecs_add_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE ecs::ecs)
+  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+ecs_add_test(test_soa)
+ecs_add_test(test_world)
+ecs_add_test(test_schedule)
