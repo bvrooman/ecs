@@ -12,6 +12,7 @@
 #include "resource.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -61,6 +62,7 @@ public:
     rec.alive = false;
     ++rec.generation;
     free_.push_back(e.index);
+    free_count_.store(free_.size(), std::memory_order_release);
     --alive_count_;
   }
 
@@ -193,18 +195,22 @@ private:
     bool alive = false;
   };
 
-  // Hand out a fresh entity handle without creating storage. Thread-safe: many
-  // systems may reserve concurrently while recording spawn commands. New
-  // indices come from a monotonic counter (so reservers never grow records_
-  // mid-run); reused indices carry the slot's already-bumped generation.
+  // Hand out a fresh entity handle without creating storage. Thread-safe and
+  // lock-free on the common (growth) path: a brand-new index is a single atomic
+  // fetch_add, so many systems can reserve concurrently while recording spawn
+  // commands. Recycling a freed slot takes a short lock; reused indices carry
+  // the slot's already-bumped generation.
   Entity reserve() {
-    std::lock_guard lock(reserve_mutex_);
-    if (!free_.empty()) {
-      const std::uint32_t idx = free_.back();
-      free_.pop_back();
-      return Entity{idx, records_[idx].generation};
+    if (free_count_.load(std::memory_order_acquire) > 0) {
+      std::lock_guard lock(reserve_mutex_);
+      if (!free_.empty()) {
+        const std::uint32_t idx = free_.back();
+        free_.pop_back();
+        free_count_.store(free_.size(), std::memory_order_release);
+        return Entity{idx, records_[idx].generation};
+      }
     }
-    return Entity{reserve_high_++, 0};
+    return Entity{reserve_high_.fetch_add(1, std::memory_order_relaxed), 0};
   }
 
   // Give a reserved entity its storage (a row in the empty archetype). Runs
@@ -287,9 +293,12 @@ private:
   std::uint32_t empty_archetype_ = 0;
   std::size_t alive_count_ = 0;
 
-  std::mutex reserve_mutex_;        // guards reserve() during the parallel phase
-  std::uint32_t reserve_high_ = 0;  // next brand-new index; == records_.size()
-                                    // when no reservations are outstanding
+  std::mutex reserve_mutex_;             // guards free-list recycling in reserve()
+  std::atomic<std::uint32_t> reserve_high_{0}; // next brand-new index; ==
+                                               // records_.size() when no
+                                               // reservations are outstanding
+  std::atomic<std::size_t> free_count_{0};     // free_.size(), for a lock-free
+                                               // "anything to recycle?" check
 };
 
 // --- CommandBuffer typed helpers (World is now complete) ------------------

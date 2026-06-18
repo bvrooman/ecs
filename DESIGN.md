@@ -192,14 +192,55 @@ mid-run) and reused ids carry the freed slot's already-bumped generation. The
 storage is created by `materialize()` when the spawn command is applied.
 
 A command is a type-erased `void(World&)` closure (`std::move_only_function`,
-so move-only captured values are fine). The buffer is internally mutex-guarded,
-so many systems on the same level record concurrently *without* being forced to
-serialize -- recording is a thread-safe side channel, not tracked
-component/resource state. The `Schedule` calls `apply_commands()` at every level
-barrier (no systems running), so changes recorded in level *N* are visible to
-level *N+1*; outside a schedule, call `world.apply_commands()` at a safe point.
-Typed helpers (`destroy`, `add`, `remove`) no-op if their target was already
-destroyed earlier in the same flush, so order-independent teardown is safe.
+so move-only captured values are fine). Recording is **sharded per worker
+thread**: shard lookup is a lock-free atomic load and each shard has its own
+(normally uncontended) mutex, so many systems on the same level record
+concurrently with effectively no contention -- recording is a thread-safe side
+channel, not tracked component/resource state. `apply()` drains every shard
+single-threaded; commands within one thread's shard replay in record order,
+ordering *across* shards is unspecified. The `Schedule` calls
+`apply_commands()` at every level barrier (no systems running), so changes
+recorded in level *N* are visible to level *N+1*; outside a schedule, call
+`world.apply_commands()` at a safe point. Typed helpers (`destroy`, `add`,
+`remove`) no-op if their target was already destroyed earlier in the same
+flush, so order-independent teardown is safe.
+
+`spawn()` itself is contention-light: `World::reserve()` is lock-free on the
+growth path (a brand-new index is a single atomic `fetch_add`) and only takes a
+short lock to recycle from the free list.
+
+## 8. Snapshot handoff to external threads (triple buffer)
+
+Subsystems that consume world state on their own thread and clock -- a renderer
+building draw lists, an audio mixer reading emitter positions, a telemetry sink
+-- should not read live component storage while the simulation mutates it. The
+pattern is to *extract* a snapshot each frame and hand it across the thread
+boundary. `TripleBuffer<T>` is the generic, lock-free mechanism for that.
+
+It is deliberately **agnostic** about what a snapshot is: `T` is any user type
+(a `std::vector<DrawItem>`, a struct of arrays, ...). The library has no
+rendering/audio knowledge; an extraction system fills `back()` from the SoA
+columns (`for_each_chunk`) and calls `publish()`, while the consumer thread
+calls `consume()`/`front()`.
+
+```cpp
+world.emplace_resource<TripleBuffer<Snapshot>>();          // T is user-defined
+sched.add("extract", [](World& w){
+  auto& tb = w.resource<TripleBuffer<Snapshot>>();
+  fill(tb.back(), w);   // copy out of the columns
+  tb.publish();
+}, reads<Position, Mesh>{});
+// ... on the render/audio thread:
+if (tb.consume()) draw(tb.front());
+```
+
+Three buffers (not two) let the producer and consumer each own a distinct
+buffer at all times, so a lagging consumer never reads a buffer the producer is
+overwriting -- no tearing, no blocking. The index and the "new data" flag live
+in a *single* atomic, so publish and consume are each one indivisible RMW; this
+is what makes the SPSC handoff correct (a two-atomic flag/index split races).
+Single producer, single consumer; "latest value wins" if the producer outruns
+the consumer.
 
 ## Known limitations / next steps
 
@@ -212,6 +253,10 @@ destroyed earlier in the same flush, so order-independent teardown is safe.
   per-edge sender DAG would extract a little more overlap across levels.
 * Structural edits during iteration/parallel execution must go through the
   command buffer (§7); direct add/remove/destroy mid-query is still unsafe.
-* The command buffer is mutex-guarded; per-thread buffers merged at the barrier
-  would cut contention for spawn-heavy workloads.
+* The command buffer shards over `kShards` (64) lanes; with more concurrent
+  worker threads than shards, threads share a shard and contend its mutex (still
+  correct, just less scalable).
+* `TripleBuffer` is strictly single-producer/single-consumer. Fan-out to several
+  consumers (renderer *and* audio reading the same snapshot) would need one
+  buffer per consumer or a different primitive.
 ```

@@ -9,4 +9,5 @@
 #include "resource.hpp"
 #include "schedule.hpp"
 #include "soa.hpp"
+#include "triple_buffer.hpp"
 #include "world.hpp"
