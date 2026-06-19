@@ -1,0 +1,58 @@
+AccessModifierOffset: -4
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveBitFields: Consecutive
+AllowAllArgumentsOnNextLine: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortLambdasOnASingleLine: All
+
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BraceWrapping:
+  AfterClass: false
+  BeforeLambdaBody: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+BreakBeforeBraces: Custom
+BreakAfterAttributes: Always
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+BreakTemplateDeclarations: Yes
+
+ColumnLimit: 90
+
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: Always
+
+FixNamespaceComments: false
+
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: 'tov'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 2
+IndentAccessModifiers: false
+IndentRequiresClause: false
+IndentWidth: 4
+
+MaxEmptyLinesToKeep: 1
+
+NamespaceIndentation: Inner
+
+PenaltyBreakBeforeFirstCallParameter: 100
+PenaltyBreakOpenParenthesis: 100
+PointerAlignment: Left
+
+ReferenceAlignment: Left
+RequiresClausePosition: OwnLine
+
+SortUsingDeclarations: LexicographicNumeric
+SpaceAfterTemplateKeyword: true
+SpaceBeforeParens: Custom
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeParensOptions:
+  AfterRequiresInClause: true
+SpacesInAngles: Never
+
+QualifierAlignment: Custom
+QualifierOrder: [ 'inline', 'static', 'constexpr', 'type', 'const' ]

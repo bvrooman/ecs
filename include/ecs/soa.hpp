@@ -17,7 +17,6 @@
 #pragma once
 
 #include "reflect.hpp"
-
 #include <cstddef>
 #include <span>
 #include <tuple>
@@ -27,116 +26,131 @@
 namespace ecs {
 
 namespace detail {
+    template <class T, class IndexSequence>
+    struct columns_helper;
 
-// Map T -> std::tuple<std::vector<field0>, std::vector<field1>, ...>.
-template <class T, std::size_t... I>
-auto columns_type(std::index_sequence<I...>)
-    -> std::tuple<std::vector<reflect::field_type_t<T, I>>...>;
+    template <class T, std::size_t... I>
+    struct columns_helper<T, std::index_sequence<I...>> {
+        using type = std::tuple<std::vector<reflect::field_type_t<T, I>>...>;
+    };
 
-template <class T>
-using columns_t = decltype(columns_type<T>(
-    std::make_index_sequence<reflect::field_count_v<T>>{}));
+    template <class T>
+    using columns_t =
+        columns_helper<T, std::make_index_sequence<reflect::field_count_v<T>>>::type;
 
 } // namespace detail
 
 template <reflect::Reflectable T>
 class soa_storage {
 public:
-  using value_type = T;
-  static constexpr std::size_t field_count = reflect::field_count_v<T>;
+    using value_type                  = T;
+    static constexpr auto field_count = reflect::field_count_v<T>;
 
-  std::size_t size() const noexcept { return size_; }
-  bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]]
+    auto size() const noexcept {
+        return size_;
+    }
+    [[nodiscard]]
+    auto empty() const noexcept {
+        return size_ == 0;
+    }
 
-  void reserve(std::size_t n) {
-    apply_columns([&](auto&... col) { (col.reserve(n), ...); });
-  }
+    void reserve(std::size_t n) {
+        apply_columns([&](auto&... col) { (col.reserve(n), ...); });
+    }
 
-  void clear() noexcept {
-    apply_columns([](auto&... col) { (col.clear(), ...); });
-    size_ = 0;
-  }
+    void clear() noexcept {
+        apply_columns([](auto&... col) { (col.clear(), ...); });
+        size_ = 0;
+    }
 
-  // Scatter the fields of `v` across the per-field columns. Returns the row.
-  std::size_t push_back(const T& v) {
-    reflect::for_each_field(v, [&](auto Ic, const auto& field) {
-      std::get<Ic.value>(columns_).push_back(field);
-    });
-    return size_++;
-  }
+    // Scatter the fields of `v` across the per-field columns. Returns the row.
+    auto push_back(T const& v) {
+        reflect::for_each_field(v, [&](auto Ic, auto const& field) {
+            std::get<Ic.value>(columns_).push_back(field);
+        });
+        return size_++;
+    }
 
-  // Reassemble (gather) the element at `row` into a T value.
-  T gather(std::size_t row) const {
-    T out{};
-    reflect::for_each_field(out, [&](auto Ic, auto& field) {
-      field = std::get<Ic.value>(columns_)[row];
-    });
-    return out;
-  }
+    // Reassemble (gather) the element at `row` into a T value.
+    [[nodiscard]]
+    T gather(std::size_t row) const {
+        T out {};
+        reflect::for_each_field(out, [&](auto Ic, auto& field) {
+            field = std::get<Ic.value>(columns_)[row];
+        });
+        return out;
+    }
 
-  // Overwrite the element at `row`.
-  void set(std::size_t row, const T& v) {
-    reflect::for_each_field(v, [&](auto Ic, const auto& field) {
-      std::get<Ic.value>(columns_)[row] = field;
-    });
-  }
+    // Overwrite the element at `row`.
+    void set(std::size_t row, T const& v) {
+        reflect::for_each_field(v, [&](auto Ic, auto const& field) {
+            std::get<Ic.value>(columns_)[row] = field;
+        });
+    }
 
-  // Remove `row` with swap-and-pop. Returns the source row that was moved into
-  // `row` (== new size if the last element was removed), so callers can patch
-  // up any external row<->entity bookkeeping.
-  std::size_t swap_remove(std::size_t row) {
-    const std::size_t last = size_ - 1;
-    apply_columns([&](auto&... col) {
-      ((col[row] = std::move(col[last])), ...);
-      (col.pop_back(), ...);
-    });
-    --size_;
-    return last;
-  }
+    // Remove `row` with swap-and-pop. Returns the source row that was moved
+    // into `row` (== new size if the last element was removed), so callers can
+    // patch up any external row<->entity bookkeeping.
+    auto swap_remove(std::size_t row) {
+        auto const last = size_ - 1;
+        apply_columns([&](auto&... col) {
+            ((col[row] = std::move(col[last])), ...);
+            (col.pop_back(), ...);
+        });
+        --size_;
+        return last;
+    }
 
-  // Append a default-constructed element and return its row.
-  std::size_t emplace_default() { return push_back(T{}); }
+    // Append a default-constructed element and return its row.
+    auto emplace_default() { return push_back(T {}); }
 
-  // Contiguous view over the I-th field across all elements: the SoA payoff.
-  // The explicit object parameter lets one definition serve both const and
-  // mutable callers -- the span's element constness follows that of `self`.
-  template <std::size_t I, class Self>
-  auto column(this Self&& self) noexcept {
-    auto& c = std::get<I>(self.columns_);
-    return std::span(c.data(), c.size());
-  }
+    // Contiguous view over the I-th field across all elements: the SoA payoff.
+    // The explicit object parameter lets one definition serve both const and
+    // mutable callers -- the span's element constness follows that of `self`.
+    template <std::size_t I, class Self>
+    auto column(this Self&& self) noexcept {
+        auto& c = std::get<I>(self.columns_);
+        return std::span(c.data(), c.size());
+    }
 
 private:
-  template <class Self, class F>
-  void apply_columns(this Self&& self, F&& f) {
-    std::apply([&](auto&... col) { f(col...); }, self.columns_);
-  }
+    template <class Self, class F>
+    void apply_columns(this Self&& self, F&& f) {
+        std::apply([&](auto&... col) { f(col...); }, self.columns_);
+    }
 
-  detail::columns_t<T> columns_{};
-  std::size_t size_ = 0;
+    detail::columns_t<T> columns_ {};
+    std::size_t size_ = 0;
 };
 
 // A component with zero data members (a "tag"). It still needs a row count but
 // stores nothing -- handled as a degenerate SoA with no columns.
 template <reflect::Reflectable T>
-  requires(reflect::field_count_v<T> == 0)
+requires (reflect::field_count_v<T> == 0)
 class soa_storage<T> {
 public:
-  using value_type = T;
-  static constexpr std::size_t field_count = 0;
+    using value_type                         = T;
+    static constexpr std::size_t field_count = 0;
 
-  std::size_t size() const noexcept { return size_; }
-  bool empty() const noexcept { return size_ == 0; }
-  void reserve(std::size_t) noexcept {}
-  void clear() noexcept { size_ = 0; }
-  std::size_t push_back(const T&) { return size_++; }
-  T gather(std::size_t) const { return T{}; }
-  void set(std::size_t, const T&) noexcept {}
-  std::size_t emplace_default() { return size_++; }
-  std::size_t swap_remove(std::size_t) { return --size_; }
+    [[nodiscard]]
+    auto size() const noexcept {
+        return size_;
+    }
+    [[nodiscard]]
+    auto empty() const noexcept {
+        return size_ == 0;
+    }
+    void reserve(std::size_t) noexcept {}
+    void clear() noexcept { size_ = 0; }
+    auto push_back(T const&) { return size_++; }
+    T gather(std::size_t) const { return T {}; }
+    void set(std::size_t, T const&) noexcept {}
+    auto emplace_default() { return size_++; }
+    auto swap_remove(std::size_t) { return --size_; }
 
 private:
-  std::size_t size_ = 0;
+    std::size_t size_ = 0;
 };
 
 } // namespace ecs
