@@ -56,11 +56,13 @@ struct phase {
 using SystemId = std::uint64_t;
 
 // A system's derived component/resource access (id sets). `exclusive` means the
-// system has unanalyzable access (it took a raw World&) and so conflicts with
-// every other system -- it runs alone in its wave.
+// system has unanalyzable access (it took a raw World&) and conflicts with every
+// other system. `reads_all` means it reads everything (a WorldView): it conflicts
+// only with writers, so read-only systems still run in parallel.
 struct SystemAccess {
   std::vector<std::uint32_t> reads, writes, res_reads, res_writes;
   bool exclusive = false;
+  bool reads_all = false;
 };
 
 namespace detail {
@@ -111,9 +113,16 @@ struct system_param<Commands&> {
   static void declare(SystemAccess&) {}            // side channel, no access
   static Commands& bind(World&, Commands& c) { return c; }
 };
-// Escape hatch: a raw World& grants ad-hoc read access (queries, size, get,
-// has, alive). Its access cannot be analyzed, so the system is marked exclusive
-// and runs alone -- safe, but not parallel. Prefer Query/Res for parallelism.
+// Read-only ad-hoc access: WorldView reads everything but writes nothing, so it
+// runs in parallel with other readers and is serialized only against writers.
+template <>
+struct system_param<WorldView> {
+  static void declare(SystemAccess& a) { a.reads_all = true; }
+  static WorldView bind(World& w, Commands&) { return WorldView(w); }
+};
+// Full escape hatch: a raw World& can also mutate component values through a
+// non-const query, so its access cannot be analyzed -- the system is marked
+// exclusive and runs alone. Prefer Query/Res, or WorldView for read-only access.
 template <>
 struct system_param<World&> {
   static void declare(SystemAccess& a) { a.exclusive = true; }
@@ -271,8 +280,15 @@ private:
                            const IdList& br) {
     return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
   }
+  static bool writes_any(const SystemAccess& a) {
+    return !a.writes.empty() || !a.res_writes.empty();
+  }
   static bool conflict(const System& a, const System& b) {
     if (a.access.exclusive || b.access.exclusive) return true;
+    // A reads-all system conflicts with any writer (but not with other readers).
+    if ((a.access.reads_all && writes_any(b.access)) ||
+        (b.access.reads_all && writes_any(a.access)))
+      return true;
     return conflicts_on(a.access.writes, a.access.reads, b.access.writes,
                         b.access.reads) ||
            conflicts_on(a.access.res_writes, a.access.res_reads,

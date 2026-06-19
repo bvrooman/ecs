@@ -117,4 +117,34 @@ Query<Cs...> query(World& world) {
   return Query<Cs...>(world);
 }
 
+// A read-only view of the world for systems that need ad-hoc reads (size, get,
+// has, alive, queries) beyond what Query/Res express. Everything it exposes is
+// read-only -- its query() forces every component to const, so nothing can be
+// written through it. As a system parameter it therefore declares "reads
+// everything": it runs concurrently with other readers but is serialized
+// against any writer (unlike a raw World&, which is fully exclusive).
+class WorldView {
+public:
+  explicit WorldView(World& world) : world_(&world) {}
+
+  std::size_t size() const { return world_->size(); }
+  bool alive(Entity e) const { return world_->alive(e); }
+  template <class C>
+  bool has(Entity e) const {
+    return world_->template has<C>(e);
+  }
+  template <class C>
+  C get(Entity e) const {
+    return world_->template get<C>(e);
+  }
+  // Read-only query: every component is iterated by const reference.
+  template <class... Cs>
+  Query<const std::remove_const_t<Cs>...> query() const {
+    return Query<const std::remove_const_t<Cs>...>(*world_);
+  }
+
+private:
+  World* world_;
+};
+
 } // namespace ecs

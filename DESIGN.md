@@ -156,15 +156,17 @@ The system parameters are:
 | `Query<Cs...>` | each `const C` a read, each non-const `C` a write | iterate matching entities |
 | `Res<T>` / `ResMut<T>` | read / write resource T | typed resource handle |
 | `Commands&` | none (deferred side channel) | record structural edits |
-| `World&` | *exclusive* — runs alone | ad-hoc read escape hatch |
+| `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
+| `World&` | *exclusive* — runs alone | full read/write escape hatch |
 
 A trailing `phase<N>` tag is the only non-parameter argument (ordering).
 
 Conflict analysis: two systems conflict when one's write set intersects the
 other's read-or-write set — evaluated independently over the component and
 resource id spaces, so a shared mutable resource serializes two systems even
-when their component access is disjoint, and a `World&` (exclusive) system
-conflicts with everything. Each system is assigned a **level** equal to
+when their component access is disjoint. A `WorldView` (reads-everything) system
+conflicts only with writers — two `WorldView` readers still run concurrently —
+while a `World&` (exclusive) system conflicts with everything. Each system is assigned a **level** equal to
 `1 + max(level)` over earlier conflicting systems; same-level systems are
 conflict-free and run concurrently, separated by a barrier.
 
@@ -183,12 +185,19 @@ or write a component/resource it did not declare -- `Query`/`Res`/`ResMut` are
 the only way to reach that state, and each contributes its access. The two
 remaining caveats:
 
-* **`World&` is the escape hatch, and it is exclusive.** A system that takes a
-  raw `World&` can do ad-hoc reads (queries, `size`, `get`, `has`) that cannot
-  be analyzed, so it is marked exclusive and runs alone. This is *loud* (it
-  serializes) rather than a silent race — prefer `Query`/`Res` for parallelism.
-  (Resource reads from outside any system, e.g. a consumer thread calling
-  `world.resource<T>()`, remain the caller's responsibility.)
+* **`WorldView` is the read-only escape hatch.** When a system needs ad-hoc
+  reads (`size`, `alive`, `has`, `get`, or a `view.query<Cs...>()` that forces
+  every component to const) beyond what a single `Query`/`Res` expresses, take a
+  `WorldView`. It exposes nothing that can mutate, so it declares "reads
+  everything": it still runs concurrently with other readers and is serialized
+  only against writers. Prefer it over `World&` whenever the access is read-only.
+* **`World&` is the full escape hatch, and it is exclusive.** A raw `World&` can
+  also mutate component values through a non-const query, so its access cannot be
+  analyzed — it is marked exclusive and runs alone. This is *loud* (it
+  serializes) rather than a silent race — reach for it only when a system truly
+  needs unanalyzable read-write access. (Resource reads from outside any system,
+  e.g. a consumer thread calling `world.resource<T>()`, remain the caller's
+  responsibility.)
 * **Parallel runs are not deterministic.** Within a wave, command-recording
   order across threads and `reserve()`'s id handout depend on timing, so entity
   ids and creation order vary run to run. Use the inline `run(world)` (or a

@@ -50,7 +50,7 @@ int main() {
 | AoS → SoA automatically via reflection | `soa_storage<T>` splits each struct into per-field columns using the reflection facade |
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler; conflict analysis from access **derived from system parameter types** (can't drift from actual use) |
-| System parameters | a system's access comes from its params: `Query<const A, B>` (read A, write B), `Res<T>`/`ResMut<T>` (read/write resource), `Commands&` (deferred mutation), `World&` (ad-hoc reads → runs exclusive). No separate `reads<>/writes<>` tags |
+| System parameters | a system's access comes from its params: `Query<const A, B>` (read A, write B), `Res<T>`/`ResMut<T>` (read/write resource), `Commands&` (deferred mutation), `WorldView` (ad-hoc **read-only** access → runs with readers, after writers), `World&` (full read/write → runs exclusive). No separate `reads<>/writes<>` tags |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `Res<T>`/`ResMut<T>` system params track read/write access to them |
 | Mutation via `Commands` | `cmd.spawn/destroy/add/remove/set` only record, applied at each schedule wave barrier. `Commands` only exists inside a run (mutation-outside-a-system is a *compile* error) and is non-copyable/non-movable. `spawn` returns a usable handle immediately. Mid-iteration edits are always safe |
 | Systems: one-shot, removable, phased | `Schedule::add` returns a `SystemId`; `remove(id)` unschedules; `add_once(...)` runs once then drops out; a `phase<N>` tag orders systems across barriers (e.g. `phase<-1>` startup before normal systems) |

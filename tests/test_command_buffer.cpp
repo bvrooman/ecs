@@ -18,9 +18,9 @@ struct Doomed {}; // tag marking entities to delete
 static void setup_applies_after_it_ends() {
   World w;
   Entity e;
-  setup(w, [&](World& wr, Commands& cmd) {
+  setup(w, [&](WorldView view, Commands& cmd) {
     e = cmd.spawn(Position{1, 1});
-    CHECK(!wr.alive(e)); // recorded, not yet materialized
+    CHECK(!view.alive(e)); // recorded, not yet materialized
   });
   CHECK(w.alive(e));
   CHECK(w.size() == 1);
@@ -37,10 +37,10 @@ static void destroy_during_iteration_is_safe() {
     for (int i = 0; i < 10; i += 2) cmd.add<Doomed>(all[i], {}); // mark evens
   });
 
-  setup(w, [&](World& wr, Commands& cmd) {
-    query<Position, Doomed>(wr).each(
-        [&](Entity e, Position&, Doomed&) { cmd.destroy(e); });
-    CHECK(wr.size() == 10); // nothing applied yet (still recording)
+  setup(w, [&](WorldView view, Commands& cmd) {
+    view.query<Position, Doomed>().each(
+        [&](Entity e, const Position&, const Doomed&) { cmd.destroy(e); });
+    CHECK(view.size() == 10); // nothing applied yet (still recording)
   });
 
   CHECK(w.size() == 5);
@@ -53,9 +53,9 @@ static void add_and_remove() {
   Entity e;
   setup(w, [&](Commands& cmd) { e = cmd.spawn(Position{1, 2}); });
 
-  setup(w, [&](World& wr, Commands& cmd) {
+  setup(w, [&](WorldView view, Commands& cmd) {
     cmd.add<Velocity>(e, Velocity{3, 4});
-    CHECK(!wr.has<Velocity>(e)); // deferred within the context
+    CHECK(!view.has<Velocity>(e)); // deferred within the context
   });
   CHECK(w.has<Velocity>(e));
   CHECK(w.get<Velocity>(e).dx == 3.f);
@@ -68,10 +68,10 @@ static void add_and_remove() {
 static void spawn_returns_usable_handle() {
   World w;
   Entity e;
-  setup(w, [&](World& wr, Commands& cmd) {
+  setup(w, [&](WorldView view, Commands& cmd) {
     e = cmd.spawn(Position{7, 8});        // handle valid immediately
     cmd.add<Velocity>(e, Velocity{1, 2}); // follow-up edit on it
-    CHECK(!wr.alive(e));                  // materializes at flush
+    CHECK(!view.alive(e));                // materializes at flush
   });
   CHECK(w.alive(e));
   CHECK(w.has<Velocity>(e));
