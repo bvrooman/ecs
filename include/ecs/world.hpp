@@ -71,15 +71,19 @@ public:
   // Bulk spawn: create `n` entities in a single recorded command (one closure,
   // not n), so large populations don't allocate per entity. `factory(i)` yields
   // the components for entity i, either as a std::tuple or as a single
-  // component. Handles are not returned; use spawn() when you need them.
-  //   w.spawn_n(1000, [](std::size_t i){
+  // component. The n handles are reserved up front and returned, usable
+  // immediately (alive after the next flush) like spawn().
+  //   auto es = w.spawn_n(1000, [](std::size_t i){
   //       return std::tuple{Position{float(i),0}, Velocity{1,0}}; });
   template <class Factory>
-  void spawn_n(std::size_t n, Factory factory) {
+  std::vector<Entity> spawn_n(std::size_t n, Factory factory) {
     assert(executing_ && "spawn_n() must be called inside a run context");
-    commands_.record([n, factory = std::move(factory)](World& w) mutable {
-      for (std::size_t i = 0; i < n; ++i) {
-        const Entity e = w.reserve();
+    std::vector<Entity> handles;
+    handles.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) handles.push_back(reserve());
+    commands_.record([handles, factory = std::move(factory)](World& w) mutable {
+      for (std::size_t i = 0; i < handles.size(); ++i) {
+        const Entity e = handles[i];
         w.materialize(e);
         auto comps = factory(i);
         if constexpr (detail::is_tuple_v<decltype(comps)>)
@@ -94,6 +98,7 @@ public:
           w.add_now<std::decay_t<decltype(comps)>>(e, std::move(comps));
       }
     });
+    return handles;
   }
 
   void destroy(Entity e) {

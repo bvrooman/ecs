@@ -191,12 +191,13 @@ static void add_once_runs_once_then_removed() {
   CHECK(w.size() == 2);
 }
 
-// spawn_n: bulk creation as a single recorded command.
+// spawn_n: bulk creation as a single recorded command, returning handles.
 static void spawn_n_bulk() {
   World w;
+  std::vector<Entity> es;
   w.run_once([&](World& wr) {
     // tuple factory -> multiple components, varying per index
-    wr.spawn_n(1000, [](std::size_t i) {
+    es = wr.spawn_n(1000, [](std::size_t i) {
       return std::tuple{Position{float(i), 0}, Velocity{1, 1}};
     });
     // single-component factory
@@ -205,6 +206,11 @@ static void spawn_n_bulk() {
   CHECK(w.size() == 1050);
   CHECK((query<Position, Velocity>(w).count() == 1000));
   CHECK((query<Position>(w).count() == 1050));
+
+  // returned handles are usable and map to the right entities
+  CHECK(es.size() == 1000);
+  CHECK(w.alive(es.front()) && w.alive(es.back()));
+  CHECK(w.get<Position>(es[500]).x == 500.f);
 
   // values landed correctly: sum of x over the Velocity-bearing entities
   double sum_x = 0;
