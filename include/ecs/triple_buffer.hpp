@@ -32,58 +32,62 @@ namespace ecs {
 template <class T>
 class TripleBuffer {
 public:
-  TripleBuffer() = default;
-  // Seed all three slots with an initial value (requires T copyable).
-  explicit TripleBuffer(const T& init) : buffers_{init, init, init} {}
+    TripleBuffer() = default;
+    // Seed all three slots with an initial value (requires T copyable).
+    explicit TripleBuffer(T const& init)
+        : buffers_ {init, init, init} {}
 
-  TripleBuffer(const TripleBuffer&) = delete;
-  TripleBuffer& operator=(const TripleBuffer&) = delete;
+    TripleBuffer(TripleBuffer const&)            = delete;
+    TripleBuffer& operator=(TripleBuffer const&) = delete;
 
-  // --- producer side ----------------------------------------------------
-  // The buffer to fill; valid until the next publish().
-  T& back() noexcept { return buffers_[write_]; }
+    // --- producer side ----------------------------------------------------
+    // The buffer to fill; valid until the next publish().
+    T& back() noexcept { return buffers_[write_]; }
 
-  // Make the current back buffer the latest published snapshot and take a fresh
-  // back buffer to write next. The release pairs with consume()'s acquire so
-  // the consumer sees the fully written snapshot.
-  void publish() noexcept {
-    const unsigned prev =
-        shared_.exchange(write_ | kDirty, std::memory_order_acq_rel);
-    write_ = prev & kIndexMask;
-  }
+    // Make the current back buffer the latest published snapshot and take a
+    // fresh back buffer to write next. The release pairs with consume()'s
+    // acquire so the consumer sees the fully written snapshot.
+    void publish() noexcept {
+        unsigned const prev =
+            shared_.exchange(write_ | kDirty, std::memory_order_acq_rel);
+        write_ = prev & kIndexMask;
+    }
 
-  // --- consumer side ----------------------------------------------------
-  // Advance the front buffer to the newest published snapshot if there is one.
-  // Returns true if front() changed. The dirty flag lives in the same atomic
-  // as the index, so the check and the swap are one indivisible operation --
-  // the consumer can never grab a stale buffer or swap without fresh data.
-  bool consume() noexcept {
-    if ((shared_.load(std::memory_order_acquire) & kDirty) == 0) return false;
-    const unsigned prev = shared_.exchange(read_, std::memory_order_acq_rel);
-    read_ = prev & kIndexMask;
-    return true;
-  }
+    // --- consumer side ----------------------------------------------------
+    // Advance the front buffer to the newest published snapshot if there is
+    // one. Returns true if front() changed. The dirty flag lives in the same
+    // atomic as the index, so the check and the swap are one indivisible
+    // operation -- the consumer can never grab a stale buffer or swap without
+    // fresh data.
+    bool consume() noexcept {
+        if ((shared_.load(std::memory_order_acquire) & kDirty) == 0)
+            return false;
+        unsigned const prev = shared_.exchange(read_, std::memory_order_acq_rel);
+        read_               = prev & kIndexMask;
+        return true;
+    }
 
-  // The most recently consumed snapshot (stable until the next consume()).
-  const T& front() const noexcept { return buffers_[read_]; }
+    // The most recently consumed snapshot (stable until the next consume()).
+    T const& front() const noexcept { return buffers_[read_]; }
 
-  // Whether a newer snapshot is available to consume().
-  bool has_fresh() const noexcept {
-    return (shared_.load(std::memory_order_acquire) & kDirty) != 0;
-  }
+    // Whether a newer snapshot is available to consume().
+    [[nodiscard]]
+    auto has_fresh() const noexcept {
+        return (shared_.load(std::memory_order_acquire) & kDirty) != 0;
+    }
 
 private:
-  static constexpr unsigned kIndexMask = 0x3; // low bits hold a 0..2 index
-  static constexpr unsigned kDirty = 0x4;     // "new snapshot published" bit
+    static constexpr unsigned kIndexMask = 0x3; // low bits hold a 0..2 index
+    static constexpr unsigned kDirty     = 0x4; // "new snapshot published" bit
 
-  // Invariant: {write_, read_, shared_ & kIndexMask} is always a permutation of
-  // {0,1,2}. Every transition is an exchange that swaps a thread-local index
-  // with the shared one, so the three indices stay distinct -- producer and
-  // consumer never touch the same buffer.
-  std::array<T, 3> buffers_{};
-  unsigned write_ = 0;            // producer-owned index
-  unsigned read_ = 1;             // consumer-owned index
-  std::atomic<unsigned> shared_{2}; // published index + dirty bit
+    // Invariant: {write_, read_, shared_ & kIndexMask} is always a permutation
+    // of {0,1,2}. Every transition is an exchange that swaps a thread-local
+    // index with the shared one, so the three indices stay distinct -- producer
+    // and consumer never touch the same buffer.
+    std::array<T, 3> buffers_ {};
+    unsigned write_ = 0;               // producer-owned index
+    unsigned read_  = 1;               // consumer-owned index
+    std::atomic<unsigned> shared_ {2}; // published index + dirty bit
 };
 
 } // namespace ecs

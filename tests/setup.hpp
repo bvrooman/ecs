@@ -6,8 +6,8 @@
 #include "ecs/ecs.hpp"
 
 template <class Fn>
-inline void setup(ecs::World& world, Fn fn) {
-  ecs::Schedule s;
-  s.add_once("setup", std::move(fn));
-  s.run(world); // inline: no thread pool needed
+void setup(ecs::World& world, Fn fn) {
+    ecs::Schedule s;
+    s.add_once("setup", std::move(fn));
+    s.run(world); // inline: no thread pool needed
 }
