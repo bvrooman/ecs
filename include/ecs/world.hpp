@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -29,6 +30,16 @@ struct SigHash {
     return hash_signature(s);
   }
 };
+
+// True iff the types in the pack are pairwise distinct.
+template <class... Ts>
+struct are_distinct : std::true_type {};
+template <class T, class... Ts>
+struct are_distinct<T, Ts...>
+    : std::bool_constant<(!std::disjunction_v<std::is_same<T, Ts>...> &&
+                          are_distinct<Ts...>::value)> {};
+template <class... Ts>
+inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 } // namespace detail
 
 class World {
@@ -200,19 +211,31 @@ private:
     return Entity{reserve_high_.fetch_add(1, std::memory_order_relaxed), 0};
   }
 
-  // Give a reserved entity its storage (a row in the empty archetype). Runs
-  // single-threaded -- from create(), or from a spawn command at a barrier.
-  // resize() fills any gap with dead default slots that their own materialize()
-  // later activates, so out-of-order materialization is safe.
-  void materialize(Entity e) {
+  // Place a reserved entity directly into its final archetype with all of its
+  // components in one step -- no empty-archetype materialization and no
+  // per-component relocations (which would also leave empty intermediate
+  // archetypes behind). Runs single-threaded, from a spawn command at a barrier.
+  // Component types must be distinct.
+  template <class... Cs>
+  void spawn_now(Entity e, Cs... comps) {
+    static_assert(detail::are_distinct_v<Cs...>,
+                  "spawn(): duplicate component type");
+    Signature sig{component_id<Cs>...};
+    std::sort(sig.begin(), sig.end());
+    const auto to = get_or_create_archetype(sig, [](Archetype& b) {
+      (b.columns.emplace(component_id<Cs>, std::make_unique<Column<Cs>>()), ...);
+    });
+
     if (e.index >= records_.size()) records_.resize(e.index + 1);
     auto& rec = records_[e.index];
     rec.alive = true;
     rec.generation = e.generation;
-    rec.archetype = empty_archetype_;
-    auto& a = *archetypes_[empty_archetype_];
+    rec.archetype = to;
+
+    auto& a = *archetypes_[to];
     rec.row = static_cast<std::uint32_t>(a.entities.size());
     a.entities.push_back(e);
+    (a.template column<Cs>().store.push_back(comps), ...);
     ++alive_count_;
   }
 
@@ -306,13 +329,13 @@ public:
   Commands(Commands&&) = delete;
   Commands& operator=(Commands&&) = delete;
 
-  // spawn returns a usable handle immediately (alive after the next flush).
+  // spawn returns a usable handle immediately (alive after the next flush). At
+  // flush the entity is placed directly into its final archetype.
   template <class... Cs>
   Entity spawn(Cs... comps) {
     const Entity e = world_->reserve();
     world_->commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
-      w.materialize(e);
-      (w.add_now<Cs>(e, std::move(comps)), ...);
+      w.spawn_now<Cs...>(e, std::move(comps)...);
     });
     return e;
   }

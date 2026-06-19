@@ -238,13 +238,18 @@ The flush points are `Schedule::run`'s wave barriers (so edits from wave *N* are
 visible to wave *N+1*) -- the templated `run(world, scheduler)` for the parallel
 pool, or `run(world)` for inline single-threaded execution.
 
-The immediate primitives (`*_now`, `materialize`) stay private and are what the
+The immediate primitives (`*_now`, `spawn_now`) stay private and are what the
 command closures call at flush time. `spawn(...)` reserves an entity handle
 immediately and returns it, so a system can record follow-up edits on a
 not-yet-created entity in the same frame; reservation is thread-safe via a tiny
 locked critical section (new ids come from a monotonic counter so concurrent
 reservers never grow `records_` mid-run; reused ids carry the freed slot's
-already-bumped generation), and storage is created by `materialize()` at flush.
+already-bumped generation). At flush, `spawn_now` places the entity **directly**
+into its final archetype -- pushing all of its components in one pass rather
+than walking it through one archetype transition per component (which would also
+leave empty intermediate archetypes behind for queries to scan). Adding a
+component to an *existing* entity (`add`) still relocates, since that genuinely
+moves it between archetypes.
 
 Bulk creation is just a loop of `spawn()`. Note that every `spawn` records a
 closure that is held until the wave flushes, so a single batch of *n* spawns

@@ -113,11 +113,24 @@ static void const_query_marks_read_only() {
   CHECK(sum_x == 3.f);
 }
 
+static void spawn_goes_directly_to_final_archetype() {
+  World w;
+  setup(w, [&](World&, Commands& cmd) {
+    for (int i = 0; i < 100; ++i) cmd.spawn(Position{float(i), 0}, Velocity{1, 1});
+  });
+  CHECK(w.size() == 100);
+  CHECK((query<Position, Velocity>(w).count() == 100));
+  // Only the empty archetype and {Position, Velocity} exist -- spawning does not
+  // pass through (and leave behind) an empty intermediate {Position} archetype.
+  CHECK(w.archetypes().size() == 2);
+}
+
 int main() {
   RUN_SUITE(create_and_query);
   RUN_SUITE(add_remove_moves_archetype_preserving_data);
   RUN_SUITE(destroy_and_generation_reuse);
   RUN_SUITE(soa_fast_path);
   RUN_SUITE(const_query_marks_read_only);
+  RUN_SUITE(spawn_goes_directly_to_final_archetype);
   return REPORT();
 }
