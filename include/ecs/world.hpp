@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -30,11 +29,6 @@ struct SigHash {
     return hash_signature(s);
   }
 };
-
-template <class T>
-inline constexpr bool is_tuple_v = false;
-template <class... Ts>
-inline constexpr bool is_tuple_v<std::tuple<Ts...>> = true;
 } // namespace detail
 
 class World {
@@ -305,6 +299,16 @@ private:
 // ===========================================================================
 class Commands {
 public:
+  // Non-copyable and non-movable: a Commands is valid only for the duration of
+  // the run that created it, so it must not be stored. The compiler rejects
+  // `auto saved = cmd;` / moving it into a member. (A raw pointer/reference to
+  // it can still be taken and dangled after the run -- that is a
+  // pointer-to-local bug C++ cannot prevent.)
+  Commands(const Commands&) = delete;
+  Commands& operator=(const Commands&) = delete;
+  Commands(Commands&&) = delete;
+  Commands& operator=(Commands&&) = delete;
+
   // spawn returns a usable handle immediately (alive after the next flush).
   template <class... Cs>
   Entity spawn(Cs... comps) {
@@ -314,35 +318,6 @@ public:
       (w.add_now<Cs>(e, std::move(comps)), ...);
     });
     return e;
-  }
-
-  // Bulk spawn: one recorded command for n entities (not n closures). The n
-  // handles are reserved up front and returned. factory(i) yields entity i's
-  // components, as a std::tuple or a single component.
-  template <class Factory>
-  std::vector<Entity> spawn_n(std::size_t n, Factory factory) {
-    std::vector<Entity> handles;
-    handles.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) handles.push_back(world_->reserve());
-    world_->commands_.record(
-        [handles, factory = std::move(factory)](World& w) mutable {
-          for (std::size_t i = 0; i < handles.size(); ++i) {
-            const Entity e = handles[i];
-            w.materialize(e);
-            auto comps = factory(i);
-            if constexpr (detail::is_tuple_v<decltype(comps)>)
-              std::apply(
-                  [&](auto&&... c) {
-                    (w.add_now<std::decay_t<decltype(c)>>(
-                         e, std::forward<decltype(c)>(c)),
-                     ...);
-                  },
-                  std::move(comps));
-            else
-              w.add_now<std::decay_t<decltype(comps)>>(e, std::move(comps));
-          }
-        });
-    return handles;
   }
 
   void destroy(Entity e) {

@@ -176,12 +176,14 @@ flushed. A single uniform rule ("changes apply at the next flush") falls out of
 this, and mutating mid-iteration is *always* safe.
 
 Mutation is also unreachable outside a system, enforced **at compile time**:
-`World` exposes only reads. The mutators -- `spawn`/`spawn_n`/`destroy`/`add`/
-`remove`/`set` -- live on a `Commands` object that only `Schedule::run` can
-construct (bound to the world) and pass to each system. You cannot call `spawn`
-without a `Commands`, and you cannot obtain one except from a run, so the
-"mutate only inside a system" rule is checked by the type system rather than a
-runtime assert.
+`World` exposes only reads. The mutators -- `spawn`/`destroy`/`add`/`remove`/
+`set` -- live on a `Commands` object that only `Schedule::run` can construct
+(bound to the world) and pass to each system. You cannot call `spawn` without a
+`Commands`, and you cannot obtain one except from a run, so the "mutate only
+inside a system" rule is checked by the type system rather than a runtime assert.
+`Commands` is additionally **non-copyable and non-movable**, so it cannot be
+squirreled away by value (`auto saved = cmd;` is a compile error); only a raw
+pointer/reference can escape, which is a pointer-to-local bug C++ cannot prevent.
 
 ```cpp
 // a system: World& for reads/queries, Commands& for (deferred) mutation
@@ -201,7 +203,7 @@ one-shot system and run the schedule (inline, no thread pool needed):
 ```cpp
 Schedule init;
 init.add_once("populate", [&](World&, Commands& cmd) {
-  cmd.spawn_n(200'000, [](std::size_t i){ return std::tuple{Position{...}, ...}; });
+  for (...) cmd.spawn(Position{...}, Velocity{...});
 });
 init.run(world);   // inline run on the calling thread
 ```
@@ -218,17 +220,12 @@ locked critical section (new ids come from a monotonic counter so concurrent
 reservers never grow `records_` mid-run; reused ids carry the freed slot's
 already-bumped generation), and storage is created by `materialize()` at flush.
 
-For large populations, `spawn_n(n, factory)` records a **single** command rather
-than one closure per entity: at flush it loops `i = 0..n`, building each
-entity's components from `factory(i)` (a `std::tuple` of components, or a single
-component). This keeps bulk setup allocation-free beyond the one closure:
-
-```cpp
-cmd.spawn_n(200'000, [](std::size_t i) {
-  float f = float(i);
-  return std::tuple{Position{f, -f, 0}, Velocity{0,0,0}, Mass{1+0.001f*f}};
-});
-```
+Bulk creation is just a loop of `spawn()`. Note that every `spawn` records a
+closure that is held until the wave flushes, so a single batch of *n* spawns
+holds ~one closure per entity transiently (tens of bytes each). That is
+inconsequential for per-frame spawning and for setups up to ~1M entities; for a
+multi-million-entity *single* batch it can be a meaningful transient spike,
+mitigable by splitting setup across several `add_once` runs (each flushes).
 
 Value mutation *through a query* (`each`/`for_each_chunk` writing the component
 references it was handed) is not a structural change and is not routed through

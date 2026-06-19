@@ -118,15 +118,15 @@ static void destroy_then_add_is_safe() {
   CHECK(w.size() == 0);
 }
 
-// spawn_n: bulk creation as a single recorded command, returning handles.
-static void spawn_n_bulk() {
+// Bulk creation is just a loop of spawn(); handles collected in the loop are
+// usable after the flush.
+static void bulk_spawn_loop() {
   World w;
   std::vector<Entity> es;
   setup(w, [&](World&, Commands& cmd) {
-    es = cmd.spawn_n(1000, [](std::size_t i) {
-      return std::tuple{Position{float(i), 0}, Velocity{1, 1}};
-    });
-    cmd.spawn_n(50, [](std::size_t i) { return Position{float(i), -1}; });
+    for (std::size_t i = 0; i < 1000; ++i)
+      es.push_back(cmd.spawn(Position{float(i), 0}, Velocity{1, 1}));
+    for (std::size_t i = 0; i < 50; ++i) cmd.spawn(Position{float(i), -1});
   });
   CHECK(w.size() == 1050);
   CHECK((query<Position, Velocity>(w).count() == 1000));
@@ -279,7 +279,7 @@ int main() {
   RUN_SUITE(reserved_handles_are_distinct);
   RUN_SUITE(reserved_slot_reuse_bumps_generation);
   RUN_SUITE(destroy_then_add_is_safe);
-  RUN_SUITE(spawn_n_bulk);
+  RUN_SUITE(bulk_spawn_loop);
   RUN_SUITE(schedule_flushes_between_levels);
   RUN_SUITE(concurrent_reserve_and_followup_edits);
   RUN_SUITE(add_once_runs_once_then_removed);

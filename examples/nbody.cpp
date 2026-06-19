@@ -49,16 +49,15 @@ int main() {
   world.emplace_resource<Gravity>(-9.81f);
   world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
 
-  // Initial population: a one-shot setup system, run inline, spawns all the
-  // particles with a single bulk command (one closure, not kParticles).
+  // Initial population: a one-shot setup system, run inline.
   {
     Schedule init;
     init.add_once("populate", [&](World&, Commands& cmd) {
-      cmd.spawn_n(kParticles, [](std::size_t i) {
+      for (int i = 0; i < kParticles; ++i) {
         float f = float(i);
-        return std::tuple{Position{f, -f, 0.5f * f},
-                          Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f}};
-      });
+        cmd.spawn(Position{f, -f, 0.5f * f}, Velocity{0.1f, -0.2f, 0.05f},
+                  Mass{1.0f + 0.001f * f});
+      }
     });
     init.run(world); // inline, no thread pool needed
   }
