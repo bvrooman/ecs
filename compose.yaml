@@ -1,0 +1,31 @@
+# Convenience wrapper around the GCC-on-Linux toolchain image (see ./Dockerfile).
+# macOS libc++ can't build this project (no std::move_only_function), so every
+# build runs in this container.
+#
+#   docker compose run --rm test    # configure + build + run the whole test suite
+#   docker compose run --rm dev     # interactive shell in the toolchain
+#
+# The CMake build tree (and the fetched stdexec) live in ./build on the host
+# (gitignored), so rebuilds are incremental between runs.
+
+x-toolchain: &toolchain
+  build: .
+  image: ecs-dev
+  working_dir: /src
+  volumes:
+    - .:/src
+
+services:
+  dev:
+    <<: *toolchain
+    command: bash
+
+  test:
+    <<: *toolchain
+    command:
+      - bash
+      - -c
+      - >
+        cmake -S /src -B /src/build -G Ninja -DCMAKE_BUILD_TYPE=Debug &&
+        cmake --build /src/build &&
+        ctest --test-dir /src/build --output-on-failure

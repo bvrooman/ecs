@@ -104,9 +104,12 @@ int main() {
   schedule.add("integrate", [](Query<Position, const Velocity> q) {
     q.for_each_chunk([](std::span<Entity>, soa_storage<Position>& pos,
                         const soa_storage<Velocity>& vel) {
-      auto px = pos.column<0>(); auto py = pos.column<1>();
-      auto pz = pos.column<2>(); auto vx = vel.column<0>();
-      auto vy = vel.column<1>(); auto vz = vel.column<2>();
+      auto px = pos.column<0>();
+      auto py = pos.column<1>();
+      auto pz = pos.column<2>();
+      auto vx = vel.column<0>();
+      auto vy = vel.column<1>();
+      auto vz = vel.column<2>();
       for (std::size_t i = 0; i < px.size(); ++i) {
         px[i] += vx[i] * kDt;
         py[i] += vy[i] * kDt;
