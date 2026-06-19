@@ -375,6 +375,8 @@ public:
     world_->commands_.record([e](World& w) { w.destroy_now(e); });
   }
 
+  // Add component C to an entity (moving it to the matching archetype). If the
+  // entity already has C, its value is overwritten in place. No-ops if dead.
   template <class C>
   void add(Entity e, C value) {
     world_->commands_.record([e, value = std::move(value)](World& w) mutable {
@@ -389,10 +391,12 @@ public:
     });
   }
 
+  // Overwrite component C on an entity. No-ops if the entity is dead or does
+  // not currently have C (so a stale target never throws at flush time).
   template <class C>
   void set(Entity e, C value) {
     world_->commands_.record([e, value = std::move(value)](World& w) mutable {
-      if (w.alive(e)) w.set_now<C>(e, std::move(value));
+      if (w.alive(e) && w.has<C>(e)) w.set_now<C>(e, std::move(value));
     });
   }
 

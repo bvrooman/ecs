@@ -7,7 +7,8 @@
 //
 // Resources are identified the same way components are (a per-type id), so the
 // scheduler can analyse read/write access to resources with the same machinery
-// it uses for components (see schedule.hpp: reads_res / writes_res).
+// it uses for components. A system's resource access is derived from its
+// Res<T> (read) and ResMut<T> (write) parameters (see schedule.hpp).
 //
 // Unlike components, resources are stored as single type-erased values rather
 // than columns, and they may be move-only (a GPU device, an audio stream), so

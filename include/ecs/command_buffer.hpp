@@ -1,14 +1,15 @@
 // ecs/command_buffer.hpp
 //
-// The deferral mechanism behind World's auto-deferring mutation API.
+// The deferral mechanism behind the Commands mutation API.
 //
 // Structural changes (spawn/destroy/add/remove) and value writes (set) move
 // data between archetype tables or into columns, which would invalidate
 // iteration in flight and race with systems on the schedule's thread pool. So
-// while a schedule is executing, World records each mutation here instead of
-// performing it; the recorded commands are replayed single-threaded at a sync
-// point (the Schedule flushes at every level barrier; World::defer_scope at
-// scope exit). Outside those contexts World mutates immediately.
+// rather than mutate directly, a system records each edit here through its
+// Commands object; the recorded commands are replayed single-threaded at a sync
+// point -- the Schedule flushes (calls apply()) at every level barrier, when no
+// systems are running. Mutation is reachable only via Commands, so there is no
+// non-deferred path to guard against.
 //
 // Recording is sharded per worker thread: each thread appends to its own shard
 // with no cross-thread contention on the hot path (shard lookup is a lock-free

@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <exec/static_thread_pool.hpp>
+#include <stdexcept>
+#include <string_view>
 
 using namespace ecs;
 
@@ -118,11 +120,29 @@ static void worldview_sees_writers_flush_in_prior_wave() {
   CHECK(observed.load() == 8); // saw the spawn wave's flush
 }
 
+// A system that throws on the thread-pool path propagates out of run() (caught
+// and rethrown at the barrier) rather than calling std::terminate.
+static void system_exception_propagates() {
+  World w;
+  Schedule sched;
+  sched.add("boom", [](Commands&) { throw std::runtime_error("boom"); });
+
+  exec::static_thread_pool pool{2};
+  bool caught = false;
+  try {
+    sched.run(w, pool.get_scheduler());
+  } catch (const std::runtime_error& e) {
+    caught = (std::string_view(e.what()) == "boom");
+  }
+  CHECK(caught);
+}
+
 int main() {
   RUN_SUITE(leveling_respects_conflicts);
   RUN_SUITE(parallel_systems_are_independent_levels);
   RUN_SUITE(run_on_thread_pool_executes_all_systems);
   RUN_SUITE(worldview_reads_all_parallel_but_after_writers);
   RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
+  RUN_SUITE(system_exception_propagates);
   return REPORT();
 }

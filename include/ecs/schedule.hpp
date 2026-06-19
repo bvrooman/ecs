@@ -32,8 +32,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -135,7 +137,9 @@ public:
     SystemId id = 0;
     std::string name;
     SystemAccess access;
-    std::function<void(World&, Commands&)> run;
+    // move_only_function (not function) so a system may capture a move-only
+    // value (e.g. a unique_ptr or a move_only_function of its own).
+    std::move_only_function<void(World&, Commands&)> run;
     int phase = 0;
     std::size_t level = 0;
     bool once = false;
@@ -178,20 +182,35 @@ public:
   // same wave run concurrently; each gets its parameters (built from the world
   // and a shared Commands), and recorded edits flush at every wave barrier.
   // One-shot systems are removed afterwards.
+  //
+  // If a system throws, the exception is caught (an uncaught exception would
+  // otherwise terminate, since async_scope cannot deliver an error completion),
+  // the first one is kept, and it is rethrown at the next barrier -- so an
+  // escaping exception propagates out of run() as it does on the inline path.
   template <class Scheduler>
   void run(World& world, Scheduler scheduler) {
     rebuild();
     Commands cmds{world};
+    std::exception_ptr error;
+    std::mutex error_mutex;
     exec::async_scope scope;
     for (const auto& wave : waves_) {
       for (std::size_t idx : wave) {
         auto& sys = systems_[idx];
         scope.spawn(stdexec::starts_on(
-            scheduler, stdexec::then(stdexec::just(), [&sys, &world, &cmds] {
-              sys.run(world, cmds);
+            scheduler, stdexec::then(stdexec::just(),
+                                     [&sys, &world, &cmds, &error,
+                                      &error_mutex] {
+              try {
+                sys.run(world, cmds);
+              } catch (...) {
+                std::lock_guard lock(error_mutex);
+                if (!error) error = std::current_exception();
+              }
             })));
       }
       stdexec::sync_wait(scope.on_empty()); // barrier
+      if (error) std::rethrow_exception(error);
       world.apply_commands();               // make this wave's edits visible
     }
     prune_once();

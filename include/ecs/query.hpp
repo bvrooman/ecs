@@ -7,8 +7,9 @@
 // `query<const Position, Velocity>` reads Position and read-writes Velocity.
 // Read-only components are passed by const reference and are NOT written back,
 // which avoids the cost (and the undeclared-write hazard) of scattering a
-// component the system only reads. (Note: the query type is independent of the
-// system's reads<>/writes<> access tags; keep them consistent.)
+// component the system only reads. When a Query is used as a system parameter,
+// the scheduler derives that system's read/write access directly from these
+// const/non-const marks, so the declared access cannot drift from actual use.
 //
 //   q.each([](Entity e, const Position& p, Velocity& v){ ... });
 //       Ergonomic, per-entity. Components are gathered from their per-field

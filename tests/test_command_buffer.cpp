@@ -79,6 +79,27 @@ static void spawn_returns_usable_handle() {
   CHECK(w.get<Velocity>(e).dy == 2.f);
 }
 
+// set() on a component the entity does not have is a no-op (it must not throw
+// out of the flush). set() on a present component overwrites it.
+static void set_on_missing_component_is_noop() {
+  World w;
+  Entity e;
+  setup(w, [&](Commands& cmd) { e = cmd.spawn(Position{1, 2}); });
+
+  bool threw = false;
+  try {
+    setup(w, [&](Commands& cmd) {
+      cmd.set(e, Velocity{9, 9}); // e has no Velocity
+      cmd.set(e, Position{3, 4}); // e has Position -> overwritten
+    });
+  } catch (...) {
+    threw = true;
+  }
+  CHECK(!threw);
+  CHECK(!w.has<Velocity>(e));         // missing-component set dropped
+  CHECK(w.get<Position>(e).x == 3.f); // present-component set applied
+}
+
 static void reserved_handles_are_distinct() {
   World w;
   Entity a, b, c;
@@ -269,6 +290,7 @@ int main() {
   RUN_SUITE(destroy_during_iteration_is_safe);
   RUN_SUITE(add_and_remove);
   RUN_SUITE(spawn_returns_usable_handle);
+  RUN_SUITE(set_on_missing_component_is_noop);
   RUN_SUITE(reserved_handles_are_distinct);
   RUN_SUITE(reserved_slot_reuse_bumps_generation);
   RUN_SUITE(destroy_then_add_is_safe);

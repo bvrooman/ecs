@@ -19,8 +19,6 @@ struct Entity {
   friend bool operator==(Entity, Entity) = default;
 };
 
-inline constexpr Entity null_entity{0xFFFFFFFFu, 0xFFFFFFFFu};
-
 // Stable, process-local id assigned to each component type on first use.
 using ComponentId = std::uint32_t;
 
