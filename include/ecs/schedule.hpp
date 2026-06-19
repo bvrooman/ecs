@@ -49,9 +49,7 @@ namespace ecs {
 // between phases; within a phase they are leveled by conflicts. Default 0, so
 // phase<-1> is a startup phase, phase<1> a teardown/late phase.
 template <int N>
-struct phase {
-  static constexpr int value = N;
-};
+struct phase {};
 
 using SystemId = std::uint64_t;
 
@@ -129,29 +127,6 @@ struct system_param<World&> {
   static World& bind(World& w, Commands&) { return w; }
 };
 
-// phase tag detection
-template <class T>
-struct phase_value {
-  static constexpr bool is = false;
-  static constexpr int value = 0;
-};
-template <int N>
-struct phase_value<phase<N>> {
-  static constexpr bool is = true;
-  static constexpr int value = N;
-};
-
-// Validate the trailing tags are phase<N> and return the (last) phase, default 0.
-template <class... Tags>
-constexpr int phase_of() {
-  static_assert((phase_value<Tags>::is && ...),
-                "the only allowed system tag is phase<N>; component/resource "
-                "access is derived from the system's parameters");
-  int p = 0;
-  ((p = phase_value<Tags>::value), ...);
-  return p;
-}
-
 } // namespace detail
 
 class Schedule {
@@ -166,22 +141,20 @@ public:
     bool once = false;
   };
 
-  // Register a system. Its access is derived from its parameter types; the only
-  // accepted trailing tag is phase<N> (ordering). Returns a handle remove() can
-  // unschedule. Example:
+  // Register a system. Its access is derived from its parameter types; an
+  // optional trailing phase<N> tag gives coarse ordering (default phase 0).
+  // Returns a handle remove() can unschedule. Example:
   //   sched.add("integrate", [](Query<Position, const Velocity> q){ ... });
   //   sched.add("startup",   setup_fn, phase<-1>{});
-  template <class Fn, class... Tags>
-  SystemId add(std::string name, Fn&& fn, Tags...) {
-    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false,
-                   detail::phase_of<Tags...>());
+  template <class Fn, int P = 0>
+  SystemId add(std::string name, Fn&& fn, phase<P> = {}) {
+    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P);
   }
 
   // One-shot system: runs on the next run() and is then removed (e.g. setup).
-  template <class Fn, class... Tags>
-  SystemId add_once(std::string name, Fn&& fn, Tags...) {
-    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true,
-                   detail::phase_of<Tags...>());
+  template <class Fn, int P = 0>
+  SystemId add_once(std::string name, Fn&& fn, phase<P> = {}) {
+    return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
   }
 
   // Unschedule a system by handle. Returns true if it was present.
