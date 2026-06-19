@@ -66,7 +66,19 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/examples/nbody
+./build/benchmarks/soa_bench           # SoA layout microbenchmarks
 ```
+
+### Benchmarks
+
+`benchmarks/soa_bench` measures the structure-of-arrays storage against a plain
+array-of-structures baseline and the two query paths (`each` vs
+`for_each_chunk`) across representative workloads — integrate, multi
+read+write, single-field read, compute-bound, and the write-back cost of an
+unmarked read. It is always built `-O3 -march=native`. Override the workload
+size with `soa_bench [entities] [iters] [repeats]`. Results are ns per entity
+per sweep; the ratios (SoA vs AoS, `const` vs not) are stable run-to-run, the
+absolute values track the host's memory subsystem.
 
 ### C++26 reflection
 

@@ -10,7 +10,8 @@ project(ecs LANGUAGES CXX)
 # is used so the project builds on stock Clang/GCC.
 option(ECS_USE_P2996 "Use real C++26 P2996 static reflection" OFF)
 option(ECS_BUILD_TESTS "Build the test suite" ON)
-option(ECS_BUILD_EXAMPLES "Build examples/benchmark" ON)
+option(ECS_BUILD_EXAMPLES "Build examples" ON)
+option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
 
 if(ECS_USE_P2996)
   set(CMAKE_CXX_STANDARD 26)
@@ -60,4 +61,8 @@ endif()
 
 if(ECS_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(ECS_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()
