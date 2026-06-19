@@ -124,6 +124,15 @@ query<Position, const Velocity>(w).for_each_chunk(
 `each` is the convenience path (per-row gather/scatter + a tuple); prefer
 `for_each_chunk` for hot loops.
 
+The set of archetypes a query matches is **cached** per required-component
+signature, so a repeated query costs an O(1) lookup plus iteration of just the
+matching archetypes rather than a re-scan of every archetype each call. The
+cache is built lazily on first use and extended whenever a new matching
+archetype is created; it is mutex-guarded so parallel systems can query
+concurrently (the returned match list stays valid after the lock is released
+because the cache is append-only and `unordered_map` element references survive
+rehash).
+
 ## 5. Async-runtime compatible (std::execution / P2300)
 
 A *system* is `void(World&, Commands&)` plus the sets of components and resources

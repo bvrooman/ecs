@@ -125,6 +125,17 @@ static void spawn_goes_directly_to_final_archetype() {
   CHECK(w.archetypes().size() == 2);
 }
 
+static void query_cache_sees_archetypes_created_after_first_query() {
+  World w;
+  setup(w, [&](World&, Commands& cmd) { cmd.spawn(Position{1, 1}); }); // {Position}
+  CHECK((query<Position>(w).count() == 1)); // builds the cache for {Position}
+
+  // A new archetype {Position, Velocity} created later must enter the cache.
+  setup(w, [&](World&, Commands& cmd) { cmd.spawn(Position{2, 2}, Velocity{1, 1}); });
+  CHECK((query<Position>(w).count() == 2));
+  CHECK((query<Position, Velocity>(w).count() == 1));
+}
+
 int main() {
   RUN_SUITE(create_and_query);
   RUN_SUITE(add_remove_moves_archetype_preserving_data);
@@ -132,5 +143,6 @@ int main() {
   RUN_SUITE(soa_fast_path);
   RUN_SUITE(const_query_marks_read_only);
   RUN_SUITE(spawn_goes_directly_to_final_archetype);
+  RUN_SUITE(query_cache_sees_archetypes_created_after_first_query);
   return REPORT();
 }

@@ -115,6 +115,24 @@ public:
   }
   std::vector<std::unique_ptr<Archetype>>& archetypes() { return archetypes_; }
 
+  // Indices of the archetypes whose signature contains all of `required`
+  // (sorted). Cached per required-signature and kept current as archetypes are
+  // created, so a repeated query does not re-scan every archetype. Thread-safe:
+  // parallel systems may build/read caches concurrently. The returned reference
+  // stays valid after the lock is released (unordered_map element references
+  // survive rehash) and the vector is only appended at flush, never mid-wave.
+  const std::vector<std::uint32_t>& matching_archetypes(
+      const Signature& required) const {
+    std::lock_guard lock(query_cache_mutex_);
+    if (auto it = query_cache_.find(required); it != query_cache_.end())
+      return it->second;
+    std::vector<std::uint32_t> matches;
+    for (std::uint32_t i = 0; i < archetypes_.size(); ++i)
+      if (includes_signature(archetypes_[i]->signature, required))
+        matches.push_back(i);
+    return query_cache_.emplace(required, std::move(matches)).first->second;
+  }
+
 private:
   friend class Commands;  // the mutation API; records into commands_
   friend class Schedule;  // creates Commands and flushes at barriers
@@ -247,7 +265,16 @@ private:
     makeColumns(*arch);
     sig_index_.emplace(sig, idx);
     archetypes_.push_back(std::move(arch));
+    // Extend any existing query caches the new archetype matches (runs at flush,
+    // single-threaded; queries only read caches during a wave).
+    std::lock_guard lock(query_cache_mutex_);
+    for (auto& [required, list] : query_cache_)
+      if (includes_signature(sig, required)) list.push_back(idx);
     return idx;
+  }
+
+  static bool includes_signature(const Signature& super, const Signature& sub) {
+    return std::includes(super.begin(), super.end(), sub.begin(), sub.end());
   }
 
   template <class Factory>
@@ -298,6 +325,10 @@ private:
   ResourceRegistry resources_;
   std::vector<std::unique_ptr<Archetype>> archetypes_;
   std::unordered_map<Signature, std::uint32_t, detail::SigHash> sig_index_;
+  // required-signature -> matching archetype indices (lazy, append-only).
+  mutable std::unordered_map<Signature, std::vector<std::uint32_t>,
+                             detail::SigHash> query_cache_;
+  mutable std::mutex query_cache_mutex_;
   std::vector<Record> records_;
   std::vector<std::uint32_t> free_;
   std::uint32_t empty_archetype_ = 0;

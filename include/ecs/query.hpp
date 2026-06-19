@@ -26,6 +26,7 @@
 
 #include "world.hpp"
 
+#include <algorithm>
 #include <span>
 #include <tuple>
 #include <type_traits>
@@ -38,14 +39,25 @@ class Query {
   template <class C>
   using bare = std::remove_const_t<C>; // component type minus the read-only mark
 
+  // The sorted set of required component ids, built once. Component ids are
+  // stable after first use, so this is computed on the first query of this type.
+  static const Signature& required() {
+    static const Signature s = [] {
+      Signature v{component_id<bare<Cs>>...};
+      std::sort(v.begin(), v.end());
+      return v;
+    }();
+    return s;
+  }
+
 public:
   explicit Query(World& world) : world_(world) {}
 
   template <class F>
   void each(F&& fn) {
-    for (auto& arch_ptr : world_.archetypes()) {
-      auto& arch = *arch_ptr;
-      if (!matches(arch)) continue;
+    auto& archs = world_.archetypes();
+    for (std::uint32_t ai : world_.matching_archetypes(required())) {
+      auto& arch = *archs[ai];
       auto stores = std::tie(arch.template column<bare<Cs>>().store...);
       const auto n = arch.size();
       for (std::size_t row = 0; row < n; ++row)
@@ -56,25 +68,21 @@ public:
 
   template <class F>
   void for_each_chunk(F&& fn) {
-    for (auto& arch_ptr : world_.archetypes()) {
-      auto& arch = *arch_ptr;
-      if (!matches(arch)) continue;
+    auto& archs = world_.archetypes();
+    for (std::uint32_t ai : world_.matching_archetypes(required())) {
+      auto& arch = *archs[ai];
       fn(std::span<Entity>(arch.entities), chunk_arg<Cs>(arch)...);
     }
   }
 
   std::size_t count() const {
     std::size_t n = 0;
-    for (auto& arch_ptr : world_.archetypes())
-      if (matches(*arch_ptr)) n += arch_ptr->size();
+    for (std::uint32_t ai : world_.matching_archetypes(required()))
+      n += world_.archetypes()[ai]->size();
     return n;
   }
 
 private:
-  static bool matches(const Archetype& arch) {
-    return (arch.has(component_id<bare<Cs>>) && ...);
-  }
-
   // Read-only components get a const storage reference (whose column<I>() yields
   // spans of const), mutable ones a non-const reference.
   template <class C>
