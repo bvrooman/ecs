@@ -1,4 +1,4 @@
-// std::execution scheduler tests.
+// std::execution scheduler tests. Access is derived from system parameters.
 #include "check.hpp"
 #include "setup.hpp"
 
@@ -13,10 +13,9 @@ struct Health { int hp; };
 
 static void leveling_respects_conflicts() {
   Schedule sched;
-  sched.add("physics", [](World&, Commands&) {}, reads<Velocity>{},
-            writes<Position>{});
-  sched.add("damage", [](World&, Commands&) {}, writes<Health>{});
-  sched.add("render", [](World&, Commands&) {}, reads<Position>{});
+  sched.add("physics", [](Query<Position>) {});       // writes Position
+  sched.add("damage", [](Query<Health>) {});          // writes Health
+  sched.add("render", [](Query<const Position>) {});  // reads Position
   // physics & damage are independent -> level 0; render reads Position that
   // physics writes -> level 1.
   CHECK(sched.level_count() == 2);
@@ -28,40 +27,35 @@ static void leveling_respects_conflicts() {
 static void parallel_systems_are_independent_levels() {
   Schedule sched;
   // Three systems with disjoint writes -> all level 0, fully parallel.
-  sched.add("a", [](World&, Commands&) {}, writes<Position>{});
-  sched.add("b", [](World&, Commands&) {}, writes<Velocity>{});
-  sched.add("c", [](World&, Commands&) {}, writes<Health>{});
+  sched.add("a", [](Query<Position>) {});
+  sched.add("b", [](Query<Velocity>) {});
+  sched.add("c", [](Query<Health>) {});
   CHECK(sched.level_count() == 1);
 }
 
 static void run_on_thread_pool_executes_all_systems() {
   World w;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 1000; ++i)
       cmd.spawn(Position{0, 0}, Velocity{1, 2}, Health{100});
   });
 
   std::atomic<int> render_calls{0};
   Schedule sched;
-  sched.add("physics",
-            [](World& wr, Commands&) {
-              query<Position, Velocity>(wr).each([](Entity, Position& p,
-                                                    Velocity& v) {
-                p.x += v.dx;
-                p.y += v.dy;
-              });
-            },
-            reads<Velocity>{}, writes<Position>{});
-  sched.add("damage",
-            [](World& wr, Commands&) {
-              query<Health>(wr).each([](Entity, Health& h) { h.hp -= 1; });
-            },
-            writes<Health>{});
+  // writes Position, reads Velocity
+  sched.add("physics", [](Query<Position, const Velocity> q) {
+    q.each([](Entity, Position& p, const Velocity& v) {
+      p.x += v.dx;
+      p.y += v.dy;
+    });
+  });
+  // writes Health
+  sched.add("damage", [](Query<Health> q) {
+    q.each([](Entity, Health& h) { h.hp -= 1; });
+  });
+  // no ECS access -- just a side effect
   sched.add("render",
-            [&](World&, Commands&) {
-              render_calls.fetch_add(1, std::memory_order_relaxed);
-            },
-            reads<Position>{});
+            [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 
   exec::static_thread_pool pool{4};
   auto scheduler = pool.get_scheduler();

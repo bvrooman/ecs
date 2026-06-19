@@ -135,24 +135,38 @@ rehash).
 
 ## 5. Async-runtime compatible (std::execution / P2300)
 
-A *system* is `void(World&, Commands&)` plus the sets of components and resources
-it **reads** and **writes** (the callable first, then any number of access tags):
+A *system* is a callable whose **parameter types declare what it touches** --
+the scheduler derives the read/write sets from them and constructs the
+parameters when the system runs, so the declaration cannot drift from the
+actual access:
 
 ```cpp
 Schedule s;
-s.add("gravity",   gravity_fn,   reads<Mass>{},     writes<Velocity>{},
-                                 reads_res<Gravity>{});
-s.add("integrate", integrate_fn, reads<Velocity>{}, writes<Position>{});
+// reads Mass + the Gravity resource, writes Velocity -- all from the params
+s.add("gravity",   [](Query<Velocity, const Mass> q, Res<Gravity> g){ ... });
+// reads Velocity, writes Position
+s.add("integrate", [](Query<Position, const Velocity> q){ ... });
 s.run(world, scheduler);   // scheduler is any P2300 scheduler
 ```
 
+The system parameters are:
+
+| param | access it declares | what it is |
+|---|---|---|
+| `Query<Cs...>` | each `const C` a read, each non-const `C` a write | iterate matching entities |
+| `Res<T>` / `ResMut<T>` | read / write resource T | typed resource handle |
+| `Commands&` | none (deferred side channel) | record structural edits |
+| `World&` | *exclusive* — runs alone | ad-hoc read escape hatch |
+
+A trailing `phase<N>` tag is the only non-parameter argument (ordering).
+
 Conflict analysis: two systems conflict when one's write set intersects the
-other's read-or-write set — evaluated independently over the component id space
-and the resource id space, so a shared mutable resource serializes two systems
-even when their component access is disjoint. Each system is assigned a
-**level** equal to `1 + max(level)` over earlier-registered conflicting systems.
-Same-level systems are provably conflict-free and therefore run concurrently;
-levels are separated by a barrier.
+other's read-or-write set — evaluated independently over the component and
+resource id spaces, so a shared mutable resource serializes two systems even
+when their component access is disjoint, and a `World&` (exclusive) system
+conflicts with everything. Each system is assigned a **level** equal to
+`1 + max(level)` over earlier conflicting systems; same-level systems are
+conflict-free and run concurrently, separated by a barrier.
 
 Execution is pure senders/receivers: each system becomes
 `starts_on(scheduler, then(just(), run))`, spawned into an
@@ -162,21 +176,19 @@ scheduler or an Asio-backed one — which is what "async-runtime compatible"
 means in practice. The reference P2300 implementation (NVIDIA `stdexec`) is
 pulled in via CMake `FetchContent`.
 
-### What the scheduler trusts (read this before relying on parallelism)
+### What the scheduler trusts
 
-The conflict analysis is only as correct as the access a system *declares*:
+Because access is *derived from parameter types*, a parallel system cannot read
+or write a component/resource it did not declare -- `Query`/`Res`/`ResMut` are
+the only way to reach that state, and each contributes its access. The two
+remaining caveats:
 
-* **Declared access must match actual access.** Nothing checks that a system's
-  `query<…>` and resource use line up with its `reads<>/writes<>/reads_res<>/
-  writes_res<>` tags. A system that touches a component or resource it did not
-  declare can run concurrently with a conflicting system and race. (Marking
-  read-only query components `const` — `query<const Position, Velocity>` — helps
-  on the component side by preventing the write-back of components you only
-  read; see §4. Deriving access from typed system parameters, bevy-style, would
-  remove the foot-gun entirely, at the cost of a larger redesign.)
-* **Resource access is not gated.** `world.resource<T>()` is reachable from any
-  system (and external threads) regardless of declarations; undeclared resource
-  mutation is the most likely way to introduce an undetected race.
+* **`World&` is the escape hatch, and it is exclusive.** A system that takes a
+  raw `World&` can do ad-hoc reads (queries, `size`, `get`, `has`) that cannot
+  be analyzed, so it is marked exclusive and runs alone. This is *loud* (it
+  serializes) rather than a silent race — prefer `Query`/`Res` for parallelism.
+  (Resource reads from outside any system, e.g. a consumer thread calling
+  `world.resource<T>()`, remain the caller's responsibility.)
 * **Parallel runs are not deterministic.** Within a wave, command-recording
   order across threads and `reserve()`'s id handout depend on timing, so entity
   ids and creation order vary run to run. Use the inline `run(world)` (or a
@@ -198,8 +210,8 @@ type, keyed by a `resource_id<T>` in a separate id space from components). They
 are never required to be copyable, so move-only services (a GPU device, an audio
 stream) store directly. The registry is set up before a schedule runs and is not
 mutated during execution, so concurrent `resource<T>()` borrows from parallel
-systems are safe; the scheduler serializes any system declaring `writes_res<T>`
-against others touching the same resource.
+systems are safe; the scheduler serializes any system with a `ResMut<T>`
+parameter against others touching the same resource.
 
 ## 7. Mutation through `Commands` (command-buffer-only)
 
@@ -221,15 +233,15 @@ squirreled away by value (`auto saved = cmd;` is a compile error); only a raw
 pointer/reference can escape, which is a pointer-to-local bug C++ cannot prevent.
 
 ```cpp
-// a system: World& for reads/queries, Commands& for (deferred) mutation
-sched.add("spawn_particles", [](World& w, Commands& cmd) {
-  query<Emitter>(w).each([&](Entity, Emitter& em) {
+// a system: a Query param (here read-only Emitter) + Commands for mutation
+sched.add("spawn_particles", [](Query<const Emitter> q, Commands& cmd) {
+  q.each([&](Entity, const Emitter& em) {
     if (em.fire) {
       Entity p = cmd.spawn(Position{...}, Velocity{...}); // recorded
       cmd.add<Lifetime>(p, {...});                        // edit the handle now
     }
   });
-}, reads<Emitter>{});
+});
 ```
 
 Setup is just a system too -- there is no separate immediate API. Register a
@@ -237,7 +249,7 @@ one-shot system and run the schedule (inline, no thread pool needed):
 
 ```cpp
 Schedule init;
-init.add_once("populate", [&](World&, Commands& cmd) {
+init.add_once("populate", [&](Commands& cmd) {
   for (...) cmd.spawn(Position{...}, Velocity{...});
 });
 init.run(world);   // inline run on the calling thread
@@ -329,11 +341,11 @@ calls `consume()`/`front()`.
 
 ```cpp
 world.emplace_resource<TripleBuffer<Snapshot>>();          // T is user-defined
-sched.add("extract", [](World& w, Commands&){
-  auto& tb = w.resource<TripleBuffer<Snapshot>>();
-  fill(tb.back(), w);   // copy out of the columns
-  tb.publish();
-}, reads<Position, Mesh>{});
+sched.add("extract", [](Query<const Position, const Mesh> q,
+                        ResMut<TripleBuffer<Snapshot>> tb){
+  fill(tb->back(), q);   // copy out of the columns
+  tb->publish();
+});
 // ... on the render/audio thread:
 if (tb.consume()) draw(tb.front());
 ```
@@ -357,11 +369,11 @@ advances only on new data) and hold their own reference while they read.
 
 ```cpp
 world.emplace_resource<SnapshotChannel<Snapshot>>();
-sched.add("extract", [](World& w, Commands&){
-  auto& ch = w.resource<SnapshotChannel<Snapshot>>();
-  fill(ch.back(), w);
-  ch.publish();
-}, reads<Position, Mesh>{}, writes_res<SnapshotChannel<Snapshot>>{});
+sched.add("extract", [](Query<const Position, const Mesh> q,
+                        ResMut<SnapshotChannel<Snapshot>> ch){
+  fill(ch->back(), q);
+  ch->publish();
+});
 // each consumer thread, independently:
 auto r = channel.reader();
 while (running) if (r.poll()) consume(*r.get());

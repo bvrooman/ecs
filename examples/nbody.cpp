@@ -68,22 +68,22 @@ int main() {
 
   Schedule schedule;
 
+  // Access is derived from each system's parameter types: a `const` query
+  // component or Res<T> is a read, a non-const component or ResMut<T> a write.
+
   // gravity: read Mass + the Gravity resource, write Velocity.
-  schedule.add(
-      "gravity",
-      [](World& w, Commands&) {
-        const float a = w.resource<Gravity>().accel;
-        query<Velocity, const Mass>(w).for_each_chunk(
-            [a](std::span<Entity>, soa_storage<Velocity>& vel,
-                const soa_storage<Mass>&) {
-              for (float& vy : vel.column<1>()) vy += a * kDt; // SoA fast path
-            });
-      },
-      reads<Mass>{}, writes<Velocity>{}, reads_res<Gravity>{});
+  schedule.add("gravity",
+               [](Query<Velocity, const Mass> q, Res<Gravity> g) {
+                 const float a = g->accel;
+                 q.for_each_chunk([a](std::span<Entity>, soa_storage<Velocity>& vel,
+                                      const soa_storage<Mass>&) {
+                   for (float& vy : vel.column<1>()) vy += a * kDt; // SoA fast path
+                 });
+               });
 
   // emitter: spawn short-lived tracer particles via Commands, using the handle
   // reservation hands back to attach follow-up components.
-  schedule.add("emitter", [](World&, Commands& cmd) {
+  schedule.add("emitter", [](Commands& cmd) {
     for (int i = 0; i < kEmitPerTick; ++i) {
       Entity e = cmd.spawn(Position{0, 0, 0},
                            Velocity{float(i % 7) - 3, 5, 0}, Mass{1});
@@ -93,48 +93,37 @@ int main() {
   });
 
   // reaper: age every Lifetime and destroy the expired ones (deferred).
-  schedule.add(
-      "reaper",
-      [](World& w, Commands& cmd) {
-        query<Lifetime>(w).each([&](Entity e, Lifetime& l) {
-          if (--l.ticks <= 0) cmd.destroy(e);
-        });
-      },
-      reads<Lifetime>{}, writes<Lifetime>{});
+  schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
+    q.each([&](Entity e, Lifetime& l) {
+      if (--l.ticks <= 0) cmd.destroy(e);
+    });
+  });
 
   // integrate: read Velocity, write Position. Reads what gravity wrote, so the
   // scheduler places it on a later level automatically.
-  schedule.add(
-      "integrate",
-      [](World& w, Commands&) {
-        query<Position, const Velocity>(w).for_each_chunk(
-            [](std::span<Entity>, soa_storage<Position>& pos,
-               const soa_storage<Velocity>& vel) {
-              auto px = pos.column<0>(); auto py = pos.column<1>();
-              auto pz = pos.column<2>(); auto vx = vel.column<0>();
-              auto vy = vel.column<1>(); auto vz = vel.column<2>();
-              for (std::size_t i = 0; i < px.size(); ++i) {
-                px[i] += vx[i] * kDt;
-                py[i] += vy[i] * kDt;
-                pz[i] += vz[i] * kDt;
-              }
-            });
-      },
-      reads<Velocity>{}, writes<Position>{});
+  schedule.add("integrate", [](Query<Position, const Velocity> q) {
+    q.for_each_chunk([](std::span<Entity>, soa_storage<Position>& pos,
+                        const soa_storage<Velocity>& vel) {
+      auto px = pos.column<0>(); auto py = pos.column<1>();
+      auto pz = pos.column<2>(); auto vx = vel.column<0>();
+      auto vy = vel.column<1>(); auto vz = vel.column<2>();
+      for (std::size_t i = 0; i < px.size(); ++i) {
+        px[i] += vx[i] * kDt;
+        py[i] += vy[i] * kDt;
+        pz[i] += vz[i] * kDt;
+      }
+    });
+  });
 
   // extract: read tracer Positions (written by integrate -> later level) and
   // publish them to the snapshot channel for the consumer threads.
-  schedule.add(
-      "extract",
-      [](World& w, Commands&) {
-        auto& ch = w.resource<SnapshotChannel<RenderSnapshot>>();
-        RenderSnapshot& out = ch.back();
-        out.clear();
-        query<const Position, const Tracer>(w).each(
-            [&](Entity, const Position& p, const Tracer&) { out.push_back(p); });
-        ch.publish();
-      },
-      reads<Position>{}, writes_res<SnapshotChannel<RenderSnapshot>>{});
+  schedule.add("extract", [](Query<const Position, const Tracer> q,
+                             ResMut<SnapshotChannel<RenderSnapshot>> ch) {
+    RenderSnapshot& out = ch->back();
+    out.clear();
+    q.each([&](Entity, const Position& p, const Tracer&) { out.push_back(p); });
+    ch->publish();
+  });
 
   std::printf("schedule: %zu systems across %zu parallel levels\n",
               schedule.size(), schedule.level_count());

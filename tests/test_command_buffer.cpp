@@ -1,5 +1,4 @@
-// Commands mutation API: deferral, setup, spawn_n, one-shot/phased/removable
-// systems.
+// Commands mutation API: deferral, setup, one-shot/phased/removable systems.
 #include "check.hpp"
 #include "setup.hpp"
 
@@ -15,6 +14,7 @@ struct Doomed {}; // tag marking entities to delete
 
 // A run context (here a setup system run inline) records mutations and flushes
 // when it ends -- so entities are live afterwards, but not during the callback.
+// (Taking World& makes the system exclusive; fine for a single setup system.)
 static void setup_applies_after_it_ends() {
   World w;
   Entity e;
@@ -30,10 +30,10 @@ static void setup_applies_after_it_ends() {
 static void destroy_during_iteration_is_safe() {
   World w;
   std::vector<Entity> all;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 10; ++i) all.push_back(cmd.spawn(Position{float(i), 0}));
   });
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 10; i += 2) cmd.add<Doomed>(all[i], {}); // mark evens
   });
 
@@ -51,7 +51,7 @@ static void destroy_during_iteration_is_safe() {
 static void add_and_remove() {
   World w;
   Entity e;
-  setup(w, [&](World&, Commands& cmd) { e = cmd.spawn(Position{1, 2}); });
+  setup(w, [&](Commands& cmd) { e = cmd.spawn(Position{1, 2}); });
 
   setup(w, [&](World& wr, Commands& cmd) {
     cmd.add<Velocity>(e, Velocity{3, 4});
@@ -61,7 +61,7 @@ static void add_and_remove() {
   CHECK(w.get<Velocity>(e).dx == 3.f);
   CHECK(w.get<Position>(e).y == 2.f); // survived archetype move
 
-  setup(w, [&](World&, Commands& cmd) { cmd.remove<Velocity>(e); });
+  setup(w, [&](Commands& cmd) { cmd.remove<Velocity>(e); });
   CHECK(!w.has<Velocity>(e));
 }
 
@@ -69,7 +69,7 @@ static void spawn_returns_usable_handle() {
   World w;
   Entity e;
   setup(w, [&](World& wr, Commands& cmd) {
-    e = cmd.spawn(Position{7, 8});       // handle valid immediately
+    e = cmd.spawn(Position{7, 8});        // handle valid immediately
     cmd.add<Velocity>(e, Velocity{1, 2}); // follow-up edit on it
     CHECK(!wr.alive(e));                  // materializes at flush
   });
@@ -82,7 +82,7 @@ static void spawn_returns_usable_handle() {
 static void reserved_handles_are_distinct() {
   World w;
   Entity a, b, c;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     a = cmd.spawn(Position{0, 0});
     b = cmd.spawn(Position{0, 0});
     c = cmd.spawn(Position{0, 0});
@@ -95,11 +95,11 @@ static void reserved_handles_are_distinct() {
 static void reserved_slot_reuse_bumps_generation() {
   World w;
   Entity first;
-  setup(w, [&](World&, Commands& cmd) { first = cmd.spawn(Position{1, 1}); });
-  setup(w, [&](World&, Commands& cmd) { cmd.destroy(first); });
+  setup(w, [&](Commands& cmd) { first = cmd.spawn(Position{1, 1}); });
+  setup(w, [&](Commands& cmd) { cmd.destroy(first); });
 
   Entity reused;
-  setup(w, [&](World&, Commands& cmd) { reused = cmd.spawn(Position{2, 2}); });
+  setup(w, [&](Commands& cmd) { reused = cmd.spawn(Position{2, 2}); });
   CHECK(reused.index == first.index);            // slot reused
   CHECK(reused.generation != first.generation);  // fresh generation
   CHECK(!w.alive(first));                          // stale handle stays dead
@@ -109,8 +109,8 @@ static void reserved_slot_reuse_bumps_generation() {
 static void destroy_then_add_is_safe() {
   World w;
   Entity e;
-  setup(w, [&](World&, Commands& cmd) { e = cmd.spawn(Position{0, 0}); });
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) { e = cmd.spawn(Position{0, 0}); });
+  setup(w, [&](Commands& cmd) {
     cmd.destroy(e);
     cmd.add<Velocity>(e, Velocity{9, 9}); // targets an entity destroyed earlier
   });
@@ -123,7 +123,7 @@ static void destroy_then_add_is_safe() {
 static void bulk_spawn_loop() {
   World w;
   std::vector<Entity> es;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (std::size_t i = 0; i < 1000; ++i)
       es.push_back(cmd.spawn(Position{float(i), 0}, Velocity{1, 1}));
     for (std::size_t i = 0; i < 50; ++i) cmd.spawn(Position{float(i), -1});
@@ -143,31 +143,31 @@ static void bulk_spawn_loop() {
 }
 
 // Inside a schedule, mutations record automatically and flush at each barrier.
+// The consumer is ordered after the producer with a phase (real ordering rather
+// than a fabricated access conflict).
 static void schedule_flushes_between_levels() {
   World w;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 4; ++i) cmd.spawn(Position{0, 0}, Velocity{1, 1});
   });
 
   std::atomic<int> seen_by_consumer{0};
   Schedule sched;
-  sched.add("producer",
-            [](World&, Commands& cmd) {
-              for (int i = 0; i < 3; ++i) cmd.spawn(Position{9, 9});
-            },
-            writes<Velocity>{});
+  sched.add("producer", [](Commands& cmd) {
+    for (int i = 0; i < 3; ++i) cmd.spawn(Position{9, 9});
+  });
   sched.add("consumer",
-            [&](World& wr, Commands&) {
-              seen_by_consumer.store(int(query<Position>(wr).count()));
+            [&](Query<const Position> q) {
+              seen_by_consumer.store(int(q.count()));
             },
-            reads<Velocity>{});
+            phase<1>{});
 
-  CHECK(sched.level_count() == 2);
+  CHECK(sched.level_count() == 2); // phase 0 producer, phase 1 consumer
   exec::static_thread_pool pool{4};
   sched.run(w, pool.get_scheduler());
 
   CHECK(w.size() == 7);                // 4 original + 3 spawned
-  CHECK(seen_by_consumer.load() == 7); // consumer saw wave 0's flush
+  CHECK(seen_by_consumer.load() == 7); // consumer saw the producer's flush
 }
 
 static void concurrent_reserve_and_followup_edits() {
@@ -176,13 +176,13 @@ static void concurrent_reserve_and_followup_edits() {
   constexpr int kSystems = 8;
   constexpr int kPerSystem = 250;
   for (int s = 0; s < kSystems; ++s)
-    sched.add("spawner", [](World&, Commands& cmd) {
+    sched.add("spawner", [](Commands& cmd) {
       for (int i = 0; i < kPerSystem; ++i) {
         Entity e = cmd.spawn(Position{1, 1});
         cmd.add<Velocity>(e, Velocity{2, 2});
       }
     });
-  CHECK(sched.level_count() == 1);
+  CHECK(sched.level_count() == 1); // no tracked access -> all parallel
 
   exec::static_thread_pool pool{8};
   sched.run(w, pool.get_scheduler());
@@ -191,12 +191,11 @@ static void concurrent_reserve_and_followup_edits() {
   CHECK((query<Position, Velocity>(w).count() == total)); // no lost edits
 }
 
-// add_once: a setup system that runs on the next run() and is then removed.
 static void add_once_runs_once_then_removed() {
   World w;
   Schedule sched;
   std::atomic<int> runs{0};
-  sched.add_once("setup", [&](World&, Commands& cmd) {
+  sched.add_once("setup", [&](Commands& cmd) {
     runs.fetch_add(1, std::memory_order_relaxed);
     cmd.spawn(Position{1, 1});
     cmd.spawn(Position{2, 2});
@@ -214,18 +213,15 @@ static void add_once_runs_once_then_removed() {
   CHECK(w.size() == 2);
 }
 
-// Phases order systems across barriers regardless of conflicts.
 static void phase_orders_startup_before_update() {
   World w;
   Schedule sched;
   std::atomic<int> seen{-1};
-  sched.add_once("startup",
-                 [](World&, Commands& cmd) { cmd.spawn(Position{0, 0}); },
+  sched.add_once("startup", [](Commands& cmd) { cmd.spawn(Position{0, 0}); },
                  phase<-1>{});
   sched.add("update",
-            [&](World& wr, Commands&) {
-              seen.store(int(query<Position>(wr).count()),
-                         std::memory_order_relaxed);
+            [&](Query<const Position> q) {
+              seen.store(int(q.count()), std::memory_order_relaxed);
             },
             phase<0>{});
 
@@ -238,14 +234,12 @@ static void phase_orders_startup_before_update() {
   CHECK(sched.size() == 1); // startup (one-shot) removed; update remains
 }
 
-// remove(): unschedule a system by its handle.
 static void remove_unschedules_system() {
   World w;
   Schedule sched;
   std::atomic<int> runs{0};
-  SystemId id = sched.add("counter",
-                          [&](World&, Commands&) { runs.fetch_add(1); });
-  sched.add("keep", [](World&, Commands&) {});
+  SystemId id = sched.add("counter", [&] { runs.fetch_add(1); });
+  sched.add("keep", [] {});
   CHECK(sched.size() == 2);
 
   CHECK(sched.remove(id));
@@ -257,12 +251,11 @@ static void remove_unschedules_system() {
   CHECK(runs.load() == 0); // removed system never ran
 }
 
-// Inline run: schedule.run(world) with no scheduler executes on this thread.
 static void inline_run_executes_systems() {
   World w;
   Schedule sched;
   std::atomic<int> ran{0};
-  sched.add("spawn3", [&](World&, Commands& cmd) {
+  sched.add("spawn3", [&](Commands& cmd) {
     ran.fetch_add(1);
     for (int i = 0; i < 3; ++i) cmd.spawn(Position{0, 0});
   });

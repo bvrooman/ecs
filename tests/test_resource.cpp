@@ -50,16 +50,16 @@ static void const_access() {
 }
 
 static void resource_conflict_serializes() {
-  // Two systems that both write the same resource must land on different
-  // levels; two that only read it may share a level.
+  // Two systems that both write the same resource (ResMut) must land on
+  // different levels; two that only read it (Res) may share a level.
   Schedule sched;
-  sched.add("writer_a", [](World&, Commands&) {}, writes_res<Counter>{});
-  sched.add("writer_b", [](World&, Commands&) {}, writes_res<Counter>{});
+  sched.add("writer_a", [](ResMut<Counter>) {});
+  sched.add("writer_b", [](ResMut<Counter>) {});
   CHECK(sched.level_count() == 2);
 
   Schedule readers;
-  readers.add("reader_a", [](World&, Commands&) {}, reads_res<Counter>{});
-  readers.add("reader_b", [](World&, Commands&) {}, reads_res<Counter>{});
+  readers.add("reader_a", [](Res<Counter>) {});
+  readers.add("reader_b", [](Res<Counter>) {});
   CHECK(readers.level_count() == 1);
 }
 
@@ -67,28 +67,25 @@ static void resource_and_component_conflicts_are_independent() {
   // A resource conflict alone is enough to serialize, even when component
   // access is disjoint.
   Schedule sched;
-  sched.add("a", [](World&, Commands&) {}, writes<Position>{}, writes_res<Counter>{});
-  sched.add("b", [](World&, Commands&) {}, reads_res<Counter>{}); // no component overlap
-  CHECK(sched.level_count() == 2); // serialized purely by the resource
+  sched.add("a", [](Query<Position>, ResMut<Counter>) {});
+  sched.add("b", [](Res<Counter>) {}); // no component overlap
+  CHECK(sched.level_count() == 2);     // serialized purely by the resource
 }
 
 static void serialized_writers_run_without_races() {
   World w;
   w.emplace_resource<Counter>();
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 10'000; ++i) cmd.spawn(Position{1.0f});
   });
 
-  // Both systems mutate the shared Counter; declaring writes_res<Counter>
-  // forces them onto separate levels, so the unsynchronized ++ is safe.
+  // Both systems mutate the shared Counter; ResMut<Counter> on each forces them
+  // onto separate levels, so the unsynchronized += is safe.
   Schedule sched;
-  sched.add("inc_by_count",
-            [](World& wr, Commands&) {
-              wr.resource<Counter>().n += int(query<Position>(wr).count());
-            },
-            reads<Position>{}, writes_res<Counter>{});
-  sched.add("inc_by_one", [](World& wr, Commands&) { wr.resource<Counter>().n += 1; },
-            writes_res<Counter>{});
+  sched.add("inc_by_count", [](Query<const Position> q, ResMut<Counter> c) {
+    c->n += int(q.count());
+  });
+  sched.add("inc_by_one", [](ResMut<Counter> c) { c->n += 1; });
 
   CHECK(sched.level_count() == 2);
 

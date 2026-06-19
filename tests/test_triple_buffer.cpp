@@ -84,7 +84,7 @@ using PositionSnapshot = std::vector<Position>;
 
 static void world_extraction_handoff() {
   World w;
-  setup(w, [&](World&, Commands& cmd) {
+  setup(w, [&](Commands& cmd) {
     for (int i = 0; i < 1000; ++i) cmd.spawn(Position{float(i), 0});
   });
   w.emplace_resource<TripleBuffer<PositionSnapshot>>();
@@ -106,22 +106,18 @@ static void world_extraction_handoff() {
   });
 
   Schedule sched;
-  sched.add(
-      "extract",
-      [](World& wr, Commands&) {
-        auto& tb = wr.resource<TripleBuffer<PositionSnapshot>>();
-        PositionSnapshot& out = tb.back();
-        out.clear();
-        query<Position>(wr).for_each_chunk(
-            [&](std::span<Entity>, soa_storage<Position>& pos) {
-              auto xs = pos.column<0>();
-              auto ys = pos.column<1>();
-              for (std::size_t i = 0; i < xs.size(); ++i)
-                out.push_back(Position{xs[i], ys[i]});
-            });
-        tb.publish();
-      },
-      reads<Position>{}, reads_res<TripleBuffer<PositionSnapshot>>{});
+  sched.add("extract", [](Query<const Position> q,
+                          ResMut<TripleBuffer<PositionSnapshot>> tb) {
+    PositionSnapshot& out = tb->back();
+    out.clear();
+    q.for_each_chunk([&](std::span<Entity>, const soa_storage<Position>& pos) {
+      auto xs = pos.column<0>();
+      auto ys = pos.column<1>();
+      for (std::size_t i = 0; i < xs.size(); ++i)
+        out.push_back(Position{xs[i], ys[i]});
+    });
+    tb->publish();
+  });
 
   exec::static_thread_pool pool{4};
   for (int frame = 0; frame < 50; ++frame) sched.run(w, pool.get_scheduler());

@@ -402,4 +402,32 @@ private:
   World* world_;
 };
 
+// Typed resource access for system parameters: Res<T> is a read of resource T,
+// ResMut<T> a write. They resolve the resource once at construction. The
+// scheduler derives a system's declared resource access from these parameter
+// types (see schedule.hpp), so the declaration cannot drift from actual use.
+template <class T>
+class Res {
+public:
+  explicit Res(World& w) : ptr_(&w.resource<T>()) {}
+  const T& operator*() const noexcept { return *ptr_; }
+  const T* operator->() const noexcept { return ptr_; }
+  const T& get() const noexcept { return *ptr_; }
+
+private:
+  const T* ptr_;
+};
+
+template <class T>
+class ResMut {
+public:
+  explicit ResMut(World& w) : ptr_(&w.resource<T>()) {}
+  T& operator*() const noexcept { return *ptr_; }
+  T* operator->() const noexcept { return ptr_; }
+  T& get() const noexcept { return *ptr_; }
+
+private:
+  T* ptr_;
+};
+
 } // namespace ecs
