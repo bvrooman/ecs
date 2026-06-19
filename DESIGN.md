@@ -102,21 +102,27 @@ Structural edits use swap-and-pop to keep every column dense, patching the
 relocated entity's row record in O(1). Archetype objects are heap-allocated so
 their addresses stay stable as new archetypes appear.
 
-Queries offer both styles:
+Queries offer both styles. Mark a component `const` in the query type to read it
+without writing it back -- `each` then passes it by `const&` and skips its
+scatter (and `for_each_chunk` hands a `const` storage), which avoids both the
+cost and the *undeclared write* of touching a component you only read:
 
 ```cpp
-// ergonomic: gather -> mutate refs -> scatter back
-query<Position, Velocity>(w).each([](Entity, Position& p, Velocity& v){
-  p.x += v.x;
+// ergonomic: gather -> mutate refs -> scatter back the non-const ones
+query<Position, const Velocity>(w).each([](Entity, Position& p, const Velocity& v){
+  p.x += v.x;   // Velocity is read-only: not written back
 });
 
 // fast path: raw columns, tight contiguous loop
-query<Position, Velocity>(w).for_each_chunk(
-  [](std::span<Entity>, soa_storage<Position>& pos, soa_storage<Velocity>& vel){
-    auto px = pos.column<0>(); auto vx = vel.column<0>();
+query<Position, const Velocity>(w).for_each_chunk(
+  [](std::span<Entity>, soa_storage<Position>& pos, const soa_storage<Velocity>& vel){
+    auto px = pos.column<0>(); auto vx = vel.column<0>(); // vx is span<const>
     for (size_t i = 0; i < px.size(); ++i) px[i] += vx[i];
   });
 ```
+
+`each` is the convenience path (per-row gather/scatter + a tuple); prefer
+`for_each_chunk` for hot loops.
 
 ## 5. Async-runtime compatible (std::execution / P2300)
 
@@ -146,6 +152,26 @@ P2300 scheduler plugs in — `exec::static_thread_pool` here, but equally a GPU
 scheduler or an Asio-backed one — which is what "async-runtime compatible"
 means in practice. The reference P2300 implementation (NVIDIA `stdexec`) is
 pulled in via CMake `FetchContent`.
+
+### What the scheduler trusts (read this before relying on parallelism)
+
+The conflict analysis is only as correct as the access a system *declares*:
+
+* **Declared access must match actual access.** Nothing checks that a system's
+  `query<…>` and resource use line up with its `reads<>/writes<>/reads_res<>/
+  writes_res<>` tags. A system that touches a component or resource it did not
+  declare can run concurrently with a conflicting system and race. (Marking
+  read-only query components `const` — `query<const Position, Velocity>` — helps
+  on the component side by preventing the write-back of components you only
+  read; see §4. Deriving access from typed system parameters, bevy-style, would
+  remove the foot-gun entirely, at the cost of a larger redesign.)
+* **Resource access is not gated.** `world.resource<T>()` is reachable from any
+  system (and external threads) regardless of declarations; undeclared resource
+  mutation is the most likely way to introduce an undetected race.
+* **Parallel runs are not deterministic.** Within a wave, command-recording
+  order across threads and `reserve()`'s id handout depend on timing, so entity
+  ids and creation order vary run to run. Use the inline `run(world)` (or a
+  single-threaded scheduler) when you need reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
 

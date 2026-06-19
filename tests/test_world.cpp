@@ -85,10 +85,39 @@ static void soa_fast_path() {
   CHECK(seen == 4);
 }
 
+static void const_query_marks_read_only() {
+  World w;
+  Entity e;
+  setup(w, [&](World&, Commands& cmd) {
+    e = cmd.spawn(Position{1, 1}, Velocity{2, 3});
+  });
+  // Velocity read-only (const), Position mutable: only Position is written back.
+  query<const Velocity, Position>(w).each(
+      [](Entity, const Velocity& v, Position& p) { p.x += v.dx; });
+  CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
+  CHECK(w.get<Velocity>(e).dx == 2.f); // untouched
+
+  // for_each_chunk hands a const storage for the read-only component. (Note the
+  // query also matches the now-empty intermediate {Position} archetype left by
+  // the incremental spawn, so accumulate across chunks.)
+  float sum_x = 0;
+  std::size_t seen = 0;
+  query<const Position>(w).for_each_chunk(
+      [&](std::span<Entity>, const soa_storage<Position>& pos) {
+        for (float x : pos.column<0>()) { // span<const float>
+          sum_x += x;
+          ++seen;
+        }
+      });
+  CHECK(seen == 1);
+  CHECK(sum_x == 3.f);
+}
+
 int main() {
   RUN_SUITE(create_and_query);
   RUN_SUITE(add_remove_moves_archetype_preserving_data);
   RUN_SUITE(destroy_and_generation_reuse);
   RUN_SUITE(soa_fast_path);
+  RUN_SUITE(const_query_marks_read_only);
   return REPORT();
 }

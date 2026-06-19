@@ -61,8 +61,11 @@ public:
   }
 
   // Read a component by value (gathered from its per-field columns).
+  // Precondition: has<C>(e). In debug this is asserted; otherwise the missing
+  // column lookup throws std::out_of_range.
   template <class C>
   C get(Entity e) const {
+    assert(has<C>(e) && "World::get<C>(e): entity has no component C");
     const auto& rec = records_[e.index];
     return archetypes_[rec.archetype]->template column<C>().store.gather(rec.row);
   }
@@ -100,12 +103,6 @@ public:
     return archetypes_;
   }
   std::vector<std::unique_ptr<Archetype>>& archetypes() { return archetypes_; }
-
-  // Internal: locate an entity's archetype/row (used by queries' callbacks).
-  std::pair<std::uint32_t, std::uint32_t> locate(Entity e) const {
-    const auto& rec = records_[e.index];
-    return {rec.archetype, rec.row};
-  }
 
 private:
   friend class Commands;  // the mutation API; records into commands_

@@ -73,9 +73,9 @@ int main() {
       "gravity",
       [](World& w, Commands&) {
         const float a = w.resource<Gravity>().accel;
-        query<Velocity, Mass>(w).for_each_chunk(
+        query<Velocity, const Mass>(w).for_each_chunk(
             [a](std::span<Entity>, soa_storage<Velocity>& vel,
-                soa_storage<Mass>&) {
+                const soa_storage<Mass>&) {
               for (float& vy : vel.column<1>()) vy += a * kDt; // SoA fast path
             });
       },
@@ -107,9 +107,9 @@ int main() {
   schedule.add(
       "integrate",
       [](World& w, Commands&) {
-        query<Position, Velocity>(w).for_each_chunk(
+        query<Position, const Velocity>(w).for_each_chunk(
             [](std::span<Entity>, soa_storage<Position>& pos,
-               soa_storage<Velocity>& vel) {
+               const soa_storage<Velocity>& vel) {
               auto px = pos.column<0>(); auto py = pos.column<1>();
               auto pz = pos.column<2>(); auto vx = vel.column<0>();
               auto vy = vel.column<1>(); auto vz = vel.column<2>();
@@ -130,8 +130,8 @@ int main() {
         auto& ch = w.resource<SnapshotChannel<RenderSnapshot>>();
         RenderSnapshot& out = ch.back();
         out.clear();
-        query<Position, Tracer>(w).each(
-            [&](Entity, Position& p, Tracer&) { out.push_back(p); });
+        query<const Position, const Tracer>(w).each(
+            [&](Entity, const Position& p, const Tracer&) { out.push_back(p); });
         ch.publish();
       },
       reads<Position>{}, writes_res<SnapshotChannel<RenderSnapshot>>{});
