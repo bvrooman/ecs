@@ -19,145 +19,197 @@
 // run-to-run, absolute values less so (they track the host's memory subsystem).
 
 #include "bench.hpp"
-
 #include "ecs/ecs.hpp"
-
 #include <cstdlib>
 #include <span>
 #include <vector>
 
 using namespace ecs;
 
-struct Pos { float x, y, z; };
-struct Vel { float x, y, z; };
-struct Acc { float x, y, z; };
+struct Pos {
+    float x, y, z;
+};
+struct Vel {
+    float x, y, z;
+};
+struct Acc {
+    float x, y, z;
+};
 
 // A branch-free, division-free kernel with a per-entity dependency chain but no
 // cross-entity dependency -- representative of nontrivial per-entity math.
-static inline float heavy(float a, float b, float c) {
-  float r = a;
-  r = r * 0.99f + b; r = r * 0.98f + c; r = r * 0.97f + b; r = r * 0.96f + c;
-  r = r * 0.95f + b; r = r * 0.94f + c; r = r * 0.93f + b; r = r * 0.92f + c;
-  r = r * 0.91f + b; r = r * 0.90f + c; r = r * 0.89f + b; r = r * 0.88f + c;
-  r = r * 0.87f + b; r = r * 0.86f + c; r = r * 0.85f + b; r = r * 0.84f + c;
-  return r;
+inline static float heavy(float a, float b, float c) {
+    float r = a;
+
+    r = r * 0.99f + b;
+    r = r * 0.98f + c;
+    r = r * 0.97f + b;
+    r = r * 0.96f + c;
+    r = r * 0.95f + b;
+    r = r * 0.94f + c;
+    r = r * 0.93f + b;
+    r = r * 0.92f + c;
+    r = r * 0.91f + b;
+    r = r * 0.90f + c;
+    r = r * 0.89f + b;
+    r = r * 0.88f + c;
+    r = r * 0.87f + b;
+    r = r * 0.86f + c;
+    r = r * 0.85f + b;
+    r = r * 0.84f + c;
+    return r;
 }
 
 int main(int argc, char** argv) {
-  const std::size_t N = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
-  if (argc > 2) bench::g_iters = std::atoi(argv[2]);
-  if (argc > 3) bench::g_repeats = std::atoi(argv[3]);
+    std::size_t const N = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
+    if (argc > 2)
+        bench::g_iters = std::atoi(argv[2]);
+    if (argc > 3)
+        bench::g_repeats = std::atoi(argv[3]);
 
-  // --- populate the ECS world (one entity = {Pos, Vel, Acc}) ---------------
-  World w;
-  Schedule init;
-  init.add_once("populate", [N](Commands& cmd) {
+    // --- populate the ECS world (one entity = {Pos, Vel, Acc}) ---------------
+    World w;
+    Schedule init;
+    init.add_once("populate", [N](Commands& cmd) {
+        for (std::size_t i = 0; i < N; ++i)
+            cmd.spawn(Pos {float(i), 0, 0}, Vel {1, 1, 1}, Acc {0.01f, 0, 0});
+    });
+    init.run(w);
+
+    // --- an equivalent array-of-structures baseline --------------------------
+    struct Body {
+        Pos p;
+        Vel v;
+        Acc a;
+    };
+    std::vector<Body> aos(N);
     for (std::size_t i = 0; i < N; ++i)
-      cmd.spawn(Pos{float(i), 0, 0}, Vel{1, 1, 1}, Acc{0.01f, 0, 0});
-  });
-  init.run(w);
+        aos[i] = {{float(i), 0, 0}, {1, 1, 1}, {0.01f, 0, 0}};
 
-  // --- an equivalent array-of-structures baseline --------------------------
-  struct Body { Pos p; Vel v; Acc a; };
-  std::vector<Body> aos(N);
-  for (std::size_t i = 0; i < N; ++i)
-    aos[i] = {{float(i), 0, 0}, {1, 1, 1}, {0.01f, 0, 0}};
+    std::printf("SoA layout benchmark: %zu entities, best of %d x %d sweeps\n",
+                N,
+                bench::g_repeats,
+                bench::g_iters);
 
-  std::printf("SoA layout benchmark: %zu entities, best of %d x %d sweeps\n", N,
-              bench::g_repeats, bench::g_iters);
-
-  // 1/2) integrate: write Pos, read Vel ------------------------------------
-  bench::run("each()         integrate (1 RW, 1 RO)", N, [&] {
-    query<Pos, const Vel>(w).each([](Entity, Pos& p, const Vel& v) {
-      p.x += v.x; p.y += v.y; p.z += v.z;
-    });
-  });
-  bench::run("for_each_chunk integrate (1 RW, 1 RO)", N, [&] {
-    query<Pos, const Vel>(w).for_each_chunk(
-        [](std::span<Entity>, soa_storage<Pos>& p, const soa_storage<Vel>& v) {
-          auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-          auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
-          for (std::size_t i = 0; i < px.size(); ++i) {
-            px[i] += vx[i]; py[i] += vy[i]; pz[i] += vz[i];
-          }
+    // 1/2) integrate: write Pos, read Vel ------------------------------------
+    bench::run("each()         integrate (1 RW, 1 RO)", N, [&] {
+        query<Pos, Vel const>(w).each([](Entity, Pos& p, Vel const& v) {
+            p.x += v.x;
+            p.y += v.y;
+            p.z += v.z;
         });
-  });
-
-  // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
-  bench::run("each()         multi (2 RW, 1 RO)", N, [&] {
-    query<Pos, Vel, const Acc>(w).each([](Entity, Pos& p, Vel& v, const Acc& a) {
-      v.x += a.x; v.y += a.y; v.z += a.z;
-      p.x += v.x; p.y += v.y; p.z += v.z;
     });
-  });
-  bench::run("for_each_chunk multi (2 RW, 1 RO)", N, [&] {
-    query<Pos, Vel, const Acc>(w).for_each_chunk(
-        [](std::span<Entity>, soa_storage<Pos>& p, soa_storage<Vel>& v,
-           const soa_storage<Acc>& a) {
-          auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-          auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
-          auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
-          for (std::size_t i = 0; i < px.size(); ++i) {
-            vx[i] += ax[i]; vy[i] += ay[i]; vz[i] += az[i];
-            px[i] += vx[i]; py[i] += vy[i]; pz[i] += vz[i];
-          }
+    bench::run("for_each_chunk integrate (1 RW, 1 RO)", N, [&] {
+        query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
+                                                   soa_storage<Pos>& p,
+                                                   soa_storage<Vel> const& v) {
+            auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+            auto const vx = v.column<0>();
+            auto const vy = v.column<1>();
+            auto const vz = v.column<2>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] += vx[i];
+                py[i] += vy[i];
+                pz[i] += vz[i];
+            }
         });
-  });
-  bench::run("AoS baseline   multi (2 RW, 1 RO)", N, [&] {
-    for (auto& b : aos) {
-      b.v.x += b.a.x; b.v.y += b.a.y; b.v.z += b.a.z;
-      b.p.x += b.v.x; b.p.y += b.v.y; b.p.z += b.v.z;
-    }
-  });
+    });
 
-  // 6) single-field read: sum only Pos.x -----------------------------------
-  bench::run("for_each_chunk sum 1 field (SoA)", N, [&] {
-    float s = 0;
-    query<const Pos>(w).for_each_chunk(
-        [&](std::span<Entity>, const soa_storage<Pos>& p) {
-          auto px = p.column<0>();
-          for (std::size_t i = 0; i < px.size(); ++i) s += px[i];
+    // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
+    bench::run("each()         multi (2 RW, 1 RO)", N, [&] {
+        query<Pos, Vel, Acc const>(w).each([](Entity, Pos& p, Vel& v, Acc const& a) {
+            v.x += a.x;
+            v.y += a.y;
+            v.z += a.z;
+            p.x += v.x;
+            p.y += v.y;
+            p.z += v.z;
         });
-    bench::keep(s);
-  });
-  bench::run("AoS            sum 1 field", N, [&] {
-    float s = 0;
-    for (auto& b : aos) s += b.p.x;
-    bench::keep(s);
-  });
-
-  // 7/8) compute-bound: many FLOPs per entity ------------------------------
-  bench::run("each()         compute-bound", N, [&] {
-    query<Pos, const Vel>(w).each([](Entity, Pos& p, const Vel& v) {
-      p.x = heavy(p.x, v.x, v.y);
-      p.y = heavy(p.y, v.y, v.z);
-      p.z = heavy(p.z, v.z, v.x);
     });
-  });
-  bench::run("for_each_chunk compute-bound", N, [&] {
-    query<Pos, const Vel>(w).for_each_chunk(
-        [](std::span<Entity>, soa_storage<Pos>& p, const soa_storage<Vel>& v) {
-          auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-          auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
-          for (std::size_t i = 0; i < px.size(); ++i) {
-            px[i] = heavy(px[i], vx[i], vy[i]);
-            py[i] = heavy(py[i], vy[i], vz[i]);
-            pz[i] = heavy(pz[i], vz[i], vx[i]);
-          }
+    bench::run("for_each_chunk multi (2 RW, 1 RO)", N, [&] {
+        query<Pos, Vel, Acc const>(w).for_each_chunk([](std::span<Entity>,
+                                                        soa_storage<Pos>& p,
+                                                        soa_storage<Vel>& v,
+                                                        soa_storage<Acc> const& a) {
+            auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+            auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
+            auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                vx[i] += ax[i];
+                vy[i] += ay[i];
+                vz[i] += az[i];
+                px[i] += vx[i];
+                py[i] += vy[i];
+                pz[i] += vz[i];
+            }
         });
-  });
-
-  // 9) write-back cost: read Vel but leave it non-const (scattered back) ----
-  bench::run("each()         read Vel NON-const (write-back)", N, [&] {
-    query<Pos, Vel>(w).each([](Entity, Pos& p, Vel& v) {
-      p.x += v.x; p.y += v.y; p.z += v.z;
     });
-  });
-  bench::run("each()         read Vel const (no write-back)", N, [&] {
-    query<Pos, const Vel>(w).each([](Entity, Pos& p, const Vel& v) {
-      p.x += v.x; p.y += v.y; p.z += v.z;
+    bench::run("AoS baseline   multi (2 RW, 1 RO)", N, [&] {
+        for (auto& b : aos) {
+            b.v.x += b.a.x;
+            b.v.y += b.a.y;
+            b.v.z += b.a.z;
+            b.p.x += b.v.x;
+            b.p.y += b.v.y;
+            b.p.z += b.v.z;
+        }
     });
-  });
 
-  return 0;
+    // 6) single-field read: sum only Pos.x -----------------------------------
+    bench::run("for_each_chunk sum 1 field (SoA)", N, [&] {
+        float s = 0;
+        query<Pos const>(w).for_each_chunk([&](std::span<Entity>,
+                                               soa_storage<Pos> const& p) {
+            auto px = p.column<0>();
+            for (std::size_t i = 0; i < px.size(); ++i)
+                s += px[i];
+        });
+        bench::keep(s);
+    });
+    bench::run("AoS            sum 1 field", N, [&] {
+        float s = 0;
+        for (auto& b : aos)
+            s += b.p.x;
+        bench::keep(s);
+    });
+
+    // 7/8) compute-bound: many FLOPs per entity ------------------------------
+    bench::run("each()         compute-bound", N, [&] {
+        query<Pos, Vel const>(w).each([](Entity, Pos& p, Vel const& v) {
+            p.x = heavy(p.x, v.x, v.y);
+            p.y = heavy(p.y, v.y, v.z);
+            p.z = heavy(p.z, v.z, v.x);
+        });
+    });
+    bench::run("for_each_chunk compute-bound", N, [&] {
+        query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
+                                                   soa_storage<Pos>& p,
+                                                   soa_storage<Vel> const& v) {
+            auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+            auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] = heavy(px[i], vx[i], vy[i]);
+                py[i] = heavy(py[i], vy[i], vz[i]);
+                pz[i] = heavy(pz[i], vz[i], vx[i]);
+            }
+        });
+    });
+
+    // 9) write-back cost: read Vel but leave it non-const (scattered back) ----
+    bench::run("each()         read Vel NON-const (write-back)", N, [&] {
+        query<Pos, Vel>(w).each([](Entity, Pos& p, Vel& v) {
+            p.x += v.x;
+            p.y += v.y;
+            p.z += v.z;
+        });
+    });
+    bench::run("each()         read Vel const (no write-back)", N, [&] {
+        query<Pos, Vel const>(w).each([](Entity, Pos& p, Vel const& v) {
+            p.x += v.x;
+            p.y += v.y;
+            p.z += v.z;
+        });
+    });
+
+    return 0;
 }

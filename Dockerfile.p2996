@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1
+# -----------------------------------------------------------------------------
+# REAL C++26 static reflection toolchain (GCC 16).
+#
+# The default ./Dockerfile (GCC 14) builds with the *portable* reflection
+# backend. GCC 16 implements P2996 static reflection (-freflection, <meta>) AND
+# ships libstdc++ -- which, unlike clang-p2996's libc++, provides
+# std::move_only_function and std::atomic<std::shared_ptr> (the features the
+# engine depends on). So configuring with -DECS_USE_P2996=ON here makes
+# include/ecs/reflect.hpp use genuine std::meta reflection (^^T, [:m:] splicers,
+# real field names) and the whole engine still compiles + all tests pass.
+#
+# Used as a CLion "Docker" toolchain (image: ecs-p2996) for the Debug-P2996
+# profile, which configures with -DECS_USE_P2996=ON.
+# -----------------------------------------------------------------------------
+FROM gcc:16
+
+# gcc:16 ships g++ 16 + libstdc++ + git, but not the rest of the build tooling.
+#   cmake  - CMakeLists.txt requires >= 3.24 (Debian trixie ships 3.31)
+#   ninja  - generator used by the project's CMake profiles
+#   gdb    - so CLion can debug test targets in the container
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      cmake \
+      ninja-build \
+      gdb \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN cmake --version && ninja --version && g++ --version | head -1

@@ -62,14 +62,22 @@ concept Reflectable = std::is_aggregate_v<std::remove_cvref_t<T>>;
 namespace ecs::reflect {
 
 namespace detail {
+    using namespace std::meta;
+
     template <class T>
-    consteval std::size_t member_count() {
-        return std::meta::nonstatic_data_members_of(^^std::remove_cvref_t<T>).size();
+    consteval auto members() {
+        return nonstatic_data_members_of(^^std::remove_cvref_t<T>,
+                                         access_context::current());
     }
 
     template <class T>
-    consteval std::meta::info member_at(std::size_t i) {
-        return std::meta::nonstatic_data_members_of(^^std::remove_cvref_t<T>)[i];
+    consteval std::size_t member_count() {
+        return members<T>().size();
+    }
+
+    template <class T>
+    consteval info member_at(std::size_t i) {
+        return members<T>()[i];
     }
 } // namespace detail
 
