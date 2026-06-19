@@ -1,0 +1,21 @@
+{
+  "name": "ecs (GCC 14 / Linux)",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools"
+      ],
+      "settings": {
+        "cmake.generator": "Ninja",
+        "cmake.configureArgs": [
+          "-DCMAKE_BUILD_TYPE=Debug"
+        ]
+      }
+    }
+  }
+}
