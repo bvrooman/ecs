@@ -1,6 +1,6 @@
 // Generic lock-free triple buffer (snapshot handoff) tests.
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include "setup.hpp"
 
 #include <array>
 #include <atomic>
@@ -84,8 +84,8 @@ using PositionSnapshot = std::vector<Position>;
 
 static void world_extraction_handoff() {
   World w;
-  w.run_once([&](World& w) {
-    for (int i = 0; i < 1000; ++i) w.spawn(Position{float(i), 0});
+  setup(w, [&](World&, Commands& cmd) {
+    for (int i = 0; i < 1000; ++i) cmd.spawn(Position{float(i), 0});
   });
   w.emplace_resource<TripleBuffer<PositionSnapshot>>();
 
@@ -108,7 +108,7 @@ static void world_extraction_handoff() {
   Schedule sched;
   sched.add(
       "extract",
-      [](World& wr) {
+      [](World& wr, Commands&) {
         auto& tb = wr.resource<TripleBuffer<PositionSnapshot>>();
         PositionSnapshot& out = tb.back();
         out.clear();

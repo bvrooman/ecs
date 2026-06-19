@@ -47,105 +47,11 @@ public:
   World(const World&) = delete;
   World& operator=(const World&) = delete;
 
-  // --- mutation (auto-deferring) ----------------------------------------
-  // --- mutation (command-buffer-only) -----------------------------------
-  // spawn/destroy/add/remove/set never mutate directly: they record into the
-  // command buffer and take effect when it is flushed -- at each Schedule level
-  // barrier, or when a World::run_once(fn) returns. They must therefore be
-  // called inside a run context (a system, or the run_once callback); doing so
-  // outside one is a programming error (asserted in debug builds). Because every
-  // structural edit is deferred, mutating mid-iteration is always safe.
-  // spawn() returns a usable handle immediately (alive after the next flush).
-  template <class... Cs>
-  Entity spawn(Cs... comps) {
-    assert(executing_ && "spawn() must be called inside Schedule::run or "
-                         "World::run_once");
-    const Entity e = reserve();
-    commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
-      w.materialize(e);
-      (w.add_now<Cs>(e, std::move(comps)), ...);
-    });
-    return e;
-  }
-
-  // Bulk spawn: create `n` entities in a single recorded command (one closure,
-  // not n), so large populations don't allocate per entity. `factory(i)` yields
-  // the components for entity i, either as a std::tuple or as a single
-  // component. The n handles are reserved up front and returned, usable
-  // immediately (alive after the next flush) like spawn().
-  //   auto es = w.spawn_n(1000, [](std::size_t i){
-  //       return std::tuple{Position{float(i),0}, Velocity{1,0}}; });
-  template <class Factory>
-  std::vector<Entity> spawn_n(std::size_t n, Factory factory) {
-    assert(executing_ && "spawn_n() must be called inside a run context");
-    std::vector<Entity> handles;
-    handles.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) handles.push_back(reserve());
-    commands_.record([handles, factory = std::move(factory)](World& w) mutable {
-      for (std::size_t i = 0; i < handles.size(); ++i) {
-        const Entity e = handles[i];
-        w.materialize(e);
-        auto comps = factory(i);
-        if constexpr (detail::is_tuple_v<decltype(comps)>)
-          std::apply(
-              [&](auto&&... c) {
-                (w.add_now<std::decay_t<decltype(c)>>(
-                     e, std::forward<decltype(c)>(c)),
-                 ...);
-              },
-              std::move(comps));
-        else
-          w.add_now<std::decay_t<decltype(comps)>>(e, std::move(comps));
-      }
-    });
-    return handles;
-  }
-
-  void destroy(Entity e) {
-    assert(executing_ && "destroy() must be called inside a run context");
-    commands_.record([e](World& w) { w.destroy_now(e); });
-  }
-
-  template <class C>
-  void add(Entity e, C value) {
-    assert(executing_ && "add() must be called inside a run context");
-    commands_.record([e, value = std::move(value)](World& w) mutable {
-      if (w.alive(e)) w.add_now<C>(e, std::move(value));
-    });
-  }
-
-  template <class C>
-  void remove(Entity e) {
-    assert(executing_ && "remove() must be called inside a run context");
-    commands_.record([e](World& w) {
-      if (w.alive(e)) w.remove_now<C>(e);
-    });
-  }
-
-  template <class C>
-  void set(Entity e, C value) {
-    assert(executing_ && "set() must be called inside a run context");
-    commands_.record([e, value = std::move(value)](World& w) mutable {
-      if (w.alive(e)) w.set_now<C>(e, std::move(value));
-    });
-  }
-
-  // Run fn once inside a fresh run context, then flush the recorded mutations
-  // single-threaded -- the way to do setup/teardown without a full Schedule:
-  //   world.run_once([&](World& w){ for (...) w.spawn(...); });
-  // Entities created inside are live once run_once returns. Nests safely (only
-  // the outermost context flushes, so it is a no-op wrapper inside a schedule).
-  template <class Fn>
-  void run_once(Fn&& fn) {
-    const bool entered = !executing_;
-    if (entered) set_executing(true);
-    fn(*this);
-    if (entered) {
-      apply_commands();
-      set_executing(false);
-    }
-  }
-
+  // --- reads & lifecycle queries ----------------------------------------
+  // World exposes only reads. All mutation (spawn/destroy/add/remove/set) goes
+  // through a `Commands` object, which a running Schedule creates and passes to
+  // each system -- so mutation is reachable only inside a system, enforced at
+  // compile time rather than by a runtime check.
   bool alive(Entity e) const {
     return e.index < records_.size() && records_[e.index].alive &&
            records_[e.index].generation == e.generation;
@@ -195,17 +101,6 @@ public:
     resources_.remove<T>();
   }
 
-  // --- command buffer ---------------------------------------------------
-  // Whether a run context is active (a schedule running, or run_once). Mutators
-  // require this; reads/resources do not.
-  bool executing() const { return executing_.load(std::memory_order_acquire); }
-
-  // The underlying command buffer (advanced: record custom deferred closures).
-  CommandBuffer& commands() { return commands_; }
-  // Apply all recorded commands now. Driven by the Schedule at each barrier and
-  // by run_once; call manually only if you record into commands() directly.
-  void apply_commands() { commands_.apply(*this); }
-
   // --- archetype access (used by queries) -------------------------------
   const std::vector<std::unique_ptr<Archetype>>& archetypes() const {
     return archetypes_;
@@ -219,7 +114,8 @@ public:
   }
 
 private:
-  friend class Schedule;  // toggles deferred mode around system execution
+  friend class Commands;  // the mutation API; records into commands_
+  friend class Schedule;  // creates Commands and flushes at barriers
 
   struct Record {
     std::uint32_t archetype = 0;
@@ -228,13 +124,11 @@ private:
     bool alive = false;
   };
 
-  void set_executing(bool on) {
-    executing_.store(on, std::memory_order_release);
-  }
+  // Apply all recorded commands; driven by the Schedule at each barrier.
+  void apply_commands() { commands_.apply(*this); }
 
-  // Immediate mutation primitives. The public spawn/destroy/add/remove/set
-  // dispatch to these when not deferred, and the command closures call them at
-  // apply time -- so these always run with exclusive, single-threaded access.
+  // Immediate mutation primitives, called only by the command closures at flush
+  // time -- so they always run with exclusive, single-threaded access.
   void destroy_now(Entity e) {
     if (!alive(e)) return;
     auto& rec = records_[e.index];
@@ -401,7 +295,85 @@ private:
                                                // reservations are outstanding
   std::atomic<std::size_t> free_count_{0};     // free_.size(), for a lock-free
                                                // "anything to recycle?" check
-  std::atomic<bool> executing_{false};         // is a run context active?
+};
+
+// ===========================================================================
+//  Commands: the mutation API. A running Schedule creates one bound to the
+//  World and passes it to every system, so spawn/destroy/add/remove/set are
+//  reachable only from inside a system (or a schedule's setup). All of them are
+//  deferred -- recorded into the command buffer and applied at the next flush.
+// ===========================================================================
+class Commands {
+public:
+  // spawn returns a usable handle immediately (alive after the next flush).
+  template <class... Cs>
+  Entity spawn(Cs... comps) {
+    const Entity e = world_->reserve();
+    world_->commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
+      w.materialize(e);
+      (w.add_now<Cs>(e, std::move(comps)), ...);
+    });
+    return e;
+  }
+
+  // Bulk spawn: one recorded command for n entities (not n closures). The n
+  // handles are reserved up front and returned. factory(i) yields entity i's
+  // components, as a std::tuple or a single component.
+  template <class Factory>
+  std::vector<Entity> spawn_n(std::size_t n, Factory factory) {
+    std::vector<Entity> handles;
+    handles.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) handles.push_back(world_->reserve());
+    world_->commands_.record(
+        [handles, factory = std::move(factory)](World& w) mutable {
+          for (std::size_t i = 0; i < handles.size(); ++i) {
+            const Entity e = handles[i];
+            w.materialize(e);
+            auto comps = factory(i);
+            if constexpr (detail::is_tuple_v<decltype(comps)>)
+              std::apply(
+                  [&](auto&&... c) {
+                    (w.add_now<std::decay_t<decltype(c)>>(
+                         e, std::forward<decltype(c)>(c)),
+                     ...);
+                  },
+                  std::move(comps));
+            else
+              w.add_now<std::decay_t<decltype(comps)>>(e, std::move(comps));
+          }
+        });
+    return handles;
+  }
+
+  void destroy(Entity e) {
+    world_->commands_.record([e](World& w) { w.destroy_now(e); });
+  }
+
+  template <class C>
+  void add(Entity e, C value) {
+    world_->commands_.record([e, value = std::move(value)](World& w) mutable {
+      if (w.alive(e)) w.add_now<C>(e, std::move(value));
+    });
+  }
+
+  template <class C>
+  void remove(Entity e) {
+    world_->commands_.record([e](World& w) {
+      if (w.alive(e)) w.remove_now<C>(e);
+    });
+  }
+
+  template <class C>
+  void set(Entity e, C value) {
+    world_->commands_.record([e, value = std::move(value)](World& w) mutable {
+      if (w.alive(e)) w.set_now<C>(e, std::move(value));
+    });
+  }
+
+private:
+  friend class Schedule; // constructs Commands during run
+  explicit Commands(World& w) : world_(&w) {}
+  World* world_;
 };
 
 } // namespace ecs

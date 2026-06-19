@@ -46,17 +46,22 @@ int main() {
   constexpr int kTracerLife = 8;
 
   World world;
-  // Initial population: one bulk command (one closure, not kParticles) inside a
-  // one-shot setup run, applied when run_once returns.
-  world.run_once([&](World& w) {
-    w.spawn_n(kParticles, [](std::size_t i) {
-      float f = float(i);
-      return std::tuple{Position{f, -f, 0.5f * f},
-                        Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f}};
-    });
-  });
   world.emplace_resource<Gravity>(-9.81f);
   world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
+
+  // Initial population: a one-shot setup system, run inline, spawns all the
+  // particles with a single bulk command (one closure, not kParticles).
+  {
+    Schedule init;
+    init.add_once("populate", [&](World&, Commands& cmd) {
+      cmd.spawn_n(kParticles, [](std::size_t i) {
+        float f = float(i);
+        return std::tuple{Position{f, -f, 0.5f * f},
+                          Velocity{0.1f, -0.2f, 0.05f}, Mass{1.0f + 0.001f * f}};
+      });
+    });
+    init.run(world); // inline, no thread pool needed
+  }
   std::printf("spawned %zu entities\n", world.size());
 
   exec::static_thread_pool pool{std::max(2u, std::thread::hardware_concurrency())};
@@ -67,7 +72,7 @@ int main() {
   // gravity: read Mass + the Gravity resource, write Velocity.
   schedule.add(
       "gravity",
-      [](World& w) {
+      [](World& w, Commands&) {
         const float a = w.resource<Gravity>().accel;
         query<Velocity, Mass>(w).for_each_chunk(
             [a](std::span<Entity>, soa_storage<Velocity>& vel,
@@ -77,23 +82,23 @@ int main() {
       },
       reads<Mass>{}, writes<Velocity>{}, reads_res<Gravity>{});
 
-  // emitter: spawn short-lived tracer particles through the command buffer,
-  // using the handle reservation hands back to attach follow-up components.
-  schedule.add("emitter", [](World& w) {
+  // emitter: spawn short-lived tracer particles via Commands, using the handle
+  // reservation hands back to attach follow-up components.
+  schedule.add("emitter", [](World&, Commands& cmd) {
     for (int i = 0; i < kEmitPerTick; ++i) {
-      Entity e = w.spawn(Position{0, 0, 0},
-                                    Velocity{float(i % 7) - 3, 5, 0}, Mass{1});
-      w.add<Lifetime>(e, Lifetime{kTracerLife});
-      w.add<Tracer>(e, Tracer{});
+      Entity e = cmd.spawn(Position{0, 0, 0},
+                           Velocity{float(i % 7) - 3, 5, 0}, Mass{1});
+      cmd.add<Lifetime>(e, Lifetime{kTracerLife});
+      cmd.add<Tracer>(e, Tracer{});
     }
   });
 
   // reaper: age every Lifetime and destroy the expired ones (deferred).
   schedule.add(
       "reaper",
-      [](World& w) {
+      [](World& w, Commands& cmd) {
         query<Lifetime>(w).each([&](Entity e, Lifetime& l) {
-          if (--l.ticks <= 0) w.destroy(e);
+          if (--l.ticks <= 0) cmd.destroy(e);
         });
       },
       reads<Lifetime>{}, writes<Lifetime>{});
@@ -102,7 +107,7 @@ int main() {
   // scheduler places it on a later level automatically.
   schedule.add(
       "integrate",
-      [](World& w) {
+      [](World& w, Commands&) {
         query<Position, Velocity>(w).for_each_chunk(
             [](std::span<Entity>, soa_storage<Position>& pos,
                soa_storage<Velocity>& vel) {
@@ -122,7 +127,7 @@ int main() {
   // publish them to the snapshot channel for the consumer threads.
   schedule.add(
       "extract",
-      [](World& w) {
+      [](World& w, Commands&) {
         auto& ch = w.resource<SnapshotChannel<RenderSnapshot>>();
         RenderSnapshot& out = ch.back();
         out.clear();

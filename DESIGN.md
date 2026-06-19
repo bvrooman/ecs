@@ -36,10 +36,10 @@ of components" purely by which components it holds; that set is its
 entity between archetype tables (dynamic archetypes, like flecs/EnTT):
 
 ```cpp
-World w;
-Entity e = w.spawn(Position{0,0,0}, Velocity{1,0,0});      // archetype {P,V}
-w.add<Frozen>(e);                                           // -> archetype {P,V,Frozen}
-w.remove<Velocity>(e);                                      // -> archetype {P,Frozen}
+// inside a system, given Commands& cmd (see §7):
+Entity e = cmd.spawn(Position{0,0,0}, Velocity{1,0,0});     // archetype {P,V}
+cmd.add<Frozen>(e);                                         // -> {P,V,Frozen}
+cmd.remove<Velocity>(e);                                    // -> {P,Frozen}
 ```
 
 The generation counter invalidates stale handles: when an entity is destroyed
@@ -120,8 +120,8 @@ query<Position, Velocity>(w).for_each_chunk(
 
 ## 5. Async-runtime compatible (std::execution / P2300)
 
-A *system* is `void(World&)` plus the sets of components and resources it
-**reads** and **writes** (the callable first, then any number of access tags):
+A *system* is `void(World&, Commands&)` plus the sets of components and resources
+it **reads** and **writes** (the callable first, then any number of access tags):
 
 ```cpp
 Schedule s;
@@ -166,43 +166,49 @@ mutated during execution, so concurrent `resource<T>()` borrows from parallel
 systems are safe; the scheduler serializes any system declaring `writes_res<T>`
 against others touching the same resource.
 
-## 7. Command-buffer-only mutation
+## 7. Mutation through `Commands` (command-buffer-only)
 
 Structural edits -- spawn, destroy, add/remove component -- move data between
 archetype tables, which invalidates in-flight iteration and races with systems
-running on the schedule's pool; `set` writes a column. So `World`'s mutators --
-`spawn`/`destroy`/`add`/`remove`/`set` -- **never mutate directly**: they record
-into the command buffer and take effect only when it is flushed. There is no
-immediate path, which means a single uniform rule ("changes apply at the next
-flush") and that mutating mid-iteration is *always* safe.
+running on the schedule's pool; `set` writes a column. So mutation **never
+happens directly**: it is recorded into the command buffer and applied only when
+flushed. A single uniform rule ("changes apply at the next flush") falls out of
+this, and mutating mid-iteration is *always* safe.
 
-A mutator may therefore only be called inside a **run context**, of which there
-are two:
-
-* **`Schedule::run`** -- opens the context for the duration, flushes at every
-  level barrier (so edits from level *N* are visible to level *N+1*);
-* **`World::run_once(fn)`** -- runs `fn` once, single-threaded, then flushes;
-  the way to do setup/teardown without standing up a schedule.
-
-Calling a mutator outside any context is a programming error, asserted in debug
-builds.
+Mutation is also unreachable outside a system, enforced **at compile time**:
+`World` exposes only reads. The mutators -- `spawn`/`spawn_n`/`destroy`/`add`/
+`remove`/`set` -- live on a `Commands` object that only `Schedule::run` can
+construct (bound to the world) and pass to each system. You cannot call `spawn`
+without a `Commands`, and you cannot obtain one except from a run, so the
+"mutate only inside a system" rule is checked by the type system rather than a
+runtime assert.
 
 ```cpp
-// setup: a one-shot run context
-world.run_once([&](World& w) {
-  for (...) w.spawn(Position{...}, Velocity{...});   // live once run_once returns
-});
-
-// per frame: the same calls inside systems record and flush at barriers
-sched.add("spawn_particles", [](World& w) {
+// a system: World& for reads/queries, Commands& for (deferred) mutation
+sched.add("spawn_particles", [](World& w, Commands& cmd) {
   query<Emitter>(w).each([&](Entity, Emitter& em) {
     if (em.fire) {
-      Entity p = w.spawn(Position{...}, Velocity{...}); // recorded
-      w.add<Lifetime>(p, {...});                        // edit the handle now
+      Entity p = cmd.spawn(Position{...}, Velocity{...}); // recorded
+      cmd.add<Lifetime>(p, {...});                        // edit the handle now
     }
   });
 }, reads<Emitter>{});
 ```
+
+Setup is just a system too -- there is no separate immediate API. Register a
+one-shot system and run the schedule (inline, no thread pool needed):
+
+```cpp
+Schedule init;
+init.add_once("populate", [&](World&, Commands& cmd) {
+  cmd.spawn_n(200'000, [](std::size_t i){ return std::tuple{Position{...}, ...}; });
+});
+init.run(world);   // inline run on the calling thread
+```
+
+The flush points are `Schedule::run`'s wave barriers (so edits from wave *N* are
+visible to wave *N+1*) -- the templated `run(world, scheduler)` for the parallel
+pool, or `run(world)` for inline single-threaded execution.
 
 The immediate primitives (`*_now`, `materialize`) stay private and are what the
 command closures call at flush time. `spawn(...)` reserves an entity handle
@@ -218,11 +224,9 @@ entity's components from `factory(i)` (a `std::tuple` of components, or a single
 component). This keeps bulk setup allocation-free beyond the one closure:
 
 ```cpp
-world.run_once([&](World& w) {
-  w.spawn_n(200'000, [](std::size_t i) {
-    float f = float(i);
-    return std::tuple{Position{f, -f, 0}, Velocity{0,0,0}, Mass{1+0.001f*f}};
-  });
+cmd.spawn_n(200'000, [](std::size_t i) {
+  float f = float(i);
+  return std::tuple{Position{f, -f, 0}, Velocity{0,0,0}, Mass{1+0.001f*f}};
 });
 ```
 
@@ -264,7 +268,7 @@ channel, not tracked component/resource state. `apply()` drains every shard
 single-threaded; commands within one thread's shard replay in record order,
 ordering *across* shards is unspecified. The `Schedule` flushes at every level
 barrier (no systems running), so changes recorded in level *N* are visible to
-level *N+1*; `run_once` flushes when it returns. `destroy`/`add`/`remove` no-op
+level *N+1*; an inline `run(world)` flushes after each wave too. `destroy`/`add`/`remove` no-op
 if their target was already destroyed earlier in the same flush, so
 order-independent teardown is safe.
 
@@ -288,7 +292,7 @@ calls `consume()`/`front()`.
 
 ```cpp
 world.emplace_resource<TripleBuffer<Snapshot>>();          // T is user-defined
-sched.add("extract", [](World& w){
+sched.add("extract", [](World& w, Commands&){
   auto& tb = w.resource<TripleBuffer<Snapshot>>();
   fill(tb.back(), w);   // copy out of the columns
   tb.publish();
@@ -316,7 +320,7 @@ advances only on new data) and hold their own reference while they read.
 
 ```cpp
 world.emplace_resource<SnapshotChannel<Snapshot>>();
-sched.add("extract", [](World& w){
+sched.add("extract", [](World& w, Commands&){
   auto& ch = w.resource<SnapshotChannel<Snapshot>>();
   fill(ch.back(), w);
   ch.publish();
@@ -347,7 +351,8 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
   per-edge sender DAG would extract a little more overlap across levels.
 * All structural mutation is deferred to a flush point, so it is always safe
   (including mid-iteration); the trade is that nothing takes effect until a
-  `Schedule` barrier or `run_once` returns, and mutators require a run context.
+  `Schedule` wave barrier, and all mutation must go through a `Commands` (so
+  even setup is a one-shot system run via the schedule).
 * The command buffer shards over `kShards` (64) lanes; with more concurrent
   worker threads than shards, threads share a shard and contend its mutex (still
   correct, just less scalable).

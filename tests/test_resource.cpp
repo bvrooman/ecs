@@ -1,6 +1,6 @@
 // Resource registry + resource-aware scheduling tests.
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include "setup.hpp"
 
 #include <atomic>
 #include <exec/static_thread_pool.hpp>
@@ -53,13 +53,13 @@ static void resource_conflict_serializes() {
   // Two systems that both write the same resource must land on different
   // levels; two that only read it may share a level.
   Schedule sched;
-  sched.add("writer_a", [](World&) {}, writes_res<Counter>{});
-  sched.add("writer_b", [](World&) {}, writes_res<Counter>{});
+  sched.add("writer_a", [](World&, Commands&) {}, writes_res<Counter>{});
+  sched.add("writer_b", [](World&, Commands&) {}, writes_res<Counter>{});
   CHECK(sched.level_count() == 2);
 
   Schedule readers;
-  readers.add("reader_a", [](World&) {}, reads_res<Counter>{});
-  readers.add("reader_b", [](World&) {}, reads_res<Counter>{});
+  readers.add("reader_a", [](World&, Commands&) {}, reads_res<Counter>{});
+  readers.add("reader_b", [](World&, Commands&) {}, reads_res<Counter>{});
   CHECK(readers.level_count() == 1);
 }
 
@@ -67,27 +67,27 @@ static void resource_and_component_conflicts_are_independent() {
   // A resource conflict alone is enough to serialize, even when component
   // access is disjoint.
   Schedule sched;
-  sched.add("a", [](World&) {}, writes<Position>{}, writes_res<Counter>{});
-  sched.add("b", [](World&) {}, reads_res<Counter>{}); // no component overlap
+  sched.add("a", [](World&, Commands&) {}, writes<Position>{}, writes_res<Counter>{});
+  sched.add("b", [](World&, Commands&) {}, reads_res<Counter>{}); // no component overlap
   CHECK(sched.level_count() == 2); // serialized purely by the resource
 }
 
 static void serialized_writers_run_without_races() {
   World w;
   w.emplace_resource<Counter>();
-  w.run_once([&](World& w) {
-    for (int i = 0; i < 10'000; ++i) w.spawn(Position{1.0f});
+  setup(w, [&](World&, Commands& cmd) {
+    for (int i = 0; i < 10'000; ++i) cmd.spawn(Position{1.0f});
   });
 
   // Both systems mutate the shared Counter; declaring writes_res<Counter>
   // forces them onto separate levels, so the unsynchronized ++ is safe.
   Schedule sched;
   sched.add("inc_by_count",
-            [](World& wr) {
+            [](World& wr, Commands&) {
               wr.resource<Counter>().n += int(query<Position>(wr).count());
             },
             reads<Position>{}, writes_res<Counter>{});
-  sched.add("inc_by_one", [](World& wr) { wr.resource<Counter>().n += 1; },
+  sched.add("inc_by_one", [](World& wr, Commands&) { wr.resource<Counter>().n += 1; },
             writes_res<Counter>{});
 
   CHECK(sched.level_count() == 2);

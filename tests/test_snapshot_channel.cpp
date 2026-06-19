@@ -1,6 +1,6 @@
 // Multi-consumer snapshot fan-out tests.
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include "setup.hpp"
 
 #include <array>
 #include <atomic>
@@ -105,8 +105,8 @@ using Snapshot = std::vector<Position>;
 
 static void world_extraction_fans_out_to_two_consumers() {
   World w;
-  w.run_once([&](World& w) {
-    for (int i = 0; i < 500; ++i) w.spawn(Position{float(i), 0});
+  setup(w, [&](World&, Commands& cmd) {
+    for (int i = 0; i < 500; ++i) cmd.spawn(Position{float(i), 0});
   });
   w.emplace_resource<SnapshotChannel<Snapshot>>();
 
@@ -127,7 +127,7 @@ static void world_extraction_fans_out_to_two_consumers() {
   Schedule sched;
   sched.add(
       "extract",
-      [](World& wr) {
+      [](World& wr, Commands&) {
         auto& ch = wr.resource<SnapshotChannel<Snapshot>>();
         Snapshot& out = ch.back();
         out.clear();

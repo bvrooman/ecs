@@ -16,16 +16,19 @@ struct Velocity { float x, y, z; };
 
 int main() {
   World world;
-  world.run_once([](World& w) {                // setup is a one-shot run context
-    for (int i = 0; i < 100'000; ++i)          // an entity is whatever
-      w.spawn(Position{}, Velocity{1, 0, 0});  // components you give it
+  Schedule init;                                  // setup is a one-shot system
+  init.add_once("populate", [](World&, Commands& cmd) {
+    cmd.spawn_n(100'000, [](std::size_t) {        // an entity is whatever
+      return std::tuple{Position{}, Velocity{1, 0, 0}}; // components you give it
+    });
   });
+  init.run(world);                                // inline run, no thread pool
 
   exec::static_thread_pool pool{8};
   Schedule schedule;
-  // A system: its callable, then the components/resources it reads & writes.
+  // A system: (World& for reads, Commands& for mutation), then its access tags.
   schedule.add("integrate",
-               [](World& w) {
+               [](World& w, Commands&) {
                  query<Position, Velocity>(w).for_each_chunk(
                      [](std::span<Entity>, soa_storage<Position>& pos,
                         soa_storage<Velocity>& vel) {
@@ -51,7 +54,7 @@ int main() {
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
 | Async-runtime compatible | `std::execution`/P2300 scheduler with read/write conflict analysis |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `reads_res`/`writes_res` extend conflict analysis to them |
-| Command-buffer-only mutation | `world.spawn/destroy/add/remove/set` only record (never mutate directly), applied single-threaded at each schedule barrier or when `world.run_once(fn)` returns; callable only inside a run context (asserted). `spawn` returns a usable handle immediately; `spawn_n(n, factory)` bulk-creates in one command. Mid-iteration edits are always safe |
+| Mutation via `Commands` | systems take `(World&, Commands&)`; `cmd.spawn/spawn_n/destroy/add/remove/set` only record, applied at each schedule wave barrier. `Commands` only exists inside a run, so mutation-outside-a-system is a *compile* error. `spawn` returns a usable handle immediately; `spawn_n` bulk-creates in one command. Mid-iteration edits are always safe |
 | Systems: one-shot, removable, phased | `Schedule::add` returns a `SystemId`; `remove(id)` unschedules; `add_once(...)` runs once then drops out; a `phase<N>` tag orders systems across barriers (e.g. `phase<-1>` startup before normal systems) |
 | Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>`, plus `SnapshotChannel<T>` for multi-consumer fan-out, to hand extracted snapshots to consumer threads (renderer/audio/anything) with no tearing or blocking |
 

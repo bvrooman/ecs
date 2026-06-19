@@ -1,6 +1,6 @@
 // std::execution scheduler tests.
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include "setup.hpp"
 
 #include <atomic>
 #include <exec/static_thread_pool.hpp>
@@ -13,9 +13,10 @@ struct Health { int hp; };
 
 static void leveling_respects_conflicts() {
   Schedule sched;
-  sched.add("physics", [](World&) {}, reads<Velocity>{}, writes<Position>{});
-  sched.add("damage", [](World&) {}, writes<Health>{});
-  sched.add("render", [](World&) {}, reads<Position>{});
+  sched.add("physics", [](World&, Commands&) {}, reads<Velocity>{},
+            writes<Position>{});
+  sched.add("damage", [](World&, Commands&) {}, writes<Health>{});
+  sched.add("render", [](World&, Commands&) {}, reads<Position>{});
   // physics & damage are independent -> level 0; render reads Position that
   // physics writes -> level 1.
   CHECK(sched.level_count() == 2);
@@ -27,23 +28,23 @@ static void leveling_respects_conflicts() {
 static void parallel_systems_are_independent_levels() {
   Schedule sched;
   // Three systems with disjoint writes -> all level 0, fully parallel.
-  sched.add("a", [](World&) {}, writes<Position>{});
-  sched.add("b", [](World&) {}, writes<Velocity>{});
-  sched.add("c", [](World&) {}, writes<Health>{});
+  sched.add("a", [](World&, Commands&) {}, writes<Position>{});
+  sched.add("b", [](World&, Commands&) {}, writes<Velocity>{});
+  sched.add("c", [](World&, Commands&) {}, writes<Health>{});
   CHECK(sched.level_count() == 1);
 }
 
 static void run_on_thread_pool_executes_all_systems() {
   World w;
-  w.run_once([&](World& w) {
+  setup(w, [&](World&, Commands& cmd) {
     for (int i = 0; i < 1000; ++i)
-      w.spawn(Position{0, 0}, Velocity{1, 2}, Health{100});
+      cmd.spawn(Position{0, 0}, Velocity{1, 2}, Health{100});
   });
 
   std::atomic<int> render_calls{0};
   Schedule sched;
   sched.add("physics",
-            [](World& wr) {
+            [](World& wr, Commands&) {
               query<Position, Velocity>(wr).each([](Entity, Position& p,
                                                     Velocity& v) {
                 p.x += v.dx;
@@ -52,12 +53,14 @@ static void run_on_thread_pool_executes_all_systems() {
             },
             reads<Velocity>{}, writes<Position>{});
   sched.add("damage",
-            [](World& wr) {
+            [](World& wr, Commands&) {
               query<Health>(wr).each([](Entity, Health& h) { h.hp -= 1; });
             },
             writes<Health>{});
   sched.add("render",
-            [&](World&) { render_calls.fetch_add(1, std::memory_order_relaxed); },
+            [&](World&, Commands&) {
+              render_calls.fetch_add(1, std::memory_order_relaxed);
+            },
             reads<Position>{});
 
   exec::static_thread_pool pool{4};

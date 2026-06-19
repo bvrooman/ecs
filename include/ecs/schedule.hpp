@@ -86,7 +86,7 @@ public:
     std::vector<std::uint32_t> writes;      // component ids
     std::vector<std::uint32_t> res_reads;   // resource ids
     std::vector<std::uint32_t> res_writes;  // resource ids
-    std::function<void(World&)> run;
+    std::function<void(World&, Commands&)> run;
     int phase = 0;                          // coarse ordering across barriers
     std::size_t level = 0;                  // intra-phase conflict wavefront
     bool once = false;                      // removed after it next runs
@@ -130,37 +130,47 @@ public:
   const std::vector<System>& systems() const { return systems_; }
 
   // Run every system on `scheduler`, respecting conflicts, blocking until all
-  // have completed. Independent systems within a level run concurrently. Opens
-  // a run context for the duration so systems' spawn/destroy/add/remove/set
-  // record into the command buffer, flushed at each level barrier. One-shot
-  // systems (add_once) are removed afterwards.
+  // have completed. Systems in the same wave run concurrently; each gets a
+  // `Commands` to record mutations, flushed at every wave barrier. One-shot
+  // (add_once) systems are removed afterwards.
   template <class Scheduler>
   void run(World& world, Scheduler scheduler) {
     rebuild();
-    world.set_executing(true);
+    Commands cmds{world};
     exec::async_scope scope;
     for (const auto& wave : waves_) {
       for (std::size_t idx : wave) {
         auto& sys = systems_[idx];
         scope.spawn(stdexec::starts_on(
-            scheduler, stdexec::then(stdexec::just(), [&sys, &world] {
-              sys.run(world);
+            scheduler, stdexec::then(stdexec::just(), [&sys, &world, &cmds] {
+              sys.run(world, cmds);
             })));
       }
-      // Barrier: wait for this wavefront to drain before starting the next.
-      stdexec::sync_wait(scope.on_empty());
-      // Apply the changes this level recorded, single-threaded, before the next
-      // level (or the caller) observes the world.
+      stdexec::sync_wait(scope.on_empty()); // barrier
+      world.apply_commands();               // make this wave's edits visible
+    }
+    prune_once();
+  }
+
+  // Run inline on the calling thread (no scheduler/thread pool). Systems within
+  // a wave run sequentially. The way to do setup: add_once a setup system, then
+  // schedule.run(world).
+  void run(World& world) {
+    rebuild();
+    Commands cmds{world};
+    for (const auto& wave : waves_) {
+      for (std::size_t idx : wave) systems_[idx].run(world, cmds);
       world.apply_commands();
     }
-    world.set_executing(false);
+    prune_once();
+  }
 
-    // Drop one-shot systems now that they have run.
+private:
+  void prune_once() {
     if (std::erase_if(systems_, [](const System& s) { return s.once; }))
       dirty_ = true;
   }
 
-private:
   using IdList = std::vector<std::uint32_t>;
 
   template <class Fn, class... Access>
