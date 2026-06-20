@@ -24,8 +24,10 @@
 #include "gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +35,11 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <pthread.h> // pthread_set_qos_class_self_np
+#include <sys/qos.h> // QOS_CLASS_USER_INTERACTIVE
+#endif
 
 using namespace ecs;
 
@@ -53,11 +60,53 @@ static std::uint64_t pack_size(int w, int h) {
     return (std::uint64_t(std::uint32_t(w)) << 32) | std::uint32_t(h);
 }
 
+// Ask macOS to keep this thread on the performance cores (and at a higher
+// priority), which trims the occasional multi-ms tail from the scheduler parking
+// the sim/render thread on an efficiency core. No-op off macOS.
+static void prefer_performance_cores() {
+#if defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+}
+
+// Periodic per-tick timing summary for the sim loop (printed when ECS_STATS is
+// set). Consumes the samples. This is what reveals stutter: a low mean but a
+// high p99/max means occasional hitches the eye reads as jank.
+static void report_tick_stats(std::vector<double>& us) {
+    if (us.empty())
+        return;
+    std::sort(us.begin(), us.end());
+    double sum = 0;
+    for (double x : us)
+        sum += x;
+    double const mean = sum / us.size();
+    double va         = 0;
+    for (double x : us)
+        va += (x - mean) * (x - mean);
+    double const sd = std::sqrt(va / us.size());
+    auto pct        = [&](double p) {
+        return us[std::min(us.size() - 1, std::size_t(p * us.size()))];
+    };
+    std::printf("sim tick: n=%4zu  mean %6.1f  sd %6.1f  p50 %6.1f  p99 %7.1f  "
+                "max %8.1f us\n",
+                us.size(),
+                mean,
+                sd,
+                pct(0.50),
+                pct(0.99),
+                us.back());
+    std::fflush(stdout);
+    us.clear();
+}
+
 int main() {
+    prefer_performance_cores(); // main / window-event thread
+
     // --- world + schedule + cross-thread channel --------------------------
     World world;
     world.emplace_resource<Gravity>(cfg::kGravity);
     world.emplace_resource<Rng>(Rng {std::mt19937 {std::random_device {}()}});
+    world.emplace_resource<Clock>(Clock {0.0f});
     world.emplace_resource<TripleBuffer<RenderSnapshot>>();
 
     Schedule schedule;
@@ -111,23 +160,59 @@ int main() {
     std::atomic<long> rendered {0};
 
     // --- simulation thread: runs the schedule at a fixed tick rate ---------
+    // Execution mode: the schedule runs inline on this thread by default --
+    // benchmarks/schedule_bench showed the pool's per-wave barriers cost more
+    // than they save and (oversubscribed against the render thread) caused the
+    // stutter. ECS_POOL=<n> opts into an n-worker std::execution pool to exercise
+    // the scheduler; with the turbulence workload it now earns a real speedup.
+    // ECS_STATS=1 prints per-tick timing every ~2s.
+    int pool_n = 0; // 0 = inline
+    if (char const* p = std::getenv("ECS_POOL"))
+        pool_n = std::atoi(p);
+    bool const stats_on = std::getenv("ECS_STATS") != nullptr;
+    if (pool_n <= 0)
+        std::printf("sim execution: inline\n");
+    else
+        std::printf("sim execution: %d-thread pool\n", pool_n);
+
     std::thread sim([&] {
-        exec::static_thread_pool pool {std::max(2u, std::thread::hardware_concurrency())};
-        auto scheduler    = pool.get_scheduler();
+        prefer_performance_cores();
         using clock       = std::chrono::steady_clock;
         auto const period = std::chrono::duration_cast<clock::duration>(
             std::chrono::duration<double>(cfg::kDt));
-        auto next = clock::now();
-        while (!stop.load(std::memory_order_acquire)) {
-            schedule.run(world, scheduler); // emits, simulates, publishes
-            ticks.fetch_add(1, std::memory_order_relaxed);
-            next += period;
-            std::this_thread::sleep_until(next); // pace to kSimHz
+        auto loop = [&](auto&& run_tick) {
+            std::vector<double> us;
+            auto next = clock::now();
+            auto last = next;
+            while (!stop.load(std::memory_order_acquire)) {
+                auto const a = clock::now();
+                run_tick(); // emits, simulates, publishes
+                ticks.fetch_add(1, std::memory_order_relaxed);
+                if (stats_on) {
+                    auto const b = clock::now();
+                    us.push_back(
+                        std::chrono::duration<double, std::micro>(b - a).count());
+                    if (b - last > std::chrono::seconds(2)) {
+                        report_tick_stats(us);
+                        last = b;
+                    }
+                }
+                next += period;
+                std::this_thread::sleep_until(next); // pace to kSimHz
+            }
+        };
+        if (pool_n <= 0)
+            loop([&] { schedule.run(world); });
+        else {
+            exec::static_thread_pool pool {unsigned(pool_n)};
+            auto scheduler = pool.get_scheduler();
+            loop([&] { schedule.run(world, scheduler); });
         }
     });
 
     // --- render thread: owns the GL context and the draw loop --------------
     std::thread render([&] {
+        prefer_performance_cores();
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1); // vsync: channel skips frames the display can't show
 
@@ -258,8 +343,9 @@ int main() {
                              0.35f);
             }
 
-            // Grab one frame after ~2s, once the fountain has reached steady state.
-            if (capPath && !captured && frames >= 120 && count > 0) {
+            // Grab one frame once the fountain has actually filled (count-based,
+            // not frame-based, so it works regardless of sim/render pacing).
+            if (capPath && !captured && frames >= 60 && count > 3000) {
                 // Framebuffer size from the atomic, not glfwGetFramebufferSize:
                 // that is a main-thread-only call.
                 int cw = int(sz >> 32), ch = int(sz & 0xffffffffu);
