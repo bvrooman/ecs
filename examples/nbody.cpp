@@ -14,7 +14,6 @@
 // Build Release for meaningful timing: cmake -DCMAKE_BUILD_TYPE=Release
 
 #include "ecs/ecs.hpp"
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -25,157 +24,184 @@
 using namespace ecs;
 
 // --- components -----------------------------------------------------------
-struct Position { float x, y, z; };
-struct Velocity { float x, y, z; };
-struct Mass { float kg; };
-struct Lifetime { int ticks; }; // ticks remaining before the reaper removes it
-struct Tracer {};               // tag: the entities we visualize
+struct Position {
+    float x, y, z;
+};
+struct Velocity {
+    float x, y, z;
+};
+struct Mass {
+    float kg;
+};
+struct Lifetime {
+    int ticks;
+}; // ticks remaining before the reaper removes it
+struct Tracer {}; // tag: the entities we visualize
 
 // --- resources (singletons, not attached to any entity) -------------------
-struct Gravity { float accel; };
+struct Gravity {
+    float accel;
+};
 
 // The snapshot handed across the thread boundary: just the tracer positions.
 // The library knows nothing about what this is "for".
 using RenderSnapshot = std::vector<Position>;
 
 int main() {
-  constexpr int kParticles = 200'000;
-  constexpr int kTicks = 120;
-  constexpr float kDt = 0.016f;
-  constexpr int kEmitPerTick = 200;
-  constexpr int kTracerLife = 8;
+    constexpr int kParticles   = 200'000;
+    constexpr int kTicks       = 120;
+    constexpr float kDt        = 0.016f;
+    constexpr int kEmitPerTick = 200;
+    constexpr int kTracerLife  = 8;
 
-  World world;
-  world.emplace_resource<Gravity>(-9.81f);
-  world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
+    World world;
+    world.emplace_resource<Gravity>(-9.81f);
+    world.emplace_resource<SnapshotChannel<RenderSnapshot>>();
 
-  // Initial population: a one-shot setup system, run inline.
-  {
-    Schedule init;
-    init.add_once("populate", [&](World&, Commands& cmd) {
-      for (int i = 0; i < kParticles; ++i) {
-        float f = float(i);
-        cmd.spawn(Position{f, -f, 0.5f * f}, Velocity{0.1f, -0.2f, 0.05f},
-                  Mass{1.0f + 0.001f * f});
-      }
+    // Initial population: a one-shot setup system, run inline.
+    {
+        Schedule init;
+        init.add_once("populate", [&](World&, Commands& cmd) {
+            for (int i = 0; i < kParticles; ++i) {
+                float f = float(i);
+                cmd.spawn(Position {f, -f, 0.5f * f},
+                          Velocity {0.1f, -0.2f, 0.05f},
+                          Mass {1.0f + 0.001f * f});
+            }
+        });
+        init.run(world); // inline, no thread pool needed
+    }
+    std::printf("spawned %zu entities\n", world.size());
+
+    exec::static_thread_pool pool {std::max(2u, std::thread::hardware_concurrency())};
+    auto scheduler = pool.get_scheduler();
+
+    Schedule schedule;
+
+    // Access is derived from each system's parameter types: a `const` query
+    // component or Res<T> is a read, a non-const component or ResMut<T> a write.
+
+    // gravity: read Mass + the Gravity resource, write Velocity.
+    schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
+        float const a = g->accel;
+        q.for_each_chunk([a](std::span<Entity>,
+                             soa_storage<Velocity>& vel,
+                             soa_storage<Mass> const&) {
+            for (float& vy : vel.column<1>())
+                vy += a * kDt; // SoA fast path
+        });
     });
-    init.run(world); // inline, no thread pool needed
-  }
-  std::printf("spawned %zu entities\n", world.size());
 
-  exec::static_thread_pool pool{std::max(2u, std::thread::hardware_concurrency())};
-  auto scheduler = pool.get_scheduler();
+    // emitter: spawn short-lived tracer particles via Commands, using the handle
+    // reservation hands back to attach follow-up components.
+    schedule.add("emitter", [](Commands& cmd) {
+        for (int i = 0; i < kEmitPerTick; ++i) {
+            Entity e = cmd.spawn(Position {0, 0, 0},
+                                 Velocity {float(i % 7) - 3, 5, 0},
+                                 Mass {1});
+            cmd.add<Lifetime>(e, Lifetime {kTracerLife});
+            cmd.add<Tracer>(e, Tracer {});
+        }
+    });
 
-  Schedule schedule;
+    // reaper: age every Lifetime and destroy the expired ones (deferred).
+    schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
+        q.each([&](Entity e, Lifetime& l) {
+            if (--l.ticks <= 0)
+                cmd.destroy(e);
+        });
+    });
 
-  // Access is derived from each system's parameter types: a `const` query
-  // component or Res<T> is a read, a non-const component or ResMut<T> a write.
+    // integrate: read Velocity, write Position. Reads what gravity wrote, so the
+    // scheduler places it on a later level automatically.
+    schedule.add("integrate", [](Query<Position, Velocity const> q) {
+        q.for_each_chunk([](std::span<Entity>,
+                            soa_storage<Position>& pos,
+                            soa_storage<Velocity> const& vel) {
+            auto px = pos.column<0>();
+            auto py = pos.column<1>();
+            auto pz = pos.column<2>();
+            auto vx = vel.column<0>();
+            auto vy = vel.column<1>();
+            auto vz = vel.column<2>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] += vx[i] * kDt;
+                py[i] += vy[i] * kDt;
+                pz[i] += vz[i] * kDt;
+            }
+        });
+    });
 
-  // gravity: read Mass + the Gravity resource, write Velocity.
-  schedule.add("gravity",
-               [](Query<Velocity, const Mass> q, Res<Gravity> g) {
-                 const float a = g->accel;
-                 q.for_each_chunk([a](std::span<Entity>, soa_storage<Velocity>& vel,
-                                      const soa_storage<Mass>&) {
-                   for (float& vy : vel.column<1>()) vy += a * kDt; // SoA fast path
+    // extract: read tracer Positions (written by integrate -> later level) and
+    // publish them to the snapshot channel for the consumer threads.
+    schedule.add("extract",
+                 [](Query<Position const, Tracer const> q,
+                    ResMut<SnapshotChannel<RenderSnapshot>> ch) {
+                     RenderSnapshot& out = ch->back();
+                     out.clear();
+                     q.each([&](Entity, Position const& p, Tracer const&) {
+                         out.push_back(p);
+                     });
+                     ch->publish();
                  });
-               });
 
-  // emitter: spawn short-lived tracer particles via Commands, using the handle
-  // reservation hands back to attach follow-up components.
-  schedule.add("emitter", [](Commands& cmd) {
-    for (int i = 0; i < kEmitPerTick; ++i) {
-      Entity e = cmd.spawn(Position{0, 0, 0},
-                           Velocity{float(i % 7) - 3, 5, 0}, Mass{1});
-      cmd.add<Lifetime>(e, Lifetime{kTracerLife});
-      cmd.add<Tracer>(e, Tracer{});
-    }
-  });
+    std::printf("schedule: %zu systems across %zu parallel levels\n",
+                schedule.size(),
+                schedule.level_count());
 
-  // reaper: age every Lifetime and destroy the expired ones (deferred).
-  schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-    q.each([&](Entity e, Lifetime& l) {
-      if (--l.ticks <= 0) cmd.destroy(e);
-    });
-  });
+    // Two independent consumers reading the SAME channel at their own pace.
+    std::atomic<bool> stop {false};
+    auto run_consumer =
+        [&](char const* name, std::atomic<long>& frames, std::atomic<long>& items) {
+            auto reader = world.resource<SnapshotChannel<RenderSnapshot>>().reader();
+            long f = 0, last = 0;
+            while (!stop.load(std::memory_order_acquire)) {
+                if (reader.poll()) {
+                    ++f;
+                    last = long(reader.get()->size());
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+            if (reader.poll())
+                last = long(reader.get()->size());
+            frames.store(f);
+            items.store(last);
+            (void)name;
+        };
+    std::atomic<long> render_frames {0}, render_items {0};
+    std::atomic<long> audio_frames {0}, audio_items {0};
+    std::thread renderer(run_consumer,
+                         "render",
+                         std::ref(render_frames),
+                         std::ref(render_items));
+    std::thread audio(run_consumer,
+                      "audio",
+                      std::ref(audio_frames),
+                      std::ref(audio_items));
 
-  // integrate: read Velocity, write Position. Reads what gravity wrote, so the
-  // scheduler places it on a later level automatically.
-  schedule.add("integrate", [](Query<Position, const Velocity> q) {
-    q.for_each_chunk([](std::span<Entity>, soa_storage<Position>& pos,
-                        const soa_storage<Velocity>& vel) {
-      auto px = pos.column<0>();
-      auto py = pos.column<1>();
-      auto pz = pos.column<2>();
-      auto vx = vel.column<0>();
-      auto vy = vel.column<1>();
-      auto vz = vel.column<2>();
-      for (std::size_t i = 0; i < px.size(); ++i) {
-        px[i] += vx[i] * kDt;
-        py[i] += vy[i] * kDt;
-        pz[i] += vz[i] * kDt;
-      }
-    });
-  });
+    auto t0 = std::chrono::steady_clock::now();
+    for (int tick = 0; tick < kTicks; ++tick)
+        schedule.run(world, scheduler);
+    auto t1 = std::chrono::steady_clock::now();
 
-  // extract: read tracer Positions (written by integrate -> later level) and
-  // publish them to the snapshot channel for the consumer threads.
-  schedule.add("extract", [](Query<const Position, const Tracer> q,
-                             ResMut<SnapshotChannel<RenderSnapshot>> ch) {
-    RenderSnapshot& out = ch->back();
-    out.clear();
-    q.each([&](Entity, const Position& p, const Tracer&) { out.push_back(p); });
-    ch->publish();
-  });
+    stop.store(true, std::memory_order_release);
+    renderer.join();
+    audio.join();
 
-  std::printf("schedule: %zu systems across %zu parallel levels\n",
-              schedule.size(), schedule.level_count());
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::printf("ran %d ticks in %.2f ms (%.3f ms/tick)\n", kTicks, ms, ms / kTicks);
+    std::printf("entities after churn: %zu (%d field + live tracers)\n",
+                world.size(),
+                kParticles);
+    std::printf("render consumer: %ld snapshots, last had %ld tracers\n",
+                render_frames.load(),
+                render_items.load());
+    std::printf("audio  consumer: %ld snapshots, last had %ld tracers\n",
+                audio_frames.load(),
+                audio_items.load());
 
-  // Two independent consumers reading the SAME channel at their own pace.
-  std::atomic<bool> stop{false};
-  auto run_consumer = [&](const char* name, std::atomic<long>& frames,
-                          std::atomic<long>& items) {
-    auto reader = world.resource<SnapshotChannel<RenderSnapshot>>().reader();
-    long f = 0, last = 0;
-    while (!stop.load(std::memory_order_acquire)) {
-      if (reader.poll()) {
-        ++f;
-        last = long(reader.get()->size());
-      } else {
-        std::this_thread::yield();
-      }
-    }
-    if (reader.poll()) last = long(reader.get()->size());
-    frames.store(f);
-    items.store(last);
-    (void)name;
-  };
-  std::atomic<long> render_frames{0}, render_items{0};
-  std::atomic<long> audio_frames{0}, audio_items{0};
-  std::thread renderer(run_consumer, "render", std::ref(render_frames),
-                       std::ref(render_items));
-  std::thread audio(run_consumer, "audio", std::ref(audio_frames),
-                    std::ref(audio_items));
-
-  auto t0 = std::chrono::steady_clock::now();
-  for (int tick = 0; tick < kTicks; ++tick) schedule.run(world, scheduler);
-  auto t1 = std::chrono::steady_clock::now();
-
-  stop.store(true, std::memory_order_release);
-  renderer.join();
-  audio.join();
-
-  double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  std::printf("ran %d ticks in %.2f ms (%.3f ms/tick)\n", kTicks, ms,
-              ms / kTicks);
-  std::printf("entities after churn: %zu (%d field + live tracers)\n",
-              world.size(), kParticles);
-  std::printf("render consumer: %ld snapshots, last had %ld tracers\n",
-              render_frames.load(), render_items.load());
-  std::printf("audio  consumer: %ld snapshots, last had %ld tracers\n",
-              audio_frames.load(), audio_items.load());
-
-  Position p = world.get<Position>(Entity{0, 0});
-  std::printf("entity 0 final position = (%.3f, %.3f, %.3f)\n", p.x, p.y, p.z);
-  return 0;
+    Position p = world.get<Position>(Entity {0, 0});
+    std::printf("entity 0 final position = (%.3f, %.3f, %.3f)\n", p.x, p.y, p.z);
+    return 0;
 }
