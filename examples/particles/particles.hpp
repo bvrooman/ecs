@@ -1,0 +1,49 @@
+// examples/particles/particles.hpp
+//
+// Shared domain types for the particle example: the plain-struct components and
+// resources the ECS stores, the draw-ready vertex that crosses the sim/render
+// thread boundary, and the simulation tuning knobs. Included by both the
+// simulation (simulation.cpp) and the renderer (main.cpp).
+#pragma once
+
+#include <random>
+#include <vector>
+
+// --- components: an entity is whatever components it carries ----------------
+struct Position {
+    float x, y;
+};
+struct Velocity {
+    float x, y;
+};
+struct Color {
+    float r, g, b;
+};
+struct Age {
+    float t, max;
+}; // seconds lived / lifespan before reaping
+
+// --- resources (singletons, not attached to any entity) --------------------
+struct Gravity {
+    float accel;
+}; // read by the gravity system (Res<>)
+struct Rng {
+    std::mt19937 gen;
+}; // written by the emitter      (ResMut<>)
+
+// One draw-ready vertex: clip-space position + RGBA. This is what crosses the
+// thread boundary; the ECS knows nothing about GL.
+struct GpuParticle {
+    float x, y, r, g, b, a;
+};
+using RenderSnapshot = std::vector<GpuParticle>;
+
+// --- simulation tuning ------------------------------------------------------
+namespace cfg {
+inline constexpr int kSimHz       = 120;           // simulation ticks per second
+inline constexpr float kDt        = 1.0f / kSimHz; // fixed timestep
+inline constexpr int kEmitPerTick = 20;            // new particles each tick
+inline constexpr float kGravity   = -1.7f;         // clip units / s^2
+inline constexpr float kOriginX   = 0.0f;
+inline constexpr float kOriginY   = -0.85f; // nozzle near the bottom edge
+} // namespace cfg
