@@ -51,6 +51,12 @@ struct phase {};
 
 using SystemId = std::uint64_t;
 
+// Forward decl: the id->name table for the DOT visualizer. Its definition and
+// Schedule::to_dot live in <ecs/schedule_dot.hpp>.
+namespace viz {
+struct NameTable;
+}
+
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with
 // every other system. `reads_all` means it reads everything (a WorldView): it
@@ -59,6 +65,9 @@ struct SystemAccess {
     std::vector<std::uint32_t> reads, writes, res_reads, res_writes;
     bool exclusive = false;
     bool reads_all = false;
+    // Purely informational (does not affect conflict analysis): the system took
+    // a Commands& and may record deferred structural edits.
+    bool commands = false;
 };
 
 namespace detail {
@@ -120,7 +129,9 @@ namespace detail {
     };
     template <>
     struct system_param<Commands&> {
-        static void declare(SystemAccess&) {} // side channel, no access
+        // A side channel: no tracked component/resource access. We still flag it
+        // so tooling can surface that the system records commands.
+        static void declare(SystemAccess& a) { a.commands = true; }
         static Commands& bind(World&, Commands& c, WorkerPool*) { return c; }
     };
     // Read-only ad-hoc access: WorldView reads everything but writes nothing,
@@ -201,6 +212,18 @@ public:
     auto const& systems() const {
         return systems_;
     }
+
+    // Render the schedule's wave DAG as Graphviz DOT (pipe to `dot -Tsvg`).
+    // Outer box per phase, inner box per conflict level; each system box lists
+    // its component/resource access and Commands; edges are transitively
+    // reduced. Defined in <ecs/schedule_dot.hpp> -- include it to call these.
+    std::string to_dot();
+    std::string to_dot(viz::NameTable const& names);
+
+    // The same wave DAG rendered straight to SVG -- no Graphviz needed. Also
+    // defined in <ecs/schedule_dot.hpp>.
+    std::string to_svg();
+    std::string to_svg(viz::NameTable const& names);
 
     // Run serially on the calling thread -- sugar for a transient 1-lane pool
     // (which spawns no worker threads, so it is free). The way to do setup:
@@ -296,6 +319,10 @@ private:
                             b.access.res_writes,
                             b.access.res_reads);
     }
+
+    // Transitively-reduced dependency edges (a -> b, a < b within a phase),
+    // shared by the DOT and SVG visualizers. Defined in <ecs/schedule_dot.hpp>.
+    std::vector<std::pair<std::size_t, std::size_t>> reduced_dependencies_() const;
 
     void rebuild() {
         if (!dirty_)
