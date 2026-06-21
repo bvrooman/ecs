@@ -1,6 +1,6 @@
 // ecs/schedule.hpp
 //
-// std::execution (P2300) compatible system scheduler.
+// Access-analyzed, data-parallel system scheduler.
 //
 // A *system* is a callable whose parameters declare what it touches:
 //
@@ -18,14 +18,14 @@
 // assumption behind safe parallelism). It then finds systems that conflict (one
 // writes what another reads or writes) and assigns each to a wavefront *level*:
 // every system runs after all earlier conflicting systems, and same-level
-// systems are conflict-free, so they execute concurrently. A `phase<N>` tag
-// gives coarse ordering across barriers independent of conflicts.
+// systems are conflict-free. A `phase<N>` tag gives coarse ordering across
+// barriers independent of conflicts.
 //
-// Execution is driven through senders/receivers: each system is
-// `starts_on(scheduler, then(just(), run))`, spawned into an
-// `exec::async_scope`, with a `sync_wait(scope.on_empty())` barrier between
-// waves. Any P2300 scheduler works; `run(world)` runs inline with no thread
-// pool.
+// Execution (run(world, WorkerPool&)): systems run sequentially in level order,
+// but each system's Query::for_each_chunk splits its rows across the pool's
+// lanes -- data parallelism *within* a system. Recorded edits flush at each
+// level barrier. `run(world)` is sugar for a 1-lane (serial) pool. See
+// worker_pool.hpp.
 
 #pragma once
 
@@ -33,12 +33,8 @@
 #include "world.hpp"
 #include <algorithm>
 #include <cstdint>
-#include <exception>
-#include <exec/async_scope.hpp>
 #include <functional>
 #include <map>
-#include <mutex>
-#include <stdexec/execution.hpp>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -103,25 +99,29 @@ namespace detail {
             a.writes.push_back(component_id<C>);
     }
 
+    // bind() also receives the active WorkerPool* (null for an ad-hoc serial
+    // run); the Query carries it so for_each_chunk splits rows across the lanes.
     template <class... Cs>
     struct system_param<Query<Cs...>> {
         static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-        static Query<Cs...> bind(World& w, Commands&) { return Query<Cs...>(w); }
+        static Query<Cs...> bind(World& w, Commands&, WorkerPool* pool) {
+            return Query<Cs...>(w, pool);
+        }
     };
     template <class T>
     struct system_param<Res<T>> {
         static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-        static Res<T> bind(World& w, Commands&) { return Res<T>(w); }
+        static Res<T> bind(World& w, Commands&, WorkerPool*) { return Res<T>(w); }
     };
     template <class T>
     struct system_param<ResMut<T>> {
         static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-        static ResMut<T> bind(World& w, Commands&) { return ResMut<T>(w); }
+        static ResMut<T> bind(World& w, Commands&, WorkerPool*) { return ResMut<T>(w); }
     };
     template <>
     struct system_param<Commands&> {
         static void declare(SystemAccess&) {} // side channel, no access
-        static Commands& bind(World&, Commands& c) { return c; }
+        static Commands& bind(World&, Commands& c, WorkerPool*) { return c; }
     };
     // Read-only ad-hoc access: WorldView reads everything but writes nothing,
     // so it runs in parallel with other readers and is serialized only against
@@ -129,7 +129,7 @@ namespace detail {
     template <>
     struct system_param<WorldView> {
         static void declare(SystemAccess& a) { a.reads_all = true; }
-        static WorldView bind(World& w, Commands&) { return WorldView(w); }
+        static WorldView bind(World& w, Commands&, WorkerPool*) { return WorldView(w); }
     };
     // Full escape hatch: a raw World& can also mutate component values through
     // a non-const query, so its access cannot be analyzed -- the system is
@@ -138,7 +138,7 @@ namespace detail {
     template <>
     struct system_param<World&> {
         static void declare(SystemAccess& a) { a.exclusive = true; }
-        static World& bind(World& w, Commands&) { return w; }
+        static World& bind(World& w, Commands&, WorkerPool*) { return w; }
     };
 
 } // namespace detail
@@ -150,8 +150,9 @@ public:
         std::string name;
         SystemAccess access;
         // move_only_function (not function) so a system may capture a move-only
-        // value (e.g. a unique_ptr or a move_only_function of its own).
-        std::move_only_function<void(World&, Commands&)> run;
+        // value (e.g. a unique_ptr or a move_only_function of its own). The
+        // WorkerPool* is null except under run(World&, WorkerPool&).
+        std::move_only_function<void(World&, Commands&, WorkerPool*)> run;
         int phase         = 0;
         std::size_t level = 0;
         bool once         = false;
@@ -201,56 +202,28 @@ public:
         return systems_;
     }
 
-    // Run on `scheduler`, blocking until all systems complete. Systems in the
-    // same wave run concurrently; each gets its parameters (built from the
-    // world and a shared Commands), and recorded edits flush at every wave
-    // barrier. One-shot systems are removed afterwards.
-    //
-    // If a system throws, the exception is caught (an uncaught exception would
-    // otherwise terminate, since async_scope cannot deliver an error
-    // completion), the first one is kept, and it is rethrown at the next
-    // barrier -- so an escaping exception propagates out of run() as it does on
-    // the inline path.
-    template <class Scheduler>
-    void run(World& world, Scheduler scheduler) {
-        rebuild();
-        Commands cmds {world};
-        std::exception_ptr error;
-        std::mutex error_mutex;
-        exec::async_scope scope;
-        for (auto const& wave : waves_) {
-            for (auto idx : wave) {
-                auto& sys = systems_[idx];
-                scope.spawn(stdexec::starts_on(
-                    scheduler,
-                    stdexec::then(stdexec::just(),
-                                  [&sys, &world, &cmds, &error, &error_mutex] {
-                                      try {
-                                          sys.run(world, cmds);
-                                      } catch (...) {
-                                          std::lock_guard lock(error_mutex);
-                                          if (!error)
-                                              error = std::current_exception();
-                                      }
-                                  })));
-            }
-            stdexec::sync_wait(scope.on_empty()); // barrier
-            if (error)
-                std::rethrow_exception(error);
-            world.apply_commands(); // make this wave's edits visible
-        }
-        prune_once();
+    // Run serially on the calling thread -- sugar for a transient 1-lane pool
+    // (which spawns no worker threads, so it is free). The way to do setup:
+    // add_once a setup system, then run(world).
+    void run(World& world) {
+        WorkerPool serial {1};
+        run(world, serial);
     }
 
-    // Run inline on the calling thread (no scheduler). Systems within a wave
-    // run sequentially. The way to do setup: add_once a setup system, then
-    // run(world).
-    void run(World& world) {
+    // The executor. Systems run sequentially in dependency (wave) order; each
+    // system's Query::for_each_chunk splits its rows across the pool's lanes --
+    // data parallelism *within* a system, so it scales with cores beyond the
+    // handful of independent systems a wave offers. A 1-lane pool is plain serial
+    // execution. Recorded edits flush at each wave barrier; one-shot systems are
+    // removed afterwards. A system that throws (in its body or a parallel kernel)
+    // propagates the exception out of run(); the current wave's edits are not
+    // flushed, as on any failed run.
+    void run(World& world, WorkerPool& pool) {
         rebuild();
         Commands cmds {world};
         for (auto const& wave : waves_) {
             for (auto const idx : wave)
-                systems_[idx].run(world, cmds);
+                systems_[idx].run(world, cmds, &pool);
             world.apply_commands();
         }
         prune_once();
@@ -267,8 +240,9 @@ private:
         (detail::system_param<std::tuple_element_t<I, Args>>::declare(a), ...);
     }
     template <class Args, class Fn, std::size_t... I>
-    static void invoke(Fn& fn, World& w, Commands& c, std::index_sequence<I...>) {
-        fn(detail::system_param<std::tuple_element_t<I, Args>>::bind(w, c)...);
+    static void
+    invoke(Fn& fn, World& w, Commands& c, WorkerPool* pool, std::index_sequence<I...>) {
+        fn(detail::system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
     }
 
     template <class Fn>
@@ -281,9 +255,10 @@ private:
         sys.phase = phase;
         sys.once  = once;
         declare_into<Args>(sys.access, std::make_index_sequence<N> {});
-        sys.run = [fn = std::forward<Fn>(fn)](World& w, Commands& c) mutable {
-            invoke<Args>(fn, w, c, std::make_index_sequence<N> {});
-        };
+        sys.run =
+            [fn = std::forward<Fn>(fn)](World& w, Commands& c, WorkerPool* pool) mutable {
+                invoke<Args>(fn, w, c, pool, std::make_index_sequence<N> {});
+            };
         auto const id = sys.id;
         systems_.push_back(std::move(sys));
         dirty_ = true;

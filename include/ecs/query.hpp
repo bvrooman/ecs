@@ -17,15 +17,19 @@
 //       ones scattered back. Convenience path; prefer for_each_chunk when hot.
 //
 //   q.for_each_chunk([](std::span<Entity> ents,
-//                       const soa_storage<Position>& pos,
-//                       soa_storage<Velocity>& vel){ ... });
-//       The SoA fast path: hands you whole archetype columns (const for
-//       read-only components) so you can pull contiguous per-field spans and
-//       run tight, vectorizer-friendly loops with no per-element
-//       gather/scatter.
+//                       chunk<Position> pos, chunk<Velocity const> vel){ ... });
+//       The SoA fast path: hands each lane a `chunk` per component, already
+//       scoped to that lane's slice of the archetype's rows. chunk::column<I>()
+//       returns that field's contiguous std::span for this lane (span<const F>
+//       for a read-only component), so you run a tight, vectorizer-friendly loop
+//       -- `for (auto& x : pos.column<0>())` -- with no per-element
+//       gather/scatter and no begin/end bookkeeping. The executor splits each
+//       archetype's rows across the WorkerPool's lanes; because a chunk exposes
+//       only its own slice, writing through it is data-parallel and race-free.
 
 #pragma once
 
+#include "worker_pool.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <span>
@@ -34,6 +38,48 @@
 #include <utility>
 
 namespace ecs {
+
+// chunk<C>: a lane's view of component C over the row range the executor handed
+// it. for_each_chunk gives each lane one chunk per component, already scoped to
+// that lane's rows, so column<I>() returns the field's std::span for *this* lane
+// only -- span<const F> when C is const, matching a read-only query component.
+// The kernel iterates with `for (auto& x : pos.column<0>())` (or column<I>()[i],
+// 0-based within the chunk) and never handles a begin/end; because a chunk
+// exposes only its own slice, writing through a mutable one cannot touch another
+// lane's rows, which is what keeps the deterministic split race-free. Trivially
+// copyable (a storage pointer + the range), so it is passed by value like a span.
+template <class C>
+class chunk {
+    using bare    = std::remove_const_t<C>;
+    using base    = soa_storage<bare>;
+    using storage = std::conditional_t<std::is_const_v<C>, base const, base>;
+
+public:
+    chunk(storage& store, std::size_t begin, std::size_t end) noexcept
+        : store_(&store)
+        , begin_(begin)
+        , end_(end) {}
+
+    // This lane's contiguous slice of field I (span<const F> if C is const).
+    template <std::size_t I>
+    [[nodiscard]]
+    auto column() const noexcept {
+        return store_->template column<I>().subspan(begin_, end_ - begin_);
+    }
+
+    [[nodiscard]]
+    std::size_t size() const noexcept {
+        return end_ - begin_;
+    }
+    [[nodiscard]]
+    bool empty() const noexcept {
+        return begin_ == end_;
+    }
+
+private:
+    storage* store_;
+    std::size_t begin_, end_;
+};
 
 template <class... Cs>
 class Query {
@@ -53,8 +99,11 @@ class Query {
     }
 
 public:
-    explicit Query(World& world)
-        : world_(world) {}
+    // `pool` is the data-parallel WorkerPool the executor binds (null for ad-hoc
+    // queries, which then iterate serially).
+    explicit Query(World& world, WorkerPool* pool = nullptr)
+        : world_(world)
+        , pool_(pool) {}
 
     template <class F>
     void each(F&& fn) {
@@ -72,12 +121,33 @@ public:
         }
     }
 
+    // The SoA fast path. Splits each matching archetype's rows across the bound
+    // WorkerPool's lanes and calls the kernel once per (archetype x lane) with
+    // that lane's entities and a `chunk` per component, each already scoped to
+    // the lane's row slice (const for read-only components). A chunk exposes only
+    // its own rows, so the deterministic partition is race-free with no locking.
+    // A 1-lane pool (or an ad-hoc query with no pool) runs the whole archetype in
+    // one call, so the same kernel serves serial and parallel.
+    //
+    //   q.for_each_chunk([](std::span<Entity>,
+    //                       chunk<Position> pos, chunk<Velocity const> vel) {
+    //       auto px = pos.column<0>(); auto vx = vel.column<0>();
+    //       for (std::size_t i = 0; i < px.size(); ++i) px[i] += vx[i]; // vectorizable
+    //   });
     template <class F>
     void for_each_chunk(F&& fn) {
         auto const& archs = world_.archetypes();
         for (auto const ai : world_.matching_archetypes(required())) {
-            auto& arch = *archs[ai];
-            fn(std::span(arch.entities), chunk_arg<Cs>(arch)...);
+            auto& arch      = *archs[ai];
+            auto const ents = std::span(arch.entities);
+            auto const n    = arch.size();
+            auto run        = [&](std::size_t b, std::size_t e) {
+                fn(ents.subspan(b, e - b), chunk_arg<Cs>(arch, b, e)...);
+            };
+            if (pool_)
+                pool_->parallel_for(n, run);
+            else
+                run(0, n);
         }
     }
 
@@ -90,15 +160,11 @@ public:
     }
 
 private:
-    // Read-only components get a const storage reference (whose column<I>()
-    // yields spans of const), mutable ones a non-const reference.
+    // Wrap this archetype's column for C in a chunk scoped to [b, e). The chunk's
+    // constness follows C, so a read-only component yields spans of const.
     template <class C>
-    static auto& chunk_arg(Archetype& arch) {
-        auto& store = arch.column<bare<C>>().store;
-        if constexpr (std::is_const_v<C>)
-            return std::as_const(store);
-        else
-            return store;
+    static chunk<C> chunk_arg(Archetype& arch, std::size_t b, std::size_t e) {
+        return chunk<C>(arch.column<bare<C>>().store, b, e);
     }
 
     // Gather each component into a local, call fn with references whose
@@ -119,6 +185,7 @@ private:
     }
 
     World& world_;
+    WorkerPool* pool_ = nullptr; // data-parallel lanes for for_each_chunk
 };
 
 template <class... Cs>

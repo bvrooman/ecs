@@ -7,6 +7,7 @@ endfunction()
 
 ecs_add_test(test_soa)
 ecs_add_test(test_world)
+ecs_add_test(test_worker_pool)
 ecs_add_test(test_schedule)
 ecs_add_test(test_resource)
 ecs_add_test(test_command_buffer)

@@ -101,8 +101,8 @@ int main(int argc, char** argv) {
     });
     bench::run("for_each_chunk integrate (1 RW, 1 RO)", N, [&] {
         query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
-                                                   soa_storage<Pos>& p,
-                                                   soa_storage<Vel> const& v) {
+                                                   chunk<Pos> p,
+                                                   chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
             auto const vx = v.column<0>();
             auto const vy = v.column<1>();
@@ -127,22 +127,20 @@ int main(int argc, char** argv) {
         });
     });
     bench::run("for_each_chunk multi (2 RW, 1 RO)", N, [&] {
-        query<Pos, Vel, Acc const>(w).for_each_chunk([](std::span<Entity>,
-                                                        soa_storage<Pos>& p,
-                                                        soa_storage<Vel>& v,
-                                                        soa_storage<Acc> const& a) {
-            auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-            auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
-            auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
-            for (std::size_t i = 0; i < px.size(); ++i) {
-                vx[i] += ax[i];
-                vy[i] += ay[i];
-                vz[i] += az[i];
-                px[i] += vx[i];
-                py[i] += vy[i];
-                pz[i] += vz[i];
-            }
-        });
+        query<Pos, Vel, Acc const>(w).for_each_chunk(
+            [](std::span<Entity>, chunk<Pos> p, chunk<Vel> v, chunk<Acc const> a) {
+                auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+                auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
+                auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
+                for (std::size_t i = 0; i < px.size(); ++i) {
+                    vx[i] += ax[i];
+                    vy[i] += ay[i];
+                    vz[i] += az[i];
+                    px[i] += vx[i];
+                    py[i] += vy[i];
+                    pz[i] += vz[i];
+                }
+            });
     });
     bench::run("AoS baseline   multi (2 RW, 1 RO)", N, [&] {
         for (auto& b : aos) {
@@ -158,11 +156,9 @@ int main(int argc, char** argv) {
     // 6) single-field read: sum only Pos.x -----------------------------------
     bench::run("for_each_chunk sum 1 field (SoA)", N, [&] {
         float s = 0;
-        query<Pos const>(w).for_each_chunk([&](std::span<Entity>,
-                                               soa_storage<Pos> const& p) {
-            auto px = p.column<0>();
-            for (std::size_t i = 0; i < px.size(); ++i)
-                s += px[i];
+        query<Pos const>(w).for_each_chunk([&](std::span<Entity>, chunk<Pos const> p) {
+            for (float x : p.column<0>())
+                s += x;
         });
         bench::keep(s);
     });
@@ -183,8 +179,8 @@ int main(int argc, char** argv) {
     });
     bench::run("for_each_chunk compute-bound", N, [&] {
         query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
-                                                   soa_storage<Pos>& p,
-                                                   soa_storage<Vel> const& v) {
+                                                   chunk<Pos> p,
+                                                   chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
             auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
             for (std::size_t i = 0; i < px.size(); ++i) {

@@ -3,7 +3,6 @@
 #include "setup.hpp"
 #include <array>
 #include <atomic>
-#include <exec/static_thread_pool.hpp>
 #include <thread>
 #include <vector>
 
@@ -137,19 +136,13 @@ static void world_extraction_fans_out_to_two_consumers() {
               [](Query<Position const> q, ResMut<SnapshotChannel<Snapshot>> ch) {
                   Snapshot& out = ch->back();
                   out.clear();
-                  q.for_each_chunk(
-                      [&](std::span<Entity>, soa_storage<Position> const& pos) {
-                          auto xs = pos.column<0>();
-                          auto ys = pos.column<1>();
-                          for (std::size_t i = 0; i < xs.size(); ++i)
-                              out.push_back(Position {xs[i], ys[i]});
-                      });
+                  q.each([&](Entity, Position const& p) { out.push_back(p); });
                   ch->publish();
               });
 
-    exec::static_thread_pool pool {4};
+    WorkerPool pool {4};
     for (int frame = 0; frame < 50; ++frame)
-        sched.run(w, pool.get_scheduler());
+        sched.run(w, pool);
 
     stop.store(true, std::memory_order_release);
     renderer.join();

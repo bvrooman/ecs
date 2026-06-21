@@ -2,7 +2,6 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
-#include <exec/static_thread_pool.hpp>
 #include <vector>
 
 using namespace ecs;
@@ -43,8 +42,9 @@ static void destroy_during_iteration_is_safe() {
     });
 
     setup(w, [&](WorldView view, Commands& cmd) {
-        view.query<Position, Doomed>().each(
-            [&](Entity e, Position const&, Doomed const&) { cmd.destroy(e); });
+        view.query<Position, Doomed>().each([&](Entity e,
+                                                Position const&,
+                                                Doomed const&) { cmd.destroy(e); });
         CHECK(view.size() == 10); // nothing applied yet (still recording)
     });
 
@@ -164,8 +164,9 @@ static void bulk_spawn_loop() {
     CHECK(w.get<Position>(es[500]).x == 500.f);
 
     double sum_x = 0;
-    query<Position, Velocity>(w).each(
-        [&](Entity, Position& p, Velocity&) { sum_x += p.x; });
+    query<Position, Velocity>(w).each([&](Entity, Position& p, Velocity&) {
+        sum_x += p.x;
+    });
     CHECK(sum_x == double(999) * 1000 / 2); // 0+1+...+999
 }
 
@@ -191,8 +192,8 @@ static void schedule_flushes_between_levels() {
         phase<1> {});
 
     CHECK(sched.level_count() == 2); // phase 0 producer, phase 1 consumer
-    exec::static_thread_pool pool {4};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {4};
+    sched.run(w, pool);
 
     CHECK(w.size() == 7);                // 4 original + 3 spawned
     CHECK(seen_by_consumer.load() == 7); // consumer saw the producer's flush
@@ -212,8 +213,8 @@ static void concurrent_reserve_and_followup_edits() {
         });
     CHECK(sched.level_count() == 1); // no tracked access -> all parallel
 
-    exec::static_thread_pool pool {8};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {8};
+    sched.run(w, pool);
     std::size_t const total = std::size_t(kSystems * kPerSystem);
     CHECK(w.size() == total);
     CHECK((query<Position, Velocity>(w).count() == total)); // no lost edits
@@ -230,14 +231,14 @@ static void add_once_runs_once_then_removed() {
     });
     CHECK(sched.size() == 1);
 
-    exec::static_thread_pool pool {2};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {2};
+    sched.run(w, pool);
     CHECK(runs.load() == 1);
     CHECK(w.size() == 2);
     CHECK(sched.size() == 0); // unscheduled after running
 
-    sched.run(w, pool.get_scheduler()); // nothing to run now
-    CHECK(runs.load() == 1);            // did not run again
+    sched.run(w, pool);      // nothing to run now
+    CHECK(runs.load() == 1); // did not run again
     CHECK(w.size() == 2);
 }
 
@@ -257,8 +258,8 @@ static void phase_orders_startup_before_update() {
         phase<0> {});
 
     CHECK(sched.level_count() == 2); // wave 0 startup, wave 1 update
-    exec::static_thread_pool pool {4};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {4};
+    sched.run(w, pool);
 
     CHECK(seen.load() == 1); // update saw the entity startup spawned
     CHECK(w.size() == 1);
@@ -277,8 +278,8 @@ static void remove_unschedules_system() {
     CHECK(sched.size() == 1);
     CHECK(!sched.remove(id)); // already gone
 
-    exec::static_thread_pool pool {2};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {2};
+    sched.run(w, pool);
     CHECK(runs.load() == 0); // removed system never ran
 }
 

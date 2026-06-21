@@ -37,19 +37,11 @@ if(ECS_USE_P2996)
 endif()
 
 # ---------------------------------------------------------------------------
-# std::execution backend (NVIDIA stdexec, the P2300 reference implementation)
+# Threads -- the WorkerPool (include/ecs/worker_pool.hpp) runs the schedule on
+# resident std::thread workers. No external dependencies otherwise.
 # ---------------------------------------------------------------------------
-include(FetchContent)
-FetchContent_Declare(
-  stdexec
-  GIT_REPOSITORY https://github.com/NVIDIA/stdexec.git
-  GIT_TAG        189aac04dffde8796700f98a0df4b8ebf971197c
-  GIT_SHALLOW    OFF)
-set(STDEXEC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(STDEXEC_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(stdexec)
-
-target_link_libraries(ecs INTERFACE STDEXEC::stdexec)
+find_package(Threads REQUIRED)
+target_link_libraries(ecs INTERFACE Threads::Threads)
 
 # ---------------------------------------------------------------------------
 # Tests & examples

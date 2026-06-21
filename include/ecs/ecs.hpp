@@ -11,4 +11,5 @@
 #include "snapshot_channel.hpp"
 #include "soa.hpp"
 #include "triple_buffer.hpp"
+#include "worker_pool.hpp"
 #include "world.hpp"
