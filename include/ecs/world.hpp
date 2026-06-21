@@ -236,8 +236,16 @@ private:
     template <class... Cs>
     void spawn_now(Entity e, Cs... comps) {
         static_assert(detail::are_distinct_v<Cs...>, "spawn(): duplicate component type");
-        auto sig = Signature {component_id<Cs>...};
-        std::ranges::sort(sig);
+        // The signature for a given component set is constant (component ids are
+        // stable after first use), so build it once per instantiation rather
+        // than allocating a Signature vector on every spawn -- the last
+        // per-spawn heap allocation on the steady-state path. Same idiom as
+        // Query::required().
+        static Signature const sig = [] {
+            auto s = Signature {component_id<Cs>...};
+            std::ranges::sort(s);
+            return s;
+        }();
         auto const to = get_or_create_archetype(sig, [](Archetype& b) {
             (b.columns.emplace(component_id<Cs>, std::make_unique<Column<Cs>>()), ...);
         });

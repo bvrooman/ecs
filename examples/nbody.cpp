@@ -4,7 +4,7 @@
 //   * components are plain structs; an entity is whatever components it has
 //   * those structs are stored field-wise (SoA) automatically via reflection
 //   * a resource (Gravity) is a shared singleton
-//   * systems run on a std::execution scheduler, parallel where independent,
+//   * systems run on a persistent worker pool, data-parallel within each system,
 //     ordered automatically by their declared component/resource access
 //   * an emitter spawns short-lived particles through the command buffer, using
 //     the handle reservation returns; a reaper destroys them -- all deferred
@@ -17,7 +17,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <exec/static_thread_pool.hpp>
 #include <thread>
 #include <vector>
 
@@ -73,8 +72,7 @@ int main() {
     }
     std::printf("spawned %zu entities\n", world.size());
 
-    exec::static_thread_pool pool {std::max(2u, std::thread::hardware_concurrency())};
-    auto scheduler = pool.get_scheduler();
+    WorkerPool pool {std::max(2u, std::thread::hardware_concurrency())};
 
     Schedule schedule;
 
@@ -84,10 +82,8 @@ int main() {
     // gravity: read Mass + the Gravity resource, write Velocity.
     schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity>,
-                             soa_storage<Velocity>& vel,
-                             soa_storage<Mass> const&) {
-            for (float& vy : vel.column<1>())
+        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel, chunk<Mass const>) {
+            for (auto& vy : vel.column<1>())
                 vy += a * kDt; // SoA fast path
         });
     });
@@ -116,8 +112,8 @@ int main() {
     // scheduler places it on a later level automatically.
     schedule.add("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
-                            soa_storage<Position>& pos,
-                            soa_storage<Velocity> const& vel) {
+                            chunk<Position> pos,
+                            chunk<Velocity const> vel) {
             auto px = pos.column<0>();
             auto py = pos.column<1>();
             auto pz = pos.column<2>();
@@ -182,7 +178,7 @@ int main() {
 
     auto t0 = std::chrono::steady_clock::now();
     for (int tick = 0; tick < kTicks; ++tick)
-        schedule.run(world, scheduler);
+        schedule.run(world, pool);
     auto t1 = std::chrono::steady_clock::now();
 
     stop.store(true, std::memory_order_release);

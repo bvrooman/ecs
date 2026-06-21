@@ -2,7 +2,6 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
-#include <exec/static_thread_pool.hpp>
 #include <memory>
 
 using namespace ecs;
@@ -95,8 +94,8 @@ static void serialized_writers_run_without_races() {
 
     CHECK(sched.level_count() == 2);
 
-    exec::static_thread_pool pool {4};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {4};
+    sched.run(w, pool);
     // 10000 (from count) + 1
     CHECK(w.resource<Counter>().n == 10'001);
 }

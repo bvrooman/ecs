@@ -79,7 +79,7 @@ static void soa_fast_path() {
         for (int i = 0; i < 4; ++i)
             cmd.spawn(Position {float(i), 0});
     });
-    query<Position>(w).for_each_chunk([](std::span<Entity>, soa_storage<Position>& pos) {
+    query<Position>(w).for_each_chunk([](std::span<Entity>, chunk<Position> pos) {
         for (auto& x : pos.column<0>())
             x += 100.f;
     });
@@ -97,8 +97,9 @@ static void const_query_marks_read_only() {
     Entity e;
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
     // Velocity read-only (const), Position mutable: only Position is written back.
-    query<Velocity const, Position>(w).each(
-        [](Entity, Velocity const& v, Position& p) { p.x += v.dx; });
+    query<Velocity const, Position>(w).each([](Entity, Velocity const& v, Position& p) {
+        p.x += v.dx;
+    });
     CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
     CHECK(w.get<Velocity>(e).dx == 2.f); // untouched
 
@@ -107,13 +108,13 @@ static void const_query_marks_read_only() {
     // the incremental spawn, so accumulate across chunks.)
     float sum_x      = 0;
     std::size_t seen = 0;
-    query<Position const>(w).for_each_chunk(
-        [&](std::span<Entity>, soa_storage<Position> const& pos) {
-            for (float x : pos.column<0>()) { // span<const float>
-                sum_x += x;
-                ++seen;
-            }
-        });
+    query<Position const>(w).for_each_chunk([&](std::span<Entity>,
+                                                chunk<Position const> pos) {
+        for (float x : pos.column<0>()) { // span<const float>
+            sum_x += x;
+            ++seen;
+        }
+    });
     CHECK(seen == 1);
     CHECK(sum_x == 3.f);
 }

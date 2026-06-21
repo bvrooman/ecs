@@ -2,20 +2,22 @@
 
 A small, header-only Entity-Component-System for C++ whose defining trait is
 that **you write components as plain structs (AoS) and they are stored
-field-wise (SoA) automatically, using C++ reflection**. Systems are scheduled on
-a `std::execution` (P2300) runtime, so independent work runs in parallel on
-whatever async runtime the application already uses.
+field-wise (SoA) automatically, using C++ reflection**. Systems run on a
+persistent data-parallel worker pool: each system's entities are split across
+cores, with ordering and safety derived from the components each system declares
+it touches.
 
 ```
 include/ecs/
-  reflect.hpp    field reflection facade (P2996 backend + portable backend)
-  soa.hpp        soa_storage<T> : AoS API, SoA storage
-  entity.hpp     generational Entity handle, ComponentId
-  archetype.hpp  type-erased component columns grouped by signature
-  world.hpp      entity lifecycle + dynamic archetype transitions
-  query.hpp      iterate matching archetypes (ergonomic + SoA fast path)
-  schedule.hpp   std::execution system scheduler with conflict analysis
-  ecs.hpp        umbrella header
+  reflect.hpp     field reflection facade (P2996 backend + portable backend)
+  soa.hpp         soa_storage<T> : AoS API, SoA storage
+  entity.hpp      generational Entity handle, ComponentId
+  archetype.hpp   type-erased component columns grouped by signature
+  world.hpp       entity lifecycle + dynamic archetype transitions
+  query.hpp       iterate matching archetypes (ergonomic + data-parallel SoA path)
+  worker_pool.hpp persistent fork-join worker pool (the data-parallel runtime)
+  schedule.hpp    system scheduler: conflict analysis + the WorkerPool executor
+  ecs.hpp         umbrella header
 ```
 
 ## 1. Components are structs
@@ -104,7 +106,7 @@ their addresses stay stable as new archetypes appear.
 
 Queries offer both styles. Mark a component `const` in the query type to read it
 without writing it back -- `each` then passes it by `const&` and skips its
-scatter (and `for_each_chunk` hands a `const` storage), which avoids both the
+scatter (and `for_each_chunk` hands a `const` chunk), which avoids both the
 cost and the *undeclared write* of touching a component you only read:
 
 ```cpp
@@ -113,16 +115,21 @@ query<Position, const Velocity>(w).each([](Entity, Position& p, const Velocity& 
   p.x += v.x;   // Velocity is read-only: not written back
 });
 
-// fast path: raw columns, tight contiguous loop
+// fast path: each lane gets a `chunk` per component, already scoped to its rows
 query<Position, const Velocity>(w).for_each_chunk(
-  [](std::span<Entity>, soa_storage<Position>& pos, const soa_storage<Velocity>& vel){
+  [](std::span<Entity>, chunk<Position> pos, chunk<const Velocity> vel){
     auto px = pos.column<0>(); auto vx = vel.column<0>(); // vx is span<const>
     for (size_t i = 0; i < px.size(); ++i) px[i] += vx[i];
   });
 ```
 
-`each` is the convenience path (per-row gather/scatter + a tuple); prefer
-`for_each_chunk` for hot loops.
+`each` is the convenience path (per-row gather/scatter + a tuple, always serial);
+`for_each_chunk` is the hot path -- the executor splits an archetype's rows
+across the worker pool's lanes and calls the kernel once per lane with a `chunk`
+per component, each scoped to that lane's slice of rows. `chunk::column<I>()`
+returns the field's contiguous span for *this lane only*, so a lane physically
+cannot reach another's rows: the split is data-parallel and race-free, and the
+kernel carries no `begin`/`end` (you iterate `column<I>()` directly).
 
 The set of archetypes a query matches is **cached** per required-component
 signature, so a repeated query costs an O(1) lookup plus iteration of just the
@@ -133,7 +140,7 @@ concurrently (the returned match list stays valid after the lock is released
 because the cache is append-only and `unordered_map` element references survive
 rehash).
 
-## 5. Async-runtime compatible (std::execution / P2300)
+## 5. Data-parallel execution
 
 A *system* is a callable whose **parameter types declare what it touches** --
 the scheduler derives the read/write sets from them and constructs the
@@ -146,7 +153,8 @@ Schedule s;
 s.add("gravity",   [](Query<Velocity, const Mass> q, Res<Gravity> g){ ... });
 // reads Velocity, writes Position
 s.add("integrate", [](Query<Position, const Velocity> q){ ... });
-s.run(world, scheduler);   // scheduler is any P2300 scheduler
+WorkerPool pool{8};        // 8 lanes; 1 = plain serial
+s.run(world, pool);        // each system's rows split across the lanes
 ```
 
 The system parameters are:
@@ -167,16 +175,32 @@ resource id spaces, so a shared mutable resource serializes two systems even
 when their component access is disjoint. A `WorldView` (reads-everything) system
 conflicts only with writers — two `WorldView` readers still run concurrently —
 while a `World&` (exclusive) system conflicts with everything. Each system is assigned a **level** equal to
-`1 + max(level)` over earlier conflicting systems; same-level systems are
-conflict-free and run concurrently, separated by a barrier.
+`1 + max(level)` over earlier conflicting systems; the executor runs systems in
+level order, and same-level systems are conflict-free (any order). Parallelism
+comes from *within* each system, not from running different systems at once.
 
-Execution is pure senders/receivers: each system becomes
-`starts_on(scheduler, then(just(), run))`, spawned into an
-`exec::async_scope`; each level barrier is `sync_wait(scope.on_empty())`. Any
-P2300 scheduler plugs in — `exec::static_thread_pool` here, but equally a GPU
-scheduler or an Asio-backed one — which is what "async-runtime compatible"
-means in practice. The reference P2300 implementation (NVIDIA `stdexec`) is
-pulled in via CMake `FetchContent`.
+Execution (`worker_pool.hpp`): `run(world, pool)` runs the systems
+**sequentially in level order**, but each system's `Query::for_each_chunk`
+splits its archetype rows **across the pool's lanes** — data parallelism *within*
+a system rather than across systems, so it scales with cores beyond the handful
+of independent systems a level offers. The `WorkerPool` is built once and reused
+every tick: `lanes` resident threads (the caller is lane 0) stay alive and
+spin-wait on a generation counter, so a dispatch never creates, wakes, or sleeps
+a thread — the wakeup/barrier latency that hurts a general work-stealing pool.
+The cost is that idle lanes keep their cores busy, so an N-lane pool must leave a
+core for each other hot thread (a render/main thread) rather than oversubscribe;
+*parking* idle lanes to free those cores was tried and measured markedly worse
+for a fixed-timestep loop, where the per-tick wakeup latency dwarfs the idle-core
+cost it saves (so spinning stays). Each dispatch splits `[0, rows)` into equal
+contiguous slices (deterministic load balancing, no work stealing) and is
+allocation-free (the kernel is referenced via a static trampoline, not stored);
+the first exception from any lane is rethrown on the caller, so a throwing system
+escapes `run()` as it would serially. A 1-lane pool is plain single-threaded
+execution, and `run(world)` is sugar for it.
+Commands flush at each level barrier. (This replaced an earlier
+`std::execution`/P2300 backend: a general async framework that parallelized only
+*across* systems and woke workers per wave, it cost more than it saved for a
+tight fixed-timestep loop — see `benchmarks/schedule_bench`.)
 
 ### What the scheduler trusts
 
@@ -198,10 +222,12 @@ remaining caveats:
   needs unanalyzable read-write access. (Resource reads from outside any system,
   e.g. a consumer thread calling `world.resource<T>()`, remain the caller's
   responsibility.)
-* **Parallel runs are not deterministic.** Within a wave, command-recording
-  order across threads and `reserve()`'s id handout depend on timing, so entity
-  ids and creation order vary run to run. Use the inline `run(world)` (or a
-  single-threaded scheduler) when you need reproducibility, e.g. lockstep sims.
+* **Commands recorded from a parallel kernel are unordered.** Structural edits
+  recorded *inside* a `for_each_chunk` kernel land in per-lane shards whose
+  cross-lane order is unspecified, and `reserve()`'s id handout then depends on
+  timing. Record structural edits from a system's serial part instead (the common
+  case — an emitter that loops and `cmd.spawn()`s, a reaper using `each`), or use
+  a 1-lane pool, when you need reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
 
@@ -265,8 +291,8 @@ init.run(world);   // inline run on the calling thread
 ```
 
 The flush points are `Schedule::run`'s wave barriers (so edits from wave *N* are
-visible to wave *N+1*) -- the templated `run(world, scheduler)` for the parallel
-pool, or `run(world)` for inline single-threaded execution.
+visible to wave *N+1*) -- `run(world, pool)` runs each system data-parallel across
+the pool's lanes; `run(world)` is the same on a 1-lane (serial) pool.
 
 The immediate primitives (`*_now`, `spawn_now`) stay private and are what the
 command closures call at flush time. `spawn(...)` reserves an entity handle
@@ -304,8 +330,8 @@ should populate the world once and then stop:
 Schedule sched;
 sched.add_once("startup", setup_fn, phase<-1>{}); // runs before everything, once
 sched.add("gameplay", gameplay_fn, ...);           // default phase 0
-sched.run(world, scheduler);   // startup runs (and flushes) first, then gameplay
-sched.run(world, scheduler);   // only gameplay from here on
+sched.run(world, pool);   // startup runs (and flushes) first, then gameplay
+sched.run(world, pool);   // only gameplay from here on
 ```
 
 **Phases** give coarse ordering independent of access conflicts. A `phase<N>`
@@ -317,12 +343,19 @@ phase-0 system observes the world; `phase<1>` is a teardown/late phase. Without
 a phase tag, a one-shot system is leveled by conflicts like any other, which is
 often enough but does not guarantee it precedes an unrelated system.
 
-A command is a type-erased `void(World&)` closure (`std::move_only_function`,
-so move-only captured values are fine). Recording is **sharded per worker
-thread**: shard lookup is a lock-free atomic load and each shard has its own
-(normally uncontended) mutex, so many systems on the same level record
+A command is a type-erased `void(World&)` callable. Recording is **sharded per
+worker thread**: shard lookup is a lock-free atomic load and each shard has its
+own (normally uncontended) mutex, so many systems on the same level record
 concurrently with effectively no contention -- recording is a thread-safe side
-channel, not tracked component/resource state. `apply()` drains every shard
+channel, not tracked component/resource state. Each shard keeps its callables in
+a **monotonic arena**: the callable is constructed in place in a chain of fixed
+blocks and never relocated (so a move-only or non-trivially-relocatable capture
+is safe), and `apply()` invokes then destroys each in record order and *rewinds*
+the arena rather than freeing it. With each spawn's archetype signature also
+computed once and cached, a steady-state tick records and flushes its commands
+**without touching the heap** -- zero allocation per tick, where a
+`std::move_only_function` with a large multi-component spawn capture would
+otherwise `malloc` the closure on every call. `apply()` drains every shard
 single-threaded; commands within one thread's shard replay in record order,
 ordering *across* shards is unspecified. The `Schedule` flushes at every level
 barrier (no systems running), so changes recorded in level *N* are visible to

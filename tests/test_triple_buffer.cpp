@@ -3,7 +3,6 @@
 #include "setup.hpp"
 #include <array>
 #include <atomic>
-#include <exec/static_thread_pool.hpp>
 #include <thread>
 #include <vector>
 
@@ -116,19 +115,13 @@ static void world_extraction_handoff() {
               [](Query<Position const> q, ResMut<TripleBuffer<PositionSnapshot>> tb) {
                   PositionSnapshot& out = tb->back();
                   out.clear();
-                  q.for_each_chunk(
-                      [&](std::span<Entity>, soa_storage<Position> const& pos) {
-                          auto xs = pos.column<0>();
-                          auto ys = pos.column<1>();
-                          for (std::size_t i = 0; i < xs.size(); ++i)
-                              out.push_back(Position {xs[i], ys[i]});
-                      });
+                  q.each([&](Entity, Position const& p) { out.push_back(p); });
                   tb->publish();
               });
 
-    exec::static_thread_pool pool {4};
+    WorkerPool pool {4};
     for (int frame = 0; frame < 50; ++frame)
-        sched.run(w, pool.get_scheduler());
+        sched.run(w, pool);
 
     stop.store(true, std::memory_order_release);
     consumer.join();

@@ -2,7 +2,6 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
-#include <exec/static_thread_pool.hpp>
 #include <stdexcept>
 #include <string_view>
 
@@ -47,10 +46,10 @@ static void run_on_thread_pool_executes_all_systems() {
     World w;
     setup(w, [&](Commands& cmd) {
         for (int i = 0; i < 1000; ++i)
-            cmd.spawn(Position{0, 0}, Velocity{1, 2}, Health{100});
+            cmd.spawn(Position {0, 0}, Velocity {1, 2}, Health {100});
     });
 
-    std::atomic<int> render_calls{0};
+    std::atomic<int> render_calls {0};
     Schedule sched;
     // writes Position, reads Velocity
     sched.add("physics", [](Query<Position, Velocity const> q) {
@@ -60,19 +59,16 @@ static void run_on_thread_pool_executes_all_systems() {
         });
     });
     // writes Health
-    sched.add("damage", [](Query<Health> q) {
-        q.each([](Entity, Health& h) { h.hp -= 1; });
-    });
+    sched.add("damage",
+              [](Query<Health> q) { q.each([](Entity, Health& h) { h.hp -= 1; }); });
     // no ECS access -- just a side effect
-    sched.add("render",
-              [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
+    sched.add("render", [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 
-    exec::static_thread_pool pool{4};
-    auto scheduler = pool.get_scheduler();
-    sched.run(w, scheduler);
-    sched.run(w, scheduler);
+    WorkerPool pool {4};
+    sched.run(w, pool);
+    sched.run(w, pool);
 
-    Entity first{0, 0};
+    Entity first {0, 0};
     CHECK(w.get<Position>(first).x == 2.f); // physics ran twice
     CHECK(w.get<Health>(first).hp == 98);   // damage ran twice
     CHECK(render_calls.load() == 2);        // render ran each tick
@@ -108,15 +104,15 @@ static void worldview_sees_writers_flush_in_prior_wave() {
     World w;
     setup(w, [&](Commands& cmd) {
         for (int i = 0; i < 5; ++i)
-            cmd.spawn(Position{1, 1});
+            cmd.spawn(Position {1, 1});
     });
 
-    std::atomic<int> observed{-1};
+    std::atomic<int> observed {-1};
     Schedule sched;
     // Spawns three more, flushed at the wave barrier.
     sched.add("spawn", [](Commands& cmd) {
         for (int i = 0; i < 3; ++i)
-            cmd.spawn(Position{2, 2});
+            cmd.spawn(Position {2, 2});
     });
     // Read-only ad-hoc access via WorldView, serialized after spawn by phase.
     sched.add(
@@ -124,10 +120,10 @@ static void worldview_sees_writers_flush_in_prior_wave() {
         [&](WorldView view) {
             observed.store(int(view.size()), std::memory_order_relaxed);
         },
-        phase<1>{});
+        phase<1> {});
 
-    exec::static_thread_pool pool{4};
-    sched.run(w, pool.get_scheduler());
+    WorkerPool pool {4};
+    sched.run(w, pool);
     CHECK(w.size() == 8);
     CHECK(observed.load() == 8); // saw the spawn wave's flush
 }
@@ -139,10 +135,10 @@ static void system_exception_propagates() {
     Schedule sched;
     sched.add("boom", [](Commands&) { throw std::runtime_error("boom"); });
 
-    exec::static_thread_pool pool{2};
+    WorkerPool pool {2};
     bool caught = false;
     try {
-        sched.run(w, pool.get_scheduler());
+        sched.run(w, pool);
     } catch (std::runtime_error const& e) {
         caught = (std::string_view(e.what()) == "boom");
     }

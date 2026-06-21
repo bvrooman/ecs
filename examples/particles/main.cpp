@@ -31,7 +31,6 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <exec/static_thread_pool.hpp>
 #include <random>
 #include <thread>
 #include <vector>
@@ -160,20 +159,27 @@ int main() {
     std::atomic<long> rendered {0};
 
     // --- simulation thread: runs the schedule at a fixed tick rate ---------
-    // Execution mode: the schedule runs inline on this thread by default --
-    // benchmarks/schedule_bench showed the pool's per-wave barriers cost more
-    // than they save and (oversubscribed against the render thread) caused the
-    // stutter. ECS_POOL=<n> opts into an n-worker std::execution pool to exercise
-    // the scheduler; with the turbulence workload it now earns a real speedup.
-    // ECS_STATS=1 prints per-tick timing every ~2s.
-    int pool_n = 0; // 0 = inline
+    // Execution mode: serial (a 1-lane pool) by default. ECS_POOL=<n> runs the
+    // schedule on an n-lane WorkerPool (the sim thread is lane 0, plus n-1
+    // resident workers), splitting each for_each_chunk system across lanes.
+    // benchmarks/schedule_bench shows it scaling ~5x with a tight tail. The
+    // resident lanes spin while idle -- kept hot so a dispatch starts with zero
+    // wakeup latency (parking them between ticks instead was measured far worse
+    // for this fixed-timestep loop: the per-tick wakeup cost dwarfed the saving)
+    // -- so an n-lane pool keeps n cores continuously busy. n must therefore
+    // leave a performance core for each other hot thread (the render and main
+    // threads here), not merely fit the core count: on this 8 P-core + 2 E-core
+    // M1 Max, n=4 is the measured sweet spot, while n=8 oversubscribes the
+    // P-cores and the fork-join barrier stalls on a descheduled lane. ECS_STATS=1
+    // prints per-tick timing every ~2s.
+    int pool_n = 0; // 0 = serial (1 lane)
     if (char const* p = std::getenv("ECS_POOL"))
         pool_n = std::atoi(p);
     bool const stats_on = std::getenv("ECS_STATS") != nullptr;
     if (pool_n <= 0)
         std::printf("sim execution: inline\n");
     else
-        std::printf("sim execution: %d-thread pool\n", pool_n);
+        std::printf("sim execution: %d-lane WorkerPool (data-parallel)\n", pool_n);
 
     std::thread sim([&] {
         prefer_performance_cores();
@@ -201,13 +207,8 @@ int main() {
                 std::this_thread::sleep_until(next); // pace to kSimHz
             }
         };
-        if (pool_n <= 0)
-            loop([&] { schedule.run(world); });
-        else {
-            exec::static_thread_pool pool {unsigned(pool_n)};
-            auto scheduler = pool.get_scheduler();
-            loop([&] { schedule.run(world, scheduler); });
-        }
+        WorkerPool pool {unsigned(std::max(1, pool_n))}; // 1 lane = serial
+        loop([&] { schedule.run(world, pool); });
     });
 
     // --- render thread: owns the GL context and the draw loop --------------

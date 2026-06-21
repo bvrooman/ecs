@@ -8,12 +8,10 @@
 // rise at large N means the working set spilled out of cache.
 //
 //   scale_bench
-#include "particles.hpp"
-
 #include "ecs/ecs.hpp"
+#include "particles.hpp"
 #include <chrono>
 #include <cstdio>
-#include <exec/static_thread_pool.hpp>
 #include <span>
 #include <thread>
 #include <vector>
@@ -25,39 +23,41 @@ using clk = std::chrono::steady_clock;
 static void build_steady(Schedule& s) {
     s.add("gravity", [](Query<Velocity> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity>, soa_storage<Velocity>& v) {
-            for (float& vy : v.column<1>())
+        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> v) {
+            for (auto& vy : v.column<1>())
                 vy += a * cfg::kDt;
         });
     });
     s.add("age", [](Query<Age> q) {
-        q.for_each_chunk([](std::span<Entity>, soa_storage<Age>& a) {
-            for (float& t : a.column<0>())
+        q.for_each_chunk([](std::span<Entity>, chunk<Age> a) {
+            for (auto& t : a.column<0>())
                 t += cfg::kDt;
         });
     });
     s.add("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk(
-            [](std::span<Entity>, soa_storage<Position>& p, soa_storage<Velocity> const& v) {
-                auto px = p.column<0>();
-                auto py = p.column<1>();
-                auto vx = v.column<0>();
-                auto vy = v.column<1>();
-                for (std::size_t i = 0; i < px.size(); ++i) {
-                    px[i] += vx[i] * cfg::kDt;
-                    py[i] += vy[i] * cfg::kDt;
-                }
-            });
-    });
-    s.add("extract", [](Query<Position const, Color const, Age const> q,
-                        ResMut<TripleBuffer<RenderSnapshot>> ch) {
-        RenderSnapshot& out = ch->back();
-        out.clear();
-        q.each([&](Entity, Position const& p, Color const& c, Age const&) {
-            out.push_back(GpuParticle {p.x, p.y, c.r, c.g, c.b, 1.0f});
+        q.for_each_chunk([](std::span<Entity>,
+                            chunk<Position> p,
+                            chunk<Velocity const> v) {
+            auto px = p.column<0>();
+            auto py = p.column<1>();
+            auto vx = v.column<0>();
+            auto vy = v.column<1>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] += vx[i] * cfg::kDt;
+                py[i] += vy[i] * cfg::kDt;
+            }
         });
-        ch->publish();
     });
+    s.add("extract",
+          [](Query<Position const, Color const, Age const> q,
+             ResMut<TripleBuffer<RenderSnapshot>> ch) {
+              RenderSnapshot& out = ch->back();
+              out.clear();
+              q.each([&](Entity, Position const& p, Color const& c, Age const&) {
+                  out.push_back(GpuParticle {p.x, p.y, c.r, c.g, c.b, 1.0f});
+              });
+              ch->publish();
+          });
 }
 
 static void setup(World& w) {
@@ -110,7 +110,8 @@ int main() {
             spawn_n(w, n);
             Schedule s;
             build_steady(s);
-            in_us = mean_us(warm, iters, [&] { s.run(w); });
+            WorkerPool serial {1};
+            in_us = mean_us(warm, iters, [&] { s.run(w, serial); });
         }
         {
             World w;
@@ -118,9 +119,8 @@ int main() {
             spawn_n(w, n);
             Schedule s;
             build_steady(s);
-            exec::static_thread_pool pool {8};
-            auto sch = pool.get_scheduler();
-            pl_us    = mean_us(warm, iters, [&] { s.run(w, sch); });
+            WorkerPool pool {8};
+            pl_us = mean_us(warm, iters, [&] { s.run(w, pool); });
         }
         std::printf("%10d | %12.2f %10.2f | %12.2f %10.2f | %5.2fx\n",
                     n,

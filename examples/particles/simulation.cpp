@@ -11,14 +11,16 @@
 //   wave 3: integrate                            (Velocity -> Position)
 //   wave 4: extract                              (publish the draw-ready frame)
 //
-// The three turbulence fields are independent and CPU-heavy, so they are the
-// part a thread pool can actually speed up (see benchmarks/schedule_bench).
-// Commands recorded by emitter/reaper flush at each wave barrier.
+// The per-entity systems iterate with `for_each_chunk`: the executor splits each
+// system's row range across the pool's lanes (data parallelism within a system).
+// The few structural/gather systems (clock, emitter, reaper, extract) use the
+// serial `each`. Commands flush at each wave barrier.
 #include "simulation.hpp"
 
 #include "ecs/ecs.hpp"
 #include "particles.hpp"
 #include <cmath>
+#include <cstddef>
 #include <random>
 #include <span>
 
@@ -49,18 +51,19 @@ inline void curl_force(float x, float y, float t, float seed, float& ox, float& 
 }
 
 // One turbulence field as a system: read positions + the clock, write this
-// field's per-particle force. Templated on the force component so swirl/drift/
-// gust share the code while writing disjoint components (and so run in parallel).
+// field's per-particle force for the lane's slice of rows. Templated on the
+// force component so swirl/drift/gust share the code while writing disjoint
+// components.
 template <class Force>
 auto field_system(float seed) {
     return [seed](Query<Position const, Force> q, Res<Clock> clk) {
         float const t = clk->t;
         q.for_each_chunk([t, seed](std::span<Entity>,
-                                   soa_storage<Position> const& pos,
-                                   soa_storage<Force>& f) {
+                                   chunk<Position const> pos,
+                                   chunk<Force> f) {
             auto px = pos.column<0>();
             auto py = pos.column<1>();
-            auto fx = f.template column<0>(); // f is soa_storage<Force> (dependent)
+            auto fx = f.template column<0>();
             auto fy = f.template column<1>();
             for (std::size_t i = 0; i < px.size(); ++i)
                 curl_force(px[i], py[i], t, seed, fx[i], fy[i]);
@@ -71,11 +74,11 @@ auto field_system(float seed) {
 } // namespace
 
 void build_particle_schedule(Schedule& schedule) {
-    // clock: advance sim time (drives the animated fields). Tiny; wave 0.
+    // clock: advance sim time (drives the animated fields). Tiny; serial. wave 0.
     schedule.add("clock", [](ResMut<Clock> c) { c->t += cfg::kDt; });
 
     // emitter: spawn short-lived particles (with zeroed force fields) through
-    // Commands, using the RNG resource for spread. wave 0.
+    // Commands, using the RNG resource for spread. Serial (structural). wave 0.
     schedule.add("emitter", [](Commands& cmd, ResMut<Rng> rng) {
         auto& g = rng->gen;
         std::uniform_real_distribution<float> spreadX(-0.50f, 0.50f);
@@ -94,30 +97,31 @@ void build_particle_schedule(Schedule& schedule) {
         }
     });
 
-    // gravity: read the Gravity resource, write Velocity. wave 0.
+    // gravity: read the Gravity resource, write Velocity (data-parallel). wave 0.
     schedule.add("gravity", [](Query<Velocity> q, Res<Gravity> grav) {
         float const a = grav->accel;
-        q.for_each_chunk([a](std::span<Entity>, soa_storage<Velocity>& vel) {
-            for (float& vy : vel.column<1>())
+        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel) {
+            for (auto& vy : vel.column<1>())
                 vy += a * cfg::kDt;
         });
     });
 
-    // age: advance each particle's clock. Writes Age, independent. wave 0.
+    // age: advance each particle's clock (data-parallel). wave 0.
     schedule.add("age", [](Query<Age> q) {
-        q.for_each_chunk([](std::span<Entity>, soa_storage<Age>& age) {
-            for (float& t : age.column<0>())
+        q.for_each_chunk([](std::span<Entity>, chunk<Age> age) {
+            for (auto& t : age.column<0>())
                 t += cfg::kDt;
         });
     });
 
-    // The three turbulence fields: independent + compute-bound, so the scheduler
-    // runs them in parallel (wave 1). Different seeds -> multi-scale swirl.
+    // The three turbulence fields: independent + compute-bound. Each is split
+    // across lanes (within-system) *and* they are independent (across-system),
+    // so the pool has plenty of parallel work. wave 1.
     schedule.add("swirl", field_system<Swirl>(0.0f));
     schedule.add("drift", field_system<Drift>(1.7f));
     schedule.add("gust", field_system<Gust>(3.3f));
 
-    // reaper: destroy particles past their lifespan (deferred). wave 1.
+    // reaper: destroy particles past their lifespan (deferred). Serial. wave 1.
     schedule.add("reaper", [](Query<Age const> q, Commands& cmd) {
         q.each([&](Entity e, Age const& a) {
             if (a.t >= a.max)
@@ -125,15 +129,14 @@ void build_particle_schedule(Schedule& schedule) {
         });
     });
 
-    // accumulate: sum the three fields into Velocity. Reads what wave 1 wrote
-    // and writes Velocity (which gravity wrote) -> wave 2.
+    // accumulate: sum the three fields into Velocity (data-parallel). wave 2.
     schedule.add("accumulate",
                  [](Query<Velocity, Swirl const, Drift const, Gust const> q) {
                      q.for_each_chunk([](std::span<Entity>,
-                                         soa_storage<Velocity>& vel,
-                                         soa_storage<Swirl> const& sw,
-                                         soa_storage<Drift> const& dr,
-                                         soa_storage<Gust> const& gu) {
+                                         chunk<Velocity> vel,
+                                         chunk<Swirl const> sw,
+                                         chunk<Drift const> dr,
+                                         chunk<Gust const> gu) {
                          auto vx       = vel.column<0>();
                          auto vy       = vel.column<1>();
                          auto sx       = sw.column<0>();
@@ -150,11 +153,11 @@ void build_particle_schedule(Schedule& schedule) {
                      });
                  });
 
-    // integrate: read the final Velocity, write Position. wave 3.
+    // integrate: read the final Velocity, write Position (data-parallel). wave 3.
     schedule.add("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
-                            soa_storage<Position>& pos,
-                            soa_storage<Velocity> const& vel) {
+                            chunk<Position> pos,
+                            chunk<Velocity const> vel) {
             auto px = pos.column<0>();
             auto py = pos.column<1>();
             auto vx = vel.column<0>();
@@ -166,7 +169,8 @@ void build_particle_schedule(Schedule& schedule) {
         });
     });
 
-    // extract: publish a draw-ready snapshot of the survivors. wave 4.
+    // extract: publish a draw-ready snapshot of the survivors. Serial (gather
+    // into the shared TripleBuffer). wave 4.
     schedule.add("extract",
                  [](Query<Position const, Color const, Age const> q,
                     ResMut<TripleBuffer<RenderSnapshot>> ch) {

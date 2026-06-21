@@ -18,16 +18,25 @@
 // thread's shard replay in record order; ordering *across* shards is
 // unspecified.
 //
-// A command is a type-erased `void(World&)` closure (move_only_function, so
-// move-only captured component values are fine).
+// A command is a type-erased `void(World&)` callable. Each shard stores its
+// callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
+// callable is constructed into in place and never relocated, so a move-only or
+// non-trivially-relocatable capture (e.g. spawning a component that owns memory)
+// is safe. apply() rewinds the arena instead of freeing it, so after warmup a
+// tick records and flushes its commands without touching the heap at all (the
+// "zero allocation per tick" property): no per-command closure allocation, which
+// is where a std::move_only_function with a large capture (a multi-component
+// spawn) would otherwise hit malloc on every call.
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
-#include <functional>
+#include <cstddef>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -45,17 +54,100 @@ namespace detail {
 
 class World; // defined in world.hpp
 
+// A monotonic arena of type-erased `void(World&)` commands, kept in record
+// order. record() constructs the callable in place in a block and never moves
+// it; apply() invokes then destroys each in order and rewinds the arena (blocks
+// retained), so a steady-state tick allocates nothing. Single-threaded: a
+// CommandBuffer shard owns one and serializes access with its mutex.
+class CommandStore {
+public:
+    template <class F>
+    void record(F&& f) {
+        using Fn = std::decay_t<F>;
+        // Components stored in spawn/add/set closures align to <= 16; block
+        // bases (operator new[]) meet that, so aligning the offset suffices.
+        static_assert(alignof(Fn) <= alignof(std::max_align_t),
+                      "command capture is over-aligned for the arena");
+        void* obj = allocate(sizeof(Fn), alignof(Fn));
+        ::new (obj) Fn(std::forward<F>(f));
+        cmds_.push_back(Cmd {
+            obj,
+            [](void* o, World& w) { (*static_cast<Fn*>(o))(w); },
+            [](void* o) noexcept { static_cast<Fn*>(o)->~Fn(); },
+        });
+    }
+
+    void apply(World& world) {
+        for (auto const& c : cmds_)
+            c.invoke(c.obj, world);
+        for (auto const& c : cmds_)
+            c.destroy(c.obj);
+        cmds_.clear(); // keep capacity
+        cur_ = 0;      // rewind the block chain; blocks are retained for reuse
+        off_ = 0;
+    }
+
+    [[nodiscard]]
+    std::size_t size() const noexcept {
+        return cmds_.size();
+    }
+
+private:
+    // Type-erased handle to one recorded command living in the arena.
+    struct Cmd {
+        void* obj;
+        void (*invoke)(void*, World&);
+        void (*destroy)(void*) noexcept;
+    };
+    struct Block {
+        std::unique_ptr<std::byte[]> data;
+        std::size_t cap;
+    };
+    static constexpr std::size_t kBlock = 64 * 1024;
+
+    static std::size_t align_up(std::size_t n, std::size_t a) noexcept {
+        return (n + a - 1) & ~(a - 1);
+    }
+
+    // Bump-allocate sz bytes from the current block, advancing to the next
+    // retained block or appending a fresh one as needed. Returned storage stays
+    // put until apply() rewinds, so constructed commands are never relocated.
+    void* allocate(std::size_t sz, std::size_t al) {
+        for (;;) {
+            if (cur_ < blocks_.size()) {
+                std::size_t const base = align_up(off_, al);
+                if (base + sz <= blocks_[cur_].cap) {
+                    off_ = base + sz;
+                    return blocks_[cur_].data.get() + base;
+                }
+                if (cur_ + 1 < blocks_.size()) { // try the next retained block
+                    ++cur_;
+                    off_ = 0;
+                    continue;
+                }
+            }
+            std::size_t const cap = std::max(kBlock, align_up(sz, al));
+            blocks_.push_back(Block {std::make_unique<std::byte[]>(cap), cap});
+            cur_ = blocks_.size() - 1;
+            off_ = 0;
+        }
+    }
+
+    std::vector<Block> blocks_;
+    std::size_t cur_ = 0; // index of the block being filled
+    std::size_t off_ = 0; // bytes used in that block
+    std::vector<Cmd> cmds_;
+};
+
 class CommandBuffer {
 public:
-    using Command = std::move_only_function<void(World&)>;
-
     // Record a deferred operation. Lock-free shard lookup; the only lock is the
     // calling thread's own (normally uncontended) shard mutex.
     template <class F>
     void record(F&& f) {
-        auto& [mutex, commands] = local_shard();
-        std::lock_guard lock(mutex);
-        commands.emplace_back(std::forward<F>(f));
+        auto& shard = local_shard();
+        std::lock_guard lock(shard.mutex);
+        shard.store.record(std::forward<F>(f));
     }
 
     // Replay all recorded commands, then clear. Must be called when no systems
@@ -63,18 +155,15 @@ public:
     // order.
     void apply(World& world) {
         auto lock = std::lock_guard(create_mutex_);
-        for (auto const& shard : shards_) {
-            for (auto& cmd : shard->commands)
-                cmd(world);
-            shard->commands.clear();
-        }
+        for (auto const& shard : shards_)
+            shard->store.apply(world);
     }
 
     auto size() {
         auto lock = std::lock_guard(create_mutex_);
         auto n    = 0ul;
         for (auto const& shard : shards_)
-            n += shard->commands.size();
+            n += shard->store.size();
         return n;
     }
 
@@ -85,7 +174,7 @@ private:
 
     struct Shard {
         std::mutex mutex;
-        std::vector<Command> commands;
+        CommandStore store;
     };
 
     Shard& local_shard() {
