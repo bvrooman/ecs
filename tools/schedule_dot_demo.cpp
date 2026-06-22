@@ -3,7 +3,7 @@
 //   ./schedule-dot          > schedule.svg
 //   ./schedule-dot --dot | dot -Tsvg > schedule.svg
 #include "ecs/ecs.hpp"
-#include "ecs/schedule_dot.hpp"
+#include "schedule_dot.hpp"
 
 #include <iostream>
 #include <string_view>
@@ -57,5 +57,5 @@ int main(int argc, char** argv) {
         .resource<Score>("Score");
 
     bool const dot = argc > 1 && std::string_view(argv[1]) == "--dot";
-    std::cout << (dot ? sched.to_dot(nt) : sched.to_svg(nt));
+    std::cout << (dot ? viz::to_dot(sched, nt) : viz::to_svg(sched, nt));
 }

@@ -51,12 +51,6 @@ struct phase {};
 
 using SystemId = std::uint64_t;
 
-// Forward decl: the id->name table for the DOT visualizer. Its definition and
-// Schedule::to_dot live in <ecs/schedule_dot.hpp>.
-namespace viz {
-struct NameTable;
-}
-
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with
 // every other system. `reads_all` means it reads everything (a WorldView): it
@@ -213,17 +207,19 @@ public:
         return systems_;
     }
 
-    // Render the schedule's wave DAG as Graphviz DOT (pipe to `dot -Tsvg`).
-    // Outer box per phase, inner box per conflict level; each system box lists
-    // its component/resource access and Commands; edges are transitively
-    // reduced. Defined in <ecs/schedule_dot.hpp> -- include it to call these.
-    std::string to_dot();
-    std::string to_dot(viz::NameTable const& names);
-
-    // The same wave DAG rendered straight to SVG -- no Graphviz needed. Also
-    // defined in <ecs/schedule_dot.hpp>.
-    std::string to_svg();
-    std::string to_svg(viz::NameTable const& names);
+    // Do two access sets conflict? One writes what the other reads or writes
+    // (read/read never conflicts); an `exclusive` set conflicts with everything,
+    // a `reads_all` set only with writers. Components and resources are checked
+    // independently. Public so out-of-tree tooling (e.g. the schedule visualizer
+    // in tools/) can rebuild the same dependency graph without re-deriving it.
+    static bool conflicts(SystemAccess const& a, SystemAccess const& b) {
+        if (a.exclusive || b.exclusive)
+            return true;
+        if ((a.reads_all && writes_any(b)) || (b.reads_all && writes_any(a)))
+            return true;
+        return conflicts_on(a.writes, a.reads, b.writes, b.reads) ||
+               conflicts_on(a.res_writes, a.res_reads, b.res_writes, b.res_reads);
+    }
 
     // Run serially on the calling thread -- sugar for a transient 1-lane pool
     // (which spawns no worker threads, so it is free). The way to do setup:
@@ -303,26 +299,8 @@ private:
         return !a.writes.empty() || !a.res_writes.empty();
     }
     static bool conflict(System const& a, System const& b) {
-        if (a.access.exclusive || b.access.exclusive)
-            return true;
-        // A reads-all system conflicts with any writer (but not with other
-        // readers).
-        if ((a.access.reads_all && writes_any(b.access)) ||
-            (b.access.reads_all && writes_any(a.access)))
-            return true;
-        return conflicts_on(a.access.writes,
-                            a.access.reads,
-                            b.access.writes,
-                            b.access.reads) ||
-               conflicts_on(a.access.res_writes,
-                            a.access.res_reads,
-                            b.access.res_writes,
-                            b.access.res_reads);
+        return conflicts(a.access, b.access);
     }
-
-    // Transitively-reduced dependency edges (a -> b, a < b within a phase),
-    // shared by the DOT and SVG visualizers. Defined in <ecs/schedule_dot.hpp>.
-    std::vector<std::pair<std::size_t, std::size_t>> reduced_dependencies_() const;
 
     void rebuild() {
         if (!dirty_)

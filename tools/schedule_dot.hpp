@@ -1,30 +1,32 @@
-// ecs/schedule_dot.hpp
+// tools/schedule_dot.hpp
 //
-// Visualizers for a Schedule's wave DAG. Include this header to use
-// Schedule::to_dot() / Schedule::to_svg():
+// Standalone visualizer for an ecs::Schedule's wave DAG -- free functions built
+// entirely on the *public* Schedule API: systems(), level_count(), and the
+// Schedule::conflicts() predicate. Nothing here re-derives the scheduler's
+// conflict analysis, and the core scheduler carries no visualization code.
 //
-//   #include <ecs/schedule_dot.hpp>
-//   ecs::viz::NameTable nt;
+//   #include "schedule_dot.hpp"
+//   viz::NameTable nt;
 //   nt.component<Position>("Position").resource<Gravity>("Gravity");
-//   std::cout << sched.to_svg(nt);            // standalone SVG, no Graphviz
-//   std::cout << sched.to_dot(nt);            // Graphviz DOT: | dot -Tsvg
+//   std::cout << viz::to_svg(sched, nt);   // standalone SVG, no Graphviz
+//   std::cout << viz::to_dot(sched, nt);   // Graphviz DOT: | dot -Tsvg
 //
-// Both back-ends share the analysis (the scheduler's own conflict() via
-// Schedule::reduced_dependencies_(), and a NodeView per system) -- only the
-// rendering differs. Layout: an outer box per phase, an inner box per conflict
-// level (a row of conflict-free systems), one box per system listing its full
-// access signature (every component/resource with R/W, plus Commands). Edges
-// are transitively reduced.
+// Both back-ends share the analysis (reduced_dependencies() + a NodeView per
+// system) -- only rendering differs. Layout: an outer box per phase, an inner
+// box per conflict level (a row of conflict-free systems), one box per system
+// listing its full access signature (every component/resource with R/W, plus
+// Commands). Edges are transitively reduced; the SVG back-end also runs a
+// barycenter pass to cut crossings.
 //
-// The SVG back-end does its own layered layout: the scheduler already assigns
-// each system a (phase, level), which is the hard part (rank assignment), so we
-// only size boxes, place each level's row, and route edges as curves.
+// The SVG layout leans on the scheduler having already assigned each system a
+// (phase, level) -- the hard part (rank assignment) -- so we only size boxes,
+// place each level's row, and route edges as curves.
 
 #pragma once
 
-#include "entity.hpp"   // component_id
-#include "resource.hpp" // resource_id
-#include "schedule.hpp"
+#include "ecs/entity.hpp"   // component_id
+#include "ecs/resource.hpp" // resource_id
+#include "ecs/schedule.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -38,7 +40,7 @@
 #include <utility>
 #include <vector>
 
-namespace ecs::viz {
+namespace viz {
 
 // Optional id->label map. Component and resource ids live in *separate* id
 // spaces, so they get separate tables. Unknown ids fall back to "c<id>"/"r<id>".
@@ -84,7 +86,7 @@ namespace detail {
         std::vector<Line> lines;
     };
 
-    inline NodeView node_view(Schedule::System const& s, NameTable const& nt) {
+    inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
         auto const& a = s.access;
         NodeView v;
         v.name = s.name;
@@ -269,56 +271,151 @@ namespace detail {
         return s;
     }
 
-} // namespace detail
-} // namespace ecs::viz
+    // --- dependency analysis (uses the scheduler's own predicate) ------------
+    // Transitively-reduced dependency edges (a -> b, a < b within a phase) built
+    // from Schedule::conflicts -- the same predicate the wavefront leveling uses.
+    inline std::vector<std::pair<std::size_t, std::size_t>>
+    reduced_dependencies(ecs::Schedule const& sched) {
+        auto const& sys = sched.systems();
+        auto const n    = sys.size();
+        // Direct conflict edges j -> i (j < i, same phase). Registration order
+        // sets the direction.
+        std::vector<std::vector<std::size_t>> succ(n);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < i; ++j)
+                if (sys[j].phase == sys[i].phase &&
+                    ecs::Schedule::conflicts(sys[j].access, sys[i].access))
+                    succ[j].push_back(i);
 
-namespace ecs {
+        // Reachability: edges only point to higher indices, so one high->low pass
+        // suffices. Keep a->b only if no other successor of a already reaches b.
+        std::vector<std::vector<char>> reach(n, std::vector<char>(n, 0));
+        for (std::size_t a = n; a-- > 0;)
+            for (auto b : succ[a]) {
+                reach[a][b] = 1;
+                for (std::size_t k = 0; k < n; ++k)
+                    reach[a][k] = static_cast<char>(reach[a][k] || reach[b][k]);
+            }
+        std::vector<std::pair<std::size_t, std::size_t>> edges;
+        for (std::size_t a = 0; a < n; ++a)
+            for (auto b : succ[a]) {
+                bool essential = true;
+                for (auto c : succ[a])
+                    if (c != b && reach[c][b]) {
+                        essential = false;
+                        break;
+                    }
+                if (essential)
+                    edges.emplace_back(a, b);
+            }
+        return edges;
+    }
 
-inline std::vector<std::pair<std::size_t, std::size_t>>
-Schedule::reduced_dependencies_() const {
-    auto const n = systems_.size();
-    // Direct conflict edges j -> i (j < i, same phase) -- the scheduler's own
-    // predicate. Registration order sets the direction.
-    std::vector<std::vector<std::size_t>> succ(n);
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < i; ++j)
-            if (systems_[j].phase == systems_[i].phase &&
-                conflict(systems_[j], systems_[i]))
-                succ[j].push_back(i);
-
-    // Reachability: edges only point to higher indices, so one high->low pass
-    // suffices. Then keep a->b only if no other successor of a already reaches b.
-    std::vector<std::vector<char>> reach(n, std::vector<char>(n, 0));
-    for (std::size_t a = n; a-- > 0;)
-        for (auto b : succ[a]) {
-            reach[a][b] = 1;
-            for (std::size_t k = 0; k < n; ++k)
-                reach[a][k] = static_cast<char>(reach[a][k] || reach[b][k]);
+    // --- crossing reduction (barycenter ordering) ---------------------------
+    // Edge crossings between consecutive layers for the current node ordering.
+    inline std::size_t layer_crossings(
+        std::vector<std::vector<std::size_t>> const& layers,
+        std::vector<std::vector<std::size_t>> const& nbrDown,
+        std::unordered_map<std::size_t, std::size_t> const& pos) {
+        std::size_t total = 0;
+        for (std::size_t k = 0; k + 1 < layers.size(); ++k) {
+            std::vector<std::pair<std::size_t, std::size_t>> e; // (upperPos, lowerPos)
+            for (auto a : layers[k])
+                for (auto b : nbrDown[a])
+                    e.push_back({pos.at(a), pos.at(b)});
+            for (std::size_t i = 0; i < e.size(); ++i)
+                for (std::size_t j = i + 1; j < e.size(); ++j)
+                    if (e[i].first != e[j].first && e[i].second != e[j].second &&
+                        (e[i].first < e[j].first) != (e[i].second < e[j].second))
+                        ++total;
         }
-    std::vector<std::pair<std::size_t, std::size_t>> edges;
-    for (std::size_t a = 0; a < n; ++a)
-        for (auto b : succ[a]) {
-            bool essential = true;
-            for (auto c : succ[a])
-                if (c != b && reach[c][b]) {
-                    essential = false;
-                    break;
+        return total;
+    }
+
+    // Reorder systems within each level to cut crossings of the adjacent-level
+    // edges, via up/down barycenter sweeps (the classic Sugiyama heuristic).
+    // Ties keep the prior order, which starts as registration order, so the
+    // result is deterministic. Level-skipping edges are routed in side lanes and
+    // play no part here. layers[k] holds the nodes at level k of one phase.
+    inline void order_phase(
+        std::vector<std::vector<std::size_t>>& layers,
+        std::vector<std::vector<std::size_t>> const& nbrUp,
+        std::vector<std::vector<std::size_t>> const& nbrDown) {
+        if (layers.size() < 2)
+            return;
+        std::unordered_map<std::size_t, std::size_t> pos;
+        auto repos = [&] {
+            pos.clear();
+            for (auto const& l : layers)
+                for (std::size_t i = 0; i < l.size(); ++i)
+                    pos[l[i]] = i;
+        };
+        repos();
+
+        // Sort one layer by the mean position of each node's neighbours in the
+        // reference layer (above for a down-sweep, below for an up-sweep). Nodes
+        // with no such neighbour keep their slot (current index, scaled into the
+        // reference's coordinate range so the comparison is meaningful).
+        auto sort_layer = [&](std::size_t k, bool use_up) {
+            auto& lay = layers[k];
+            if (lay.size() < 2)
+                return;
+            std::size_t const ref = use_up ? layers[k - 1].size() : layers[k + 1].size();
+            std::vector<std::pair<double, std::size_t>> keyed;
+            keyed.reserve(lay.size());
+            for (std::size_t i = 0; i < lay.size(); ++i) {
+                std::size_t const v = lay[i];
+                auto const& nb      = use_up ? nbrUp[v] : nbrDown[v];
+                double key;
+                if (nb.empty())
+                    key = (ref <= 1 || lay.size() <= 1)
+                              ? double(i)
+                              : double(i) * double(ref - 1) / double(lay.size() - 1);
+                else {
+                    double s = 0;
+                    for (auto u : nb)
+                        s += double(pos[u]);
+                    key = s / double(nb.size());
                 }
-            if (essential)
-                edges.emplace_back(a, b);
-        }
-    return edges;
-}
+                keyed.push_back({key, v});
+            }
+            std::stable_sort(keyed.begin(), keyed.end(),
+                             [](auto const& a, auto const& b) { return a.first < b.first; });
+            for (std::size_t i = 0; i < lay.size(); ++i) {
+                lay[i]      = keyed[i].second;
+                pos[lay[i]] = i;
+            }
+        };
 
-inline std::string Schedule::to_dot(viz::NameTable const& names) {
-    rebuild();
-    auto const n = systems_.size();
+        auto best          = layers;
+        std::size_t best_c = layer_crossings(layers, nbrDown, pos);
+        for (int iter = 0; iter < 8 && best_c > 0; ++iter) {
+            for (std::size_t k = 1; k < layers.size(); ++k)
+                sort_layer(k, /*use_up=*/true); // down sweep: order by layer above
+            for (std::size_t k = layers.size() - 1; k-- > 0;)
+                sort_layer(k, /*use_up=*/false); // up sweep: order by layer below
+            repos();
+            std::size_t const c = layer_crossings(layers, nbrDown, pos);
+            if (c < best_c) {
+                best_c = c;
+                best   = layers;
+            }
+        }
+        layers = best;
+    }
+
+} // namespace detail
+
+inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
+    static_cast<void>(sched.level_count()); // force (phase, level) assignment
+    auto const& sys = sched.systems();
+    auto const n    = sys.size();
     std::map<int, std::map<std::size_t, std::vector<std::size_t>>> tree;
     for (std::size_t i = 0; i < n; ++i)
-        tree[systems_[i].phase][systems_[i].level].push_back(i);
+        tree[sys[i].phase][sys[i].level].push_back(i);
 
     std::string dot;
-    auto out = [&](std::string s) { dot += std::move(s) + "\n"; };
+    auto out = [&](std::string str) { dot += std::move(str) + "\n"; };
     out("digraph schedule {");
     out("  compound=true; rankdir=TB;");
     out("  graph [fontname=Helvetica];");
@@ -339,14 +436,13 @@ inline std::string Schedule::to_dot(viz::NameTable const& names) {
             out("      { rank=same;");
             for (auto i : idxs)
                 out("        s" + std::to_string(i) + " [label=<" +
-                    viz::detail::dot_label(viz::detail::node_view(systems_[i], names)) +
-                    ">];");
+                    detail::dot_label(detail::node_view(sys[i], names)) + ">];");
             out("      }");
             out("    }");
         }
         out("  }");
     }
-    for (auto const& [a, b] : reduced_dependencies_())
+    for (auto const& [a, b] : detail::reduced_dependencies(sched))
         out("  s" + std::to_string(a) + " -> s" + std::to_string(b) + ";");
     // Invisible chain so phases stack in order even with no edge between them.
     std::optional<std::size_t> prev;
@@ -361,16 +457,17 @@ inline std::string Schedule::to_dot(viz::NameTable const& names) {
     return dot;
 }
 
-inline std::string Schedule::to_svg(viz::NameTable const& names) {
-    using namespace viz::detail;
-    rebuild();
-    auto const n = systems_.size();
+inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
+    using namespace detail;
+    static_cast<void>(sched.level_count()); // force (phase, level) assignment
+    auto const& sys = sched.systems();
+    auto const n    = sys.size();
 
     // Per-system content + sizes.
     std::vector<NodeView> nv(n);
     std::vector<double> bw(n), bh(n);
     for (std::size_t i = 0; i < n; ++i) {
-        nv[i] = node_view(systems_[i], names);
+        nv[i] = node_view(sys[i], names);
         bw[i] = box_w(nv[i]);
         bh[i] = box_h(nv[i]);
     }
@@ -378,7 +475,27 @@ inline std::string Schedule::to_svg(viz::NameTable const& names) {
     // phase -> level -> indices (ascending = the executor's wave order).
     std::map<int, std::map<std::size_t, std::vector<std::size_t>>> tree;
     for (std::size_t i = 0; i < n; ++i)
-        tree[systems_[i].phase][systems_[i].level].push_back(i);
+        tree[sys[i].phase][sys[i].level].push_back(i);
+
+    // Reduce edge crossings: reorder systems within each level (barycenter
+    // sweeps over the drawn edges). Same-level systems are conflict-free, so
+    // their left/right order is free to change; registration order is the
+    // start and tie-break, so the layout stays deterministic.
+    auto const edges = reduced_dependencies(sched);
+    std::vector<std::vector<std::size_t>> nbrUp(n), nbrDown(n);
+    for (auto const& [a, b] : edges)
+        if (sys[b].level == sys[a].level + 1) { // adjacent levels only
+            nbrDown[a].push_back(b);
+            nbrUp[b].push_back(a);
+        }
+    for (auto& [phase, levels] : tree) {
+        std::vector<std::vector<std::size_t>> layers(levels.rbegin()->first + 1);
+        for (auto const& [level, idxs] : levels)
+            layers[level] = idxs;
+        order_phase(layers, nbrUp, nbrDown);
+        for (auto& [level, idxs] : levels)
+            idxs = layers[level];
+    }
 
     // Content width = widest level row; every phase/level shares it so columns
     // line up and chain edges stay vertical.
@@ -447,10 +564,10 @@ inline std::string Schedule::to_svg(viz::NameTable const& names) {
 
     // Edges (transitively reduced). Adjacent levels: near-vertical curve.
     // Level-skipping edges bow out into a side lane to clear intervening boxes.
-    std::string edges;
-    double const leftLane = leftM + phasePad + lane * 0.5;
+    std::string edgeSvg;
+    double const leftLane  = leftM + phasePad + lane * 0.5;
     double const rightLane = contentLeft + contentW + lane * 0.5;
-    for (auto const& [a, b] : reduced_dependencies_()) {
+    for (auto const& [a, b] : edges) {
         double sx = cx[a], sy = botY[a], tx = cx[b], ty = topY[b], dy = ty - sy;
         std::string d;
         if (lvl[b] == lvl[a] + 1)
@@ -463,9 +580,9 @@ inline std::string Schedule::to_svg(viz::NameTable const& names) {
                 num(sy + dy * 0.3) + " " + num(bowX) + " " + num(ty - dy * 0.3) +
                 " " + num(tx) + " " + num(ty);
         }
-        edges += "<path d=\"" + d +
-                 "\" fill=\"none\" stroke=\"#b0b0b0\" stroke-width=\"1\" "
-                 "marker-end=\"url(#ah)\"/>";
+        edgeSvg += "<path d=\"" + d +
+                   "\" fill=\"none\" stroke=\"#b0b0b0\" stroke-width=\"1\" "
+                   "marker-end=\"url(#ah)\"/>";
     }
 
     std::string svg;
@@ -478,11 +595,8 @@ inline std::string Schedule::to_svg(viz::NameTable const& names) {
            "<path d=\"M2 1 L8 5 L2 9\" fill=\"none\" stroke=\"context-stroke\" "
            "stroke-width=\"1.5\" stroke-linecap=\"round\" "
            "stroke-linejoin=\"round\"/></marker></defs>";
-    svg += boxes + edges + nodes + "</svg>";
+    svg += boxes + edgeSvg + nodes + "</svg>";
     return svg;
 }
 
-inline std::string Schedule::to_dot() { return to_dot(viz::NameTable {}); }
-inline std::string Schedule::to_svg() { return to_svg(viz::NameTable {}); }
-
-} // namespace ecs
+} // namespace viz
