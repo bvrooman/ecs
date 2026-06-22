@@ -13,6 +13,7 @@ option(ECS_BUILD_TESTS "Build the test suite" ON)
 option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
 option(ECS_BUILD_TOOLS "Build the tools (schedule-viz)" ON)
+option(ECS_REFLECT_NAMES "Register component/resource type names via reflection (tooling/diagnostics)" OFF)
 
 if(ECS_USE_P2996)
   set(CMAKE_CXX_STANDARD 26)
@@ -35,6 +36,13 @@ if(ECS_USE_P2996)
   target_compile_definitions(ecs INTERFACE ECS_USE_P2996=1)
   # The clang-p2996 fork enables reflection via -freflection / -std=c++26.
   target_compile_options(ecs INTERFACE -freflection)
+endif()
+
+# Opt-in: record component/resource type names (via reflection) into a registry
+# so tooling/diagnostics can resolve a numeric id to a readable name. Off by
+# default -- zero cost (no registry, no string storage) when unused.
+if(ECS_REFLECT_NAMES)
+  target_compile_definitions(ecs INTERFACE ECS_REFLECT_NAMES=1)
 endif()
 
 # ---------------------------------------------------------------------------

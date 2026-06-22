@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "type_names.hpp"
 #include <cstdint>
 #include <memory>
 #include <type_traits>
@@ -37,7 +38,8 @@ namespace detail {
 // a separate id space from component_id; a component and a resource may share a
 // numeric id without conflict because they are tracked independently.
 template <class T>
-inline ResourceId const resource_id = detail::next_resource_id();
+inline ResourceId const resource_id =
+    detail::register_resource_name<T>(detail::next_resource_id());
 
 class ResourceRegistry {
 public:

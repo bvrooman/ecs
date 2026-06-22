@@ -100,6 +100,13 @@ consteval std::string_view field_name() {
     return std::meta::identifier_of(detail::member_at<std::remove_cvref_t<T>>(I));
 }
 
+// Unqualified name of the type T itself (not a member). The returned view is
+// backed by persistent storage, so it is valid for the program lifetime.
+template <class T>
+consteval std::string_view type_name() {
+    return std::meta::identifier_of(^^std::remove_cvref_t<T>);
+}
+
 } // namespace ecs::reflect
 
 // ===========================================================================
@@ -548,6 +555,27 @@ using field_type_t = std::remove_cvref_t<
 template <class T, std::size_t I>
 constexpr std::string_view field_name() {
     return "field";
+}
+
+// Unqualified name of the type T itself, parsed from the compiler's pretty
+// function signature (GCC/Clang). The view points into static storage. The
+// P2996 backend returns the real identifier instead.
+template <class T>
+constexpr std::string_view type_name() {
+#if defined(__clang__) || defined(__GNUC__)
+    std::string_view sig = __PRETTY_FUNCTION__;
+    auto b               = sig.find("T = ");
+    if (b == std::string_view::npos)
+        return "?";
+    b += 4;
+    auto e             = sig.find_first_of(";]", b);
+    std::string_view n = sig.substr(b, e - b);
+    if (auto p = n.rfind("::"); p != std::string_view::npos)
+        n.remove_prefix(p + 2); // keep the unqualified name
+    return n;
+#else
+    return "?";
+#endif
 }
 
 } // namespace ecs::reflect
