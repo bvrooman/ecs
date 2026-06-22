@@ -1,11 +1,14 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24
+  },
   "configurePresets": [
     {
-      "name": "dev",
-      "displayName": "Development (Debug + tooling)",
-      "description": "Debug build with the development tooling profile: reflected component/resource names and a schedule-DAG SVG dumped on startup (ECS_DEV_TOOLING). Uses Homebrew g++ per the project's macOS toolchain.",
+      "name": "dev-config",
+      "displayName": "Development Config",
+      "description": "Debug build with the development tooling profile.",
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build-dev",
       "cacheVariables": {
@@ -16,6 +19,10 @@
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" }
+    {
+      "name": "dev-build",
+      "displayName": "Development Build",
+      "configurePreset": "dev-config"
+    }
   ]
 }

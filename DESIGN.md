@@ -77,7 +77,7 @@ interchangeable implementations, selected by `ECS_USE_P2996`:
 
 | backend | mechanism | toolchain |
 |---|---|---|
-| **P2996** (`ECS_USE_P2996=1`) | real C++26 static reflection: `^^T`, `nonstatic_data_members_of`, member splicers `[:m:]`, `identifier_of` | experimental (clang-p2996 / EDG) |
+| **P2996** (`ECS_USE_P2996=1`) | real C++26 static reflection: `^^T`, `nonstatic_data_members_of`, member splicers `[:m:]`, `identifier_of` | GCC 16 (`g++-16` + libstdc++) |
 | **portable** (default) | aggregate brace-arity probe + structured bindings | stock Clang/GCC, C++20/23 |
 
 The P2996 backend is the canonical "C++26 reflection" answer and additionally
@@ -86,9 +86,9 @@ runs, and is tested on today's compilers. Because both implement the same facade
 switching is a one-flag change and **no other code moves**. The portable backend
 supports up to 32 fields per component; P2996 is unbounded.
 
-> Note: real P2996 (`<meta>`, `-freflection`) is not in any released compiler
-> yet, which is why the portable backend is the default and what the CI/tests
-> here actually exercise.
+> Note: real P2996 (`<meta>`, `-freflection`) is still bleeding-edge — it needs
+> GCC 16 (`g++-16`) — so the portable backend is the default and what the tests
+> here exercise by default.
 
 ## 4. Cache-friendly memory layout
 

@@ -16,8 +16,8 @@
 //
 //   * ECS_USE_P2996 == 1 : the *real* C++26 static reflection
 //     (P2996 `std::meta`, splicers `[:r:]`, `^^T`). This is the canonical
-//     answer to "use C++26 reflection". It requires the experimental
-//     clang-p2996 / EDG toolchain.
+//     answer to "use C++26 reflection". It requires a toolchain with P2996
+//     support such as GCC 16 (g++-16, which ships libstdc++).
 //
 //   * ECS_USE_P2996 == 0 : a portable backend implemented with the aggregate
 //     brace-arity probe + structured bindings. It compiles on stock

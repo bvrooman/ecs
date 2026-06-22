@@ -41,6 +41,7 @@ NamespaceIndentation: Inner
 
 PenaltyBreakBeforeFirstCallParameter: 100
 PenaltyBreakOpenParenthesis: 100
+PenaltyReturnTypeOnItsOwnLine: 1000
 PointerAlignment: Left
 
 ReferenceAlignment: Left

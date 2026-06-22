@@ -201,7 +201,7 @@ int main() {
         auto const period = std::chrono::duration_cast<clock::duration>(
             std::chrono::duration<double>(cfg::kDt));
         auto loop = [&](auto&& run_tick) {
-            std::vector<double> us;
+            auto us   = std::vector<double> {};
             auto next = clock::now();
             auto last = next;
             while (!stop.load(std::memory_order_acquire)) {

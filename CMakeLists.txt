@@ -4,23 +4,23 @@ project(ecs LANGUAGES CXX)
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-# ECS_USE_P2996: build the reflection facade against real C++26 static
-# reflection (P2996 std::meta). Requires an experimental toolchain such as the
-# clang-p2996 fork. When OFF (default) the portable structured-bindings backend
-# is used so the project builds on stock Clang/GCC.
-option(ECS_USE_P2996 "Use real C++26 P2996 static reflection" OFF)
+# ECS_USE_P2996: build the reflection facade against C++26 static reflection
+# (P2996 std::meta). Requires a toolchain with P2996 support such as GCC 16
+# (g++-16, which ships libstdc++). When OFF the portable structured-bindings
+# backend is used so the project builds on stock Clang/GCC.
+option(ECS_USE_P2996 "Use C++26 P2996 static reflection" ON)
 option(ECS_BUILD_TESTS "Build the test suite" ON)
 option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
-option(ECS_BUILD_TOOLS "Build the tools (schedule-viz)" ON)
+option(ECS_BUILD_TOOLS "Build the tools" ON)
 option(ECS_REFLECT_NAMES "Register component/resource type names via reflection (tooling/diagnostics)" OFF)
 option(ECS_DEV_TOOLING "Development profile: reflected names + dump example schedules to SVG" OFF)
 
-if(ECS_USE_P2996)
-  set(CMAKE_CXX_STANDARD 26)
-else()
-  set(CMAKE_CXX_STANDARD 23)
-endif()
+if (ECS_USE_P2996)
+    set(CMAKE_CXX_STANDARD 26)
+else ()
+    set(CMAKE_CXX_STANDARD 23)
+endif ()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -30,22 +30,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(ecs INTERFACE)
 add_library(ecs::ecs ALIAS ecs)
 target_include_directories(ecs INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
 target_compile_features(ecs INTERFACE cxx_std_23)
-if(ECS_USE_P2996)
-  target_compile_definitions(ecs INTERFACE ECS_USE_P2996=1)
-  # The clang-p2996 fork enables reflection via -freflection / -std=c++26.
-  target_compile_options(ecs INTERFACE -freflection)
-endif()
+if (ECS_USE_P2996)
+    target_compile_definitions(ecs INTERFACE ECS_USE_P2996=1)
+    # GCC 16 enables P2996 reflection via -freflection (with -std=c++26).
+    target_compile_options(ecs INTERFACE -freflection)
+endif ()
 
 # Opt-in: record component/resource type names (via reflection) into a registry
 # so tooling/diagnostics can resolve a numeric id to a readable name. Off by
 # default -- zero cost (no registry, no string storage) when unused. The dev
 # tooling profile turns it on automatically.
-if(ECS_REFLECT_NAMES OR ECS_DEV_TOOLING)
-  target_compile_definitions(ecs INTERFACE ECS_REFLECT_NAMES=1)
-endif()
+if (ECS_REFLECT_NAMES OR ECS_DEV_TOOLING)
+    target_compile_definitions(ecs INTERFACE ECS_REFLECT_NAMES=1)
+endif ()
 
 # ---------------------------------------------------------------------------
 # Header-only schedule visualizer (tools/schedule_viz*). Kept out of the core
@@ -67,19 +67,19 @@ target_link_libraries(ecs INTERFACE Threads::Threads)
 # ---------------------------------------------------------------------------
 # Tests & examples
 # ---------------------------------------------------------------------------
-if(ECS_BUILD_TESTS)
-  enable_testing()
-  add_subdirectory(tests)
-endif()
+if (ECS_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif ()
 
-if(ECS_BUILD_EXAMPLES)
-  add_subdirectory(examples)
-endif()
+if (ECS_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif ()
 
-if(ECS_BUILD_BENCHMARKS)
-  add_subdirectory(benchmarks)
-endif()
+if (ECS_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif ()
 
-if(ECS_BUILD_TOOLS)
-  add_subdirectory(tools)
-endif()
+if (ECS_BUILD_TOOLS)
+    add_subdirectory(tools)
+endif ()

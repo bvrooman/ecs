@@ -139,12 +139,12 @@ void build_particle_schedule(Schedule& schedule) {
                                          chunk<Gust const> gu) {
                          auto vx       = vel.column<0>();
                          auto vy       = vel.column<1>();
-                         auto sx       = sw.column<0>();
-                         auto sy       = sw.column<1>();
-                         auto dx       = dr.column<0>();
-                         auto dy       = dr.column<1>();
-                         auto gx       = gu.column<0>();
-                         auto gy       = gu.column<1>();
+                         auto const sx = sw.column<0>();
+                         auto const sy = sw.column<1>();
+                         auto const dx = dr.column<0>();
+                         auto const dy = dr.column<1>();
+                         auto const gx = gu.column<0>();
+                         auto const gy = gu.column<1>();
                          float const s = cfg::kTurbStrength * cfg::kDt;
                          for (std::size_t i = 0; i < vx.size(); ++i) {
                              vx[i] += s * (sx[i] + dx[i] + gx[i]);
@@ -158,10 +158,10 @@ void build_particle_schedule(Schedule& schedule) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
-            auto px = pos.column<0>();
-            auto py = pos.column<1>();
-            auto vx = vel.column<0>();
-            auto vy = vel.column<1>();
+            auto px       = pos.column<0>();
+            auto py       = pos.column<1>();
+            auto const vx = vel.column<0>();
+            auto const vy = vel.column<1>();
             for (std::size_t i = 0; i < px.size(); ++i) {
                 px[i] += vx[i] * cfg::kDt;
                 py[i] += vy[i] * cfg::kDt;

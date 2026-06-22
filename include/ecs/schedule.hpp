@@ -259,8 +259,8 @@ private:
         (detail::system_param<std::tuple_element_t<I, Args>>::declare(a), ...);
     }
     template <class Args, class Fn, std::size_t... I>
-    static void
-    invoke(Fn& fn, World& w, Commands& c, WorkerPool* pool, std::index_sequence<I...>) {
+    static void invoke(
+        Fn& fn, World& w, Commands& c, WorkerPool* pool, std::index_sequence<I...>) {
         fn(detail::system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
     }
 
@@ -291,8 +291,10 @@ private:
             return std::ranges::find(b, x) != b.end();
         });
     }
-    static bool
-    conflicts_on(IdList const& aw, IdList const& ar, IdList const& bw, IdList const& br) {
+    static bool conflicts_on(IdList const& aw,
+                             IdList const& ar,
+                             IdList const& bw,
+                             IdList const& br) {
         return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
     }
     static bool writes_any(SystemAccess const& a) {
