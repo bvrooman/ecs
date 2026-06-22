@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "type_names.hpp"
 #include <cstdint>
 #include <functional>
 
@@ -29,8 +30,11 @@ namespace detail {
     }
 } // namespace detail
 
+// Instantiating component_id<T> also registers T's name for tooling when
+// ECS_REFLECT_NAMES is enabled (register_component_name is a no-op otherwise).
 template <class T>
-inline ComponentId const component_id = detail::next_component_id();
+inline ComponentId const component_id =
+    detail::register_component_name<T>(detail::next_component_id());
 
 } // namespace ecs
 

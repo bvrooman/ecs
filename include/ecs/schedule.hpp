@@ -59,6 +59,9 @@ struct SystemAccess {
     std::vector<std::uint32_t> reads, writes, res_reads, res_writes;
     bool exclusive = false;
     bool reads_all = false;
+    // Purely informational (does not affect conflict analysis): the system took
+    // a Commands& and may record deferred structural edits.
+    bool commands = false;
 };
 
 namespace detail {
@@ -120,7 +123,9 @@ namespace detail {
     };
     template <>
     struct system_param<Commands&> {
-        static void declare(SystemAccess&) {} // side channel, no access
+        // A side channel: no tracked component/resource access. We still flag it
+        // so tooling can surface that the system records commands.
+        static void declare(SystemAccess& a) { a.commands = true; }
         static Commands& bind(World&, Commands& c, WorkerPool*) { return c; }
     };
     // Read-only ad-hoc access: WorldView reads everything but writes nothing,
@@ -202,6 +207,20 @@ public:
         return systems_;
     }
 
+    // Do two access sets conflict? One writes what the other reads or writes
+    // (read/read never conflicts); an `exclusive` set conflicts with everything,
+    // a `reads_all` set only with writers. Components and resources are checked
+    // independently. Public so out-of-tree tooling (e.g. the schedule visualizer
+    // in tools/) can rebuild the same dependency graph without re-deriving it.
+    static bool conflicts(SystemAccess const& a, SystemAccess const& b) {
+        if (a.exclusive || b.exclusive)
+            return true;
+        if ((a.reads_all && writes_any(b)) || (b.reads_all && writes_any(a)))
+            return true;
+        return conflicts_on(a.writes, a.reads, b.writes, b.reads) ||
+               conflicts_on(a.res_writes, a.res_reads, b.res_writes, b.res_reads);
+    }
+
     // Run serially on the calling thread -- sugar for a transient 1-lane pool
     // (which spawns no worker threads, so it is free). The way to do setup:
     // add_once a setup system, then run(world).
@@ -280,21 +299,7 @@ private:
         return !a.writes.empty() || !a.res_writes.empty();
     }
     static bool conflict(System const& a, System const& b) {
-        if (a.access.exclusive || b.access.exclusive)
-            return true;
-        // A reads-all system conflicts with any writer (but not with other
-        // readers).
-        if ((a.access.reads_all && writes_any(b.access)) ||
-            (b.access.reads_all && writes_any(a.access)))
-            return true;
-        return conflicts_on(a.access.writes,
-                            a.access.reads,
-                            b.access.writes,
-                            b.access.reads) ||
-               conflicts_on(a.access.res_writes,
-                            a.access.res_reads,
-                            b.access.res_writes,
-                            b.access.res_reads);
+        return conflicts(a.access, b.access);
     }
 
     void rebuild() {

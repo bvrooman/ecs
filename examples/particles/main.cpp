@@ -24,6 +24,11 @@
 #include "gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
+
+#if PARTICLES_DEV_TOOLING
+#include "schedule_viz.hpp" // dev profile: render the assembled schedule to SVG
+#include <fstream>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -113,6 +118,15 @@ int main() {
     std::printf("schedule: %zu systems across %zu parallel levels\n",
                 schedule.size(),
                 schedule.level_count());
+
+#if PARTICLES_DEV_TOOLING
+    // Dev profile: dump the assembled schedule's wave DAG (with reflected
+    // component/resource names) so it can be inspected without running the sim.
+    if (std::ofstream svg {"particles_schedule.svg"}) {
+        svg << viz::to_svg(schedule);
+        std::printf("[dev] wrote schedule DAG -> particles_schedule.svg\n");
+    }
+#endif
 
     // The consumer side of the triple buffer. Resolved before the producer
     // starts; consume()/front() are only ever called on the render thread.

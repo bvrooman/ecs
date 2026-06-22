@@ -21,6 +21,12 @@ if(APPLE AND glfw3_FOUND)
   target_compile_definitions(particles PRIVATE
     PARTICLES_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/particles/shaders")
   target_compile_options(particles PRIVATE $<$<CONFIG:Release>:-O2>)
+  # Dev tooling profile: link the visualizer and dump the schedule to SVG on
+  # startup (names come from reflection, enabled globally by ECS_DEV_TOOLING).
+  if(ECS_DEV_TOOLING)
+    target_link_libraries(particles PRIVATE ecs::schedule_viz)
+    target_compile_definitions(particles PRIVATE PARTICLES_DEV_TOOLING=1)
+  endif()
 else()
   message(STATUS "examples: skipping 'particles' (needs APPLE + GLFW; "
                  "install with `brew install glfw`)")
