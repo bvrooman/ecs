@@ -88,8 +88,8 @@ absolute values track the host's memory subsystem.
 
 By default the library uses a **portable** reflection backend (aggregate arity +
 structured bindings) that compiles on stock compilers. To use **real C++26
-P2996 static reflection** (`std::meta`) with an experimental toolchain such as
-the clang-p2996 fork:
+P2996 static reflection** (`std::meta`) with a toolchain that supports it
+(e.g. GCC 16 / `g++-16`, which ships libstdc++):
 
 ```sh
 cmake -S . -B build -DECS_USE_P2996=ON   # adds -std=c++26 -freflection

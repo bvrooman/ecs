@@ -43,7 +43,7 @@
 build/
 Build/
 build-*/
-# CLion (incl. its Docker toolchain, e.g. cmake-build-debug-docker-gcc-14)
+# CLion build trees (one per CMake profile)
 cmake-build-*/
 
 # CMake generated files
