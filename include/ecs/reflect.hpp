@@ -50,6 +50,18 @@ namespace ecs::reflect {
 template <class T>
 concept Reflectable = std::is_aggregate_v<std::remove_cvref_t<T>>;
 
+namespace detail {
+    // Strip the outer namespace qualifier from a (possibly templated) type name,
+    // keeping any template arguments: "ns::Foo<ns::Bar>" -> "Foo<ns::Bar>". The
+    // result is a sub-view of the input, so it shares the input's storage.
+    constexpr std::string_view unqualified(std::string_view n) {
+        auto const head = n.substr(0, n.find('<'));
+        if (auto const p = head.rfind("::"); p != std::string_view::npos)
+            n.remove_prefix(p + 2);
+        return n;
+    }
+} // namespace detail
+
 } // namespace ecs::reflect
 
 // ===========================================================================
@@ -102,9 +114,15 @@ consteval std::string_view field_name() {
 
 // Unqualified name of the type T itself (not a member). The returned view is
 // backed by persistent storage, so it is valid for the program lifetime.
+// dealias() unwraps the remove_cvref_t alias to the underlying entity; types
+// without a plain identifier (e.g. template specializations) have none, so we
+// fall back to the display name there.
 template <class T>
 consteval std::string_view type_name() {
-    return std::meta::identifier_of(^^std::remove_cvref_t<T>);
+    auto const r = std::meta::dealias(^^std::remove_cvref_t<T>);
+    if (std::meta::has_identifier(r))
+        return std::meta::identifier_of(r);
+    return detail::unqualified(std::meta::display_string_of(r));
 }
 
 } // namespace ecs::reflect
@@ -568,11 +586,8 @@ constexpr std::string_view type_name() {
     if (b == std::string_view::npos)
         return "?";
     b += 4;
-    auto e             = sig.find_first_of(";]", b);
-    std::string_view n = sig.substr(b, e - b);
-    if (auto p = n.rfind("::"); p != std::string_view::npos)
-        n.remove_prefix(p + 2); // keep the unqualified name
-    return n;
+    auto const e = sig.find_first_of(";]", b);
+    return detail::unqualified(sig.substr(b, e - b));
 #else
     return "?";
 #endif
