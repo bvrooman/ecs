@@ -12,7 +12,7 @@ option(ECS_USE_P2996 "Use real C++26 P2996 static reflection" OFF)
 option(ECS_BUILD_TESTS "Build the test suite" ON)
 option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
-option(ECS_BUILD_TOOLS "Build the tools (schedule-dot)" ON)
+option(ECS_BUILD_TOOLS "Build the tools (schedule-viz)" ON)
 
 if(ECS_USE_P2996)
   set(CMAKE_CXX_STANDARD 26)

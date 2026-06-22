@@ -1,9 +1,9 @@
-// tools/schedule_dot_demo.cpp -- render a sample schedule's wave DAG.
+// tools/schedule_viz_demo.cpp -- render a sample schedule's wave DAG.
 // Emits standalone SVG by default (no Graphviz needed); pass --dot for DOT.
-//   ./schedule-dot          > schedule.svg
-//   ./schedule-dot --dot | dot -Tsvg > schedule.svg
+//   ./schedule-viz          > schedule.svg
+//   ./schedule-viz --dot | dot -Tsvg > schedule.svg
 #include "ecs/ecs.hpp"
-#include "schedule_dot.hpp"
+#include "schedule_viz.hpp"
 
 #include <iostream>
 #include <string_view>
