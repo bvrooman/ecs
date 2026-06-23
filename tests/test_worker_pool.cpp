@@ -2,7 +2,7 @@
 // partition, dispatch across idle gaps (the fixed-timestep pattern), the 1-lane
 // inline path, and exception propagation from a lane back to the caller.
 #include "check.hpp"
-#include "ecs/worker_pool.hpp"
+#include "ecs/parallel/worker_pool.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>

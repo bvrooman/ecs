@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "worker_pool.hpp"
+#include "parallel/worker_pool.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <span>
@@ -56,7 +56,7 @@ class chunk {
 
 public:
     chunk(storage& store, std::size_t begin, std::size_t end) noexcept
-        : store_(&store)
+        : store_(store)
         , begin_(begin)
         , end_(end) {}
 
@@ -64,7 +64,7 @@ public:
     template <std::size_t I>
     [[nodiscard]]
     auto column() const noexcept {
-        return store_->template column<I>().subspan(begin_, end_ - begin_);
+        return store_.template column<I>().subspan(begin_, end_ - begin_);
     }
 
     [[nodiscard]]
@@ -77,7 +77,7 @@ public:
     }
 
 private:
-    storage* store_;
+    storage& store_;
     std::size_t begin_, end_;
 };
 

@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "type_names.hpp"
+#include "reflection/type_names.hpp"
 #include <cstdint>
 #include <memory>
 #include <type_traits>

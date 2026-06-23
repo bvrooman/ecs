@@ -1,4 +1,4 @@
-// ecs/type_names.hpp
+// ecs/reflection/type_names.hpp
 //
 // Optional component/resource type-name registry for tooling and diagnostics.
 //

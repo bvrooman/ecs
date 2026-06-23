@@ -1,4 +1,4 @@
-// ecs/snapshot_channel.hpp
+// ecs/sync/snapshot_channel.hpp
 //
 // Multi-consumer snapshot fan-out.
 //
@@ -28,7 +28,7 @@
 #include <memory>
 #include <utility>
 
-namespace ecs {
+namespace ecs::sync {
 
 template <class T>
 class SnapshotChannel {
@@ -99,4 +99,10 @@ private:
     std::atomic<std::shared_ptr<T const>> latest_; // last published (immutable)
 };
 
+} // namespace ecs::sync
+
+namespace ecs {
+// See triple_buffer.hpp: the snapshot-handoff primitives are developer-facing,
+// so SnapshotChannel is reachable directly as ecs::SnapshotChannel.
+using sync::SnapshotChannel;
 } // namespace ecs

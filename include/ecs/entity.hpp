@@ -4,8 +4,7 @@
 
 #pragma once
 
-#include "type_names.hpp"
-#include <cstdint>
+#include "reflection/type_names.hpp"
 #include <functional>
 
 namespace ecs {

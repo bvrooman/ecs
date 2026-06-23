@@ -1,4 +1,4 @@
-// ecs/triple_buffer.hpp
+// ecs/sync/triple_buffer.hpp
 //
 // Generic lock-free single-producer / single-consumer triple buffer.
 //
@@ -27,7 +27,7 @@
 #include <array>
 #include <atomic>
 
-namespace ecs {
+namespace ecs::sync {
 
 template <class T>
 class TripleBuffer {
@@ -90,4 +90,11 @@ private:
     std::atomic<unsigned> shared_ {2}; // published index + dirty bit
 };
 
+} // namespace ecs::sync
+
+namespace ecs {
+// Snapshot-handoff primitives are developer-facing (typically installed as a
+// resource, e.g. emplace_resource<TripleBuffer<Snapshot>>()), so they are
+// reachable directly as ecs::TripleBuffer though they live in ecs::sync.
+using sync::TripleBuffer;
 } // namespace ecs

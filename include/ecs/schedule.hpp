@@ -239,7 +239,7 @@ public:
     // flushed, as on any failed run.
     void run(World& world, WorkerPool& pool) {
         rebuild();
-        Commands cmds {world};
+        auto cmds = Commands {world};
         for (auto const& wave : waves_) {
             for (auto const idx : wave)
                 systems_[idx].run(world, cmds, &pool);
