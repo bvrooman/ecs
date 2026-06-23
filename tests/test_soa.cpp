@@ -1,6 +1,6 @@
 // Reflection + AoS->SoA storage tests.
 #include "check.hpp"
-#include "ecs/reflect.hpp"
+#include "ecs/reflection/reflect.hpp"
 #include "ecs/soa.hpp"
 
 using namespace ecs;
@@ -19,15 +19,19 @@ struct Wide {
     int a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r;
 };
 
-struct Tag {
+// 32 fields: the upper bound of the portable backend's field_tie ladder.
+struct Max32 {
+    int v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17,
+        v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31;
 };
 
+struct Tag {};
 
 static void reflection_counts() {
     static_assert(reflect::field_count_v<Vec3> == 3);
     static_assert(reflect::field_count_v<Transform> == 3);
     static_assert(reflect::field_count_v<Wide> == 18);
-    // exercises 17..32 ladder
+    static_assert(reflect::field_count_v<Max32> == 32);
     static_assert(reflect::field_count_v<Tag> == 0);
     CHECK((reflect::field_count_v<Transform> == 3));
 }
@@ -42,6 +46,28 @@ static void scatter_gather() {
     CHECK(t.pos.y == 5.f);
     CHECK(t.mass == 20.f);
     CHECK(t.id == 8);
+}
+
+// Components with 17..32 fields exercise the upper half of the field_tie ladder
+// (push_back scatters and gather reassembles, both via get_field). Regression:
+// the 17..31 cases used to bind 32 names regardless of N and failed to compile;
+// only field_count_v -- which counts via the brace-arity probe, not field_tie --
+// had ever touched a wide struct.
+static void wide_scatter_gather() {
+    soa_storage<Wide> w; // 18 fields (in the previously-broken 17..31 range)
+    w.push_back({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
+    CHECK(w.size() == 1);
+    Wide g = w.gather(0);
+    CHECK(g.a == 1);                // first field round-trips
+    CHECK(g.r == 18);               // 18th field round-trips
+    CHECK(w.column<17>()[0] == 18); // last column is the scattered field
+
+    soa_storage<Max32> m; // 32 fields (the ladder's upper bound)
+    m.push_back({0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31});
+    CHECK(m.gather(0).v0 == 0);
+    CHECK(m.gather(0).v31 == 31);
+    CHECK(m.column<31>()[0] == 31);
 }
 
 static void column_is_contiguous_and_mutable() {
@@ -81,6 +107,7 @@ static void tag_component_has_no_columns() {
 int main() {
     RUN_SUITE(reflection_counts);
     RUN_SUITE(scatter_gather);
+    RUN_SUITE(wide_scatter_gather);
     RUN_SUITE(column_is_contiguous_and_mutable);
     RUN_SUITE(swap_remove_keeps_columns_consistent);
     RUN_SUITE(tag_component_has_no_columns);

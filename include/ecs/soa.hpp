@@ -3,7 +3,7 @@
 // soa_storage<T>: the "AoS written, SoA stored" container.
 //
 // You declare a component as a plain struct and push/read it as if it were an
-// array-of-structures. Reflection (ecs/reflect.hpp) decomposes T into its
+// array-of-structures. Reflection (ecs/reflection/reflect.hpp) decomposes T into its
 // fields at compile time and stores one contiguous column per field -- i.e. a
 // structure-of-arrays -- so that field-wise access is cache friendly and
 // SIMD/vectorizer friendly.
@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "reflect.hpp"
+#include "reflection/reflect.hpp"
 #include <cstddef>
 #include <span>
 #include <tuple>

@@ -1,4 +1,4 @@
-// ecs/worker_pool.hpp
+// ecs/parallel/worker_pool.hpp
 //
 // A persistent fork-join worker pool for *data-parallel* system execution -- the
 // runtime behind Schedule::run(World&, WorkerPool&) and Query::for_each_chunk.
@@ -39,7 +39,7 @@
 #include <sys/qos.h>
 #endif
 
-namespace ecs {
+namespace ecs::parallel {
 
 // CPU "relax" hint for spin loops (lets the core de-prioritize the spinning
 // hyperthread / save power without yielding the OS time slice).
@@ -161,4 +161,11 @@ private:
     std::exception_ptr err_;
 };
 
+} // namespace ecs::parallel
+
+namespace ecs {
+// WorkerPool is part of the developer-facing API (Schedule::run(World&,
+// WorkerPool&)), so it is reachable directly as ecs::WorkerPool even though it
+// is defined in ecs::parallel alongside the rest of the data-parallel runtime.
+using parallel::WorkerPool;
 } // namespace ecs

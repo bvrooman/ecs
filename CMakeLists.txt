@@ -58,7 +58,7 @@ target_include_directories(schedule_viz INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/to
 target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
-# Threads -- the WorkerPool (include/ecs/worker_pool.hpp) runs the schedule on
+# Threads -- the WorkerPool (include/ecs/parallel/worker_pool.hpp) runs the schedule on
 # resident std::thread workers. No external dependencies otherwise.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
