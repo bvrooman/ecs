@@ -55,14 +55,16 @@ Targets: `ecs_smoke`, `particles_web`, `particles_web_mt`, `ecs_dynamic`,
 
 ## Source layout
 
-- `web/public/` — static assets served as-is: the four HTML pages, shared
-  `demo.css`, shared JS (`controls.js` for the C++ demos, `fountain.js` for the JS
-  demos), and the thin per-page bootstraps (`app-*.js`). Copied wholesale to the
-  build dir.
-- `web/shaders/` — GLSL (`particle.vert`/`.frag`), `--embed-file`'d into the GL
-  wasm and read at runtime via `web/gl_util.hpp` (shared shader compile/link).
-- `web/particles/`, `web/particles_js/` — the C++ render hosts; `web/dynamic/` —
-  the embind runtime + node smokes.
+- `web/examples/` — the browser demos. `particles/` and `particles_js/` are the
+  C++ render hosts; `public/` holds the served assets (the four HTML pages, shared
+  `demo.css`, shared JS — `controls.js` for the C++ demos, `fountain.js` for the
+  JS demos — and the per-page bootstraps `app-*.js`); `shaders/` holds the GLSL,
+  `--embed-file`'d into the GL wasm and read via the shared `gl_util.hpp`.
+  `public/` is copied wholesale to the build/serve dir.
+- `web/test/` — headless node smokes: `smoke.cpp` (core engine), `parallel_smoke.cpp`
+  (worker-eval spike), `smoke_dynamic.mjs`, `smoke_parallel.mjs`.
+- `web/dynamic/` — the embind runtime: `bindings.cpp` (the `DynamicWorld` module,
+  shared by the smokes and the JS demos) and the `js_system.hpp` helper.
 
 ## CLion
 

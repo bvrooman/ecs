@@ -3,19 +3,21 @@
 # CMakeLists guard), so a native build never descends here.
 # ---------------------------------------------------------------------------
 
-# Static web assets (HTML/CSS/JS) live in web/public/ and are copied wholesale to
-# the build output dir so it is directly serveable. The GL demos embed the shared
-# GLSL from web/shaders/ into the wasm (--embed-file), read at runtime via gl_util.
+# The browser demos live under web/examples/. Their static assets (HTML/CSS/JS in
+# examples/public/) are copied wholesale to the build output dir so it is directly
+# serveable; the GL demos embed the shared GLSL from examples/shaders/ into the
+# wasm (--embed-file), read at runtime via examples/gl_util.hpp. Headless smoke
+# tests live under web/test/.
 add_custom_target(web_public ALL
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${CMAKE_CURRENT_SOURCE_DIR}/public ${CMAKE_CURRENT_BINARY_DIR}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/public ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Copying static web assets to the serve dir")
-set(WEB_SHADERS_EMBED "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/shaders@/shaders")
+set(WEB_SHADERS_EMBED "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/examples/shaders@/shaders")
 
 # Phase 0 smoke test: proves the ECS core compiles and runs under Emscripten with
 # the portable reflection backend, single-threaded. Emits a Node-runnable loader.
 #   run: node build-wasm/web/ecs_smoke.js
-add_executable(ecs_smoke smoke.cpp)
+add_executable(ecs_smoke test/smoke.cpp)
 target_link_libraries(ecs_smoke PRIVATE ecs::ecs)
 
 # Single-threaded: no -pthread, so no SharedArrayBuffer / cross-origin isolation.
@@ -33,11 +35,11 @@ set_target_properties(ecs_smoke PROPERTIES SUFFIX ".js")
 # ---------------------------------------------------------------------------
 # Phase 1 browser demo: the ECS particle fountain rendered to a WebGL2 canvas.
 # The ECS sim is reused verbatim from the native example -- only windowing and
-# drawing (particles/main_web.cpp) are web-specific.
+# drawing (examples/particles/main_web.cpp) are web-specific.
 # ---------------------------------------------------------------------------
 set(PARTICLES_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../examples/particles)
 add_executable(particles_web
-        particles/main_web.cpp
+        examples/particles/main_web.cpp
         ${PARTICLES_NATIVE_DIR}/simulation.cpp)
 target_include_directories(particles_web PRIVATE ${PARTICLES_NATIVE_DIR})
 target_link_libraries(particles_web PRIVATE ecs::ecs)
@@ -66,7 +68,7 @@ set_target_properties(particles_web PROPERTIES OUTPUT_NAME particles SUFFIX ".js
 # stays the host-anywhere default.
 # ---------------------------------------------------------------------------
 add_executable(particles_web_mt
-        particles/main_web.cpp
+        examples/particles/main_web.cpp
         ${PARTICLES_NATIVE_DIR}/simulation.cpp)
 target_include_directories(particles_web_mt PRIVATE ${PARTICLES_NATIVE_DIR})
 target_link_libraries(particles_web_mt PRIVATE ecs::ecs)
@@ -93,12 +95,12 @@ set_target_properties(particles_web_mt PROPERTIES OUTPUT_NAME particles-mt SUFFI
 # ---------------------------------------------------------------------------
 # Phase D: a *fully JavaScript-defined* particle fountain. The C++ is only the
 # ECS runtime (dynamic/bindings.cpp -> the DynamicWorld embind class) plus a
-# WebGL draw host (particles_js/host.cpp owns the context + a point-sprite draw).
-# Components, entities and systems are all defined in index-js.html.
+# WebGL draw host (examples/particles_js/host.cpp owns the context + the draw).
+# Components, entities and systems are all defined in examples/public/index-js.html.
 # ---------------------------------------------------------------------------
 add_executable(particles_js
         dynamic/bindings.cpp
-        particles_js/host.cpp)
+        examples/particles_js/host.cpp)
 target_link_libraries(particles_js PRIVATE ecs::ecs)
 target_link_options(particles_js PRIVATE
         "-lembind"
@@ -118,7 +120,7 @@ set_target_properties(particles_js PROPERTIES OUTPUT_NAME particles-js SUFFIX ".
 # web/coi-server.py. Fixed memory keeps the shared HEAPF32.buffer stable.
 add_executable(particles_js_mt
         dynamic/bindings.cpp
-        particles_js/host.cpp)
+        examples/particles_js/host.cpp)
 target_link_libraries(particles_js_mt PRIVATE ecs::ecs)
 target_compile_options(particles_js_mt PRIVATE -pthread)
 target_link_options(particles_js_mt PRIVATE
@@ -141,7 +143,7 @@ set_target_properties(particles_js_mt PROPERTIES OUTPUT_NAME particles-js-mt SUF
 # proving JS systems can run off the main thread. Fixed memory (no growth) keeps
 # the shared HEAPF32.buffer stable. Run: node build-wasm/web/ecs_parallel_smoke.js
 # ---------------------------------------------------------------------------
-add_executable(ecs_parallel_smoke dynamic/parallel_smoke.cpp)
+add_executable(ecs_parallel_smoke test/parallel_smoke.cpp)
 target_link_libraries(ecs_parallel_smoke PRIVATE ecs::ecs)
 target_compile_options(ecs_parallel_smoke PRIVATE -pthread)
 target_link_options(ecs_parallel_smoke PRIVATE
@@ -173,7 +175,7 @@ set_target_properties(ecs_dynamic PROPERTIES OUTPUT_NAME ecs_dynamic SUFFIX ".mj
 # Drop the JS smoke test next to the generated module so its relative import resolves.
 add_custom_command(TARGET ecs_dynamic POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/dynamic/smoke.mjs
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_dynamic.mjs
                 $<TARGET_FILE_DIR:ecs_dynamic>/smoke_dynamic.mjs
         COMMENT "Copying dynamic-components node smoke test")
 
@@ -196,6 +198,6 @@ set_target_properties(ecs_dynamic_mt PROPERTIES OUTPUT_NAME ecs_dynamic_mt SUFFI
 
 add_custom_command(TARGET ecs_dynamic_mt POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/dynamic/smoke_parallel.mjs
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_parallel.mjs
                 $<TARGET_FILE_DIR:ecs_dynamic_mt>/smoke_parallel.mjs
         COMMENT "Copying parallel-system node smoke test")

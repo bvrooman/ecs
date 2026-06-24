@@ -19,7 +19,7 @@
 #include "particles.hpp"
 #include "simulation.hpp"
 
-#include "../dynamic/js_system.hpp"
+#include "../../dynamic/js_system.hpp"
 #include "../gl_util.hpp"
 
 #include <GLES3/gl3.h>
