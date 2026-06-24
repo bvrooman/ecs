@@ -90,3 +90,27 @@ add_custom_command(TARGET particles_web_mt POST_BUILD
                 ${CMAKE_CURRENT_SOURCE_DIR}/particles/index-mt.html
                 $<TARGET_FILE_DIR:particles_web_mt>/index-mt.html
         COMMENT "Copying multi-threaded demo HTML shell")
+
+# ---------------------------------------------------------------------------
+# Phase A: dynamic (JS-defined) components. An embind module exposing the runtime
+# component path (ecs::dynamic) to JavaScript as an ES module, plus a Node smoke
+# test. Headless, no GL. Verify with:
+#   node build-wasm/web/smoke_dynamic.mjs
+# ---------------------------------------------------------------------------
+add_executable(ecs_dynamic dynamic/bindings.cpp)
+target_link_libraries(ecs_dynamic PRIVATE ecs::ecs)
+target_link_options(ecs_dynamic PRIVATE
+        "-lembind"
+        "-sENVIRONMENT=node"
+        "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-O2")
+set_target_properties(ecs_dynamic PROPERTIES OUTPUT_NAME ecs_dynamic SUFFIX ".mjs")
+
+# Drop the JS smoke test next to the generated module so its relative import resolves.
+add_custom_command(TARGET ecs_dynamic POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/dynamic/smoke.mjs
+                $<TARGET_FILE_DIR:ecs_dynamic>/smoke_dynamic.mjs
+        COMMENT "Copying dynamic-components node smoke test")
