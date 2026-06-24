@@ -1,18 +1,30 @@
 # ecs on the web (WebAssembly / Emscripten)
 
 The engine is header-only C++; this directory builds it to WebAssembly and ships
-a few demos. The toolchain lives entirely in the official `emscripten/emsdk`
-Docker image — nothing is installed on the host.
+a few demos. The build uses a **host Emscripten SDK** checked out alongside this
+repo (`../emsdk`).
+
+## Prerequisites
+
+- **emsdk** at `../emsdk` (sibling of this repo). Recent enough for C++23 (the
+  code uses deducing-`this`, so emscripten ≥ 3.1.6x / clang 18+); latest is fine:
+  ```sh
+  git clone https://github.com/emscripten-core/emsdk.git ../emsdk
+  (cd ../emsdk && ./emsdk install latest && ./emsdk activate latest)
+  ```
+  (Installed elsewhere? Set `EMSDK_DIR` for the script and edit `toolchainFile`
+  in `CMakePresets.json` → `wasm-config`.)
+- **cmake** and **node** on `PATH` (Homebrew cmake + any recent node work).
 
 ## Demos
-
-Build, then serve them (the server sets the COOP/COEP headers the multi-threaded
-pages need for `SharedArrayBuffer`):
 
 ```sh
 web/build-wasm.sh          # build every target
 web/build-wasm.sh serve    # serve at http://localhost:8080  (Ctrl-C to stop)
 ```
+
+The server sets the COOP/COEP headers the multi-threaded pages need for
+`SharedArrayBuffer`.
 
 | URL | simulation defined in | threading |
 | --- | --- | --- |
@@ -21,7 +33,7 @@ web/build-wasm.sh serve    # serve at http://localhost:8080  (Ctrl-C to stop)
 | `/index-js.html` | **JavaScript** | single |
 | `/index-js-mt.html` | **JavaScript** | **parallel data systems across worker lanes** |
 
-Headless node smokes (no browser):
+Headless node smokes:
 
 ```sh
 web/build-wasm.sh run            # core engine smoke (ecs_smoke)
@@ -31,7 +43,7 @@ web/build-wasm.sh run parallel   # defineParallelSystem across lanes (smoke_para
 
 ## Building a specific target
 
-`build-wasm.sh` drives CMake through the `wasm-config` preset, so it accepts a
+`build-wasm.sh` drives CMake through the `wasm-config` preset, so it takes a
 target:
 
 ```sh
@@ -43,30 +55,33 @@ Targets: `ecs_smoke`, `particles_web`, `particles_web_mt`, `ecs_dynamic`,
 
 ## CLion
 
-**Run configurations** (under `.idea/runConfigurations/`, shell-script type) drive
-the Docker build with one click — they run in the IDE terminal so `docker` and
-`python3` resolve from your shell profile:
+### Code intelligence for the web targets (resolve, no false errors)
+
+The `web/` targets are behind `if(EMSCRIPTEN)` in the root `CMakeLists.txt`, so
+the **native** CMake profile never configures them — CLion then treats their
+sources as orphan files and flags every emscripten/ecs include as unresolved. The
+fix is to also load the **WASM** profile:
+
+1. *Settings → Build, Execution, Deployment → CMake* → enable a profile from the
+   **`wasm-config`** preset (CLion reads it from `CMakePresets.json`).
+2. **Apply.** CLion configures it with the `../emsdk` toolchain, so the web
+   targets enter the project model and the emscripten + ecs headers resolve.
+
+When you edit a file under `web/`, CLion uses that profile and the false errors
+clear. (A couple of things stay fuzzy for any indexer — the `EM_ASM` body is
+stringified JS, and some embind templates are deep — but the includes and
+references resolve.) The same profile lets you build/run the WASM targets from
+the toolbar.
+
+This is a plain CMake toolchain-file profile (no Docker toolchain), so it works
+on both the classic and Nova engines.
+
+### Run configurations
+
+Shell-script run configs (`.idea/runConfigurations/`, local) drive the build with
+one click — they run in the IDE terminal so `emcc`/`cmake`/`node` resolve from
+your shell profile:
 
 - `wasm: build` / `wasm: build particles_js` / `wasm: build particles_js_mt`
 - `wasm: serve demo` — serves all four pages (URLs printed; click to open)
 - `wasm: smoke test (node)` / `wasm: dynamic smoke (node)` / `wasm: parallel smoke (node)`
-
-**Native CMake targets via a Docker toolchain** — to build the WASM targets from
-CLion's own CMake (so they appear in the target dropdown and build from the
-toolbar), point CLion at the same container:
-
-1. *Settings → Build, Execution, Deployment → Toolchains* → **+** → **Docker** →
-   image `emscripten/emsdk:6.0.1`.
-2. *Settings → Build, Execution, Deployment → CMake* → **+** → select the
-   **`wasm-config`** preset and assign the Docker toolchain from step 1.
-3. The `wasm-config` profile now lists every WASM target; pick one and build/run
-   from the toolbar.
-
-The preset's `toolchainFile` is a path *inside* the container, so `wasm-config`
-only configures within the emsdk image (the Docker toolchain, or `build-wasm.sh`)
-— not against the host toolchain.
-
-## Requirements
-
-Docker (Desktop) running. The image is pinned to `emscripten/emsdk:6.0.1`;
-override with `EMSDK_IMAGE=…`, or the serve port with `PORT=…`.

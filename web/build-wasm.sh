@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the WebAssembly targets inside the official emscripten/emsdk container,
-# using it as a self-contained, reproducible compiler (nothing installed on the
-# host). It drives CMake through the `wasm-config` preset (CMakePresets.json), so
-# the exact configuration is reusable from CLion too -- with a Docker toolchain on
-# the same image, the targets build natively from the IDE. See web/README.md.
+# Build the WebAssembly targets with a local (host) Emscripten SDK -- the emsdk
+# checked out alongside this repo at ../emsdk (override with EMSDK_DIR). It drives
+# CMake through the `wasm-config` preset, whose toolchain file points at the same
+# ../emsdk -- so this is the exact configuration CLion uses for code intelligence
+# and native builds of the web targets. See web/README.md.
 #
 #   web/build-wasm.sh                  # configure + build every target
 #   web/build-wasm.sh build TARGET     # ... only TARGET (e.g. particles_js_mt)
@@ -11,26 +11,28 @@
 #                                      #   core (default) | dynamic | parallel
 #   web/build-wasm.sh serve            # serve the demos over http (COOP/COEP)
 #
-# Override the toolchain image or the serve port:
-#   EMSDK_IMAGE=emscripten/emsdk:latest web/build-wasm.sh
-#   PORT=9000 web/build-wasm.sh serve
+# Override the serve port with PORT=9000.
 set -euo pipefail
 
-IMAGE="${EMSDK_IMAGE:-emscripten/emsdk:6.0.1}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="build-wasm"
 PORT="${PORT:-8080}"
+EMSDK_DIR="${EMSDK_DIR:-$(cd "$REPO/.." && pwd)/emsdk}"
 
-in_container() {
-    docker run --rm -v "$REPO":/src -w /src "$IMAGE" bash -lc "$1"
-}
+# Most shells already have emcc on PATH via emsdk_env; otherwise activate the SDK.
+if ! command -v emcc >/dev/null 2>&1; then
+    [[ -f "$EMSDK_DIR/emsdk_env.sh" ]] || {
+        echo "emcc not on PATH and no emsdk at $EMSDK_DIR (set EMSDK_DIR)"; exit 1; }
+    # shellcheck disable=SC1091
+    source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
+fi
 
 build() {
     local target="${1:-}"
-    local build_args="-j"
-    [[ -n "$target" ]] && build_args="--target $target -j"
-    echo ">> configuring (wasm-config preset) + building with $IMAGE"
-    in_container "cmake --preset wasm-config && cmake --build $BUILD_DIR $build_args"
+    local args=(-j)
+    [[ -n "$target" ]] && args=(--target "$target" -j)
+    echo ">> $(emcc --version | head -1)"
+    ( cd "$REPO" && cmake --preset wasm-config && cmake --build "$BUILD_DIR" "${args[@]}" )
 }
 
 case "${1:-build}" in
@@ -47,7 +49,7 @@ case "${1:-build}" in
             *) echo "unknown smoke '${2}' (use: core | dynamic | parallel)"; exit 1 ;;
         esac
         echo ">> running $smoke under node"
-        in_container "node $BUILD_DIR/$smoke"
+        node "$REPO/$BUILD_DIR/$smoke"
         ;;
     serve)
         DIR="$REPO/$BUILD_DIR/web"
