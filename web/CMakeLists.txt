@@ -121,6 +121,24 @@ add_custom_command(TARGET particles_js POST_BUILD
         COMMENT "Copying JS-defined particle demo HTML shell")
 
 # ---------------------------------------------------------------------------
+# Stretch spike: parallel JS kernels (worker-eval'd). A -pthread node target that
+# dispatches an eval'd JS kernel across WorkerPool lanes over shared memory --
+# proving JS systems can run off the main thread. Fixed memory (no growth) keeps
+# the shared HEAPF32.buffer stable. Run: node build-wasm/web/ecs_parallel_smoke.js
+# ---------------------------------------------------------------------------
+add_executable(ecs_parallel_smoke dynamic/parallel_smoke.cpp)
+target_link_libraries(ecs_parallel_smoke PRIVATE ecs::ecs)
+target_compile_options(ecs_parallel_smoke PRIVATE -pthread)
+target_link_options(ecs_parallel_smoke PRIVATE
+        -pthread
+        "-sENVIRONMENT=node,worker"
+        "-sPTHREAD_POOL_SIZE=4"
+        "-sINITIAL_MEMORY=67108864"
+        "-sEXIT_RUNTIME=1"
+        "-O2")
+set_target_properties(ecs_parallel_smoke PROPERTIES OUTPUT_NAME ecs_parallel_smoke SUFFIX ".js")
+
+# ---------------------------------------------------------------------------
 # Phase A: dynamic (JS-defined) components. An embind module exposing the runtime
 # component path (ecs::dynamic) to JavaScript as an ES module, plus a Node smoke
 # test. Headless, no GL. Verify with:
