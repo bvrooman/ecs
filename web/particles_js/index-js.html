@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ecs — particle fountain (entities, components & systems in JavaScript)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: #07070c; color: #d8d8e0;
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; box-sizing: border-box;
+  }
+  h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: .04em; color: #f0c789; }
+  h1 span { color: #6a6a78; }
+  .stage { position: relative; }
+  canvas {
+    display: block;
+    width: 760px; height: 760px; max-width: 88vmin; max-height: 88vmin;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px #1b1b26, 0 18px 60px -20px #000;
+    background: #05050a;
+  }
+  .hud {
+    position: absolute; top: 14px; left: 16px; line-height: 1.5;
+    pointer-events: none; text-shadow: 0 1px 2px #000;
+  }
+  .hud .fps   { color: #ffffff; }
+  .hud .count { color: #f0c789; }
+  .hud .k     { color: #6a6a78; }
+  footer { color: #5a5a68; font-size: 12px; max-width: 88vmin; text-align: center; }
+  footer b { color: #8a8a98; font-weight: 500; }
+</style>
+</head>
+<body>
+  <h1>ecs particle fountain <span>· wasm · sim defined entirely in JavaScript</span></h1>
+
+  <div class="stage">
+    <canvas id="canvas" width="760" height="760"></canvas>
+    <div class="hud">
+      <div><span class="k">fps </span><span class="fps" id="fps">--</span></div>
+      <div><span class="k">particles </span><span class="count" id="count">0</span></div>
+    </div>
+  </div>
+
+  <footer>The C++ side is only the ECS runtime + a WebGL draw. Components
+  (<b>Position, Velocity, Color, Age</b>) and systems (<b>emit, gravity, integrate,
+  age+reap</b>) are defined below in JavaScript and stepped by the engine's scheduler.</footer>
+
+  <script>
+    function setup() {
+      var w = new Module.DynamicWorld();
+
+      // --- components, defined in JS ---
+      var Position = w.defineComponent('Position', [{ name: 'x', type: 'f32' }, { name: 'y', type: 'f32' }]);
+      var Velocity = w.defineComponent('Velocity', [{ name: 'x', type: 'f32' }, { name: 'y', type: 'f32' }]);
+      var Color    = w.defineComponent('Color',    [{ name: 'r', type: 'f32' }, { name: 'g', type: 'f32' }, { name: 'b', type: 'f32' }]);
+      var Age      = w.defineComponent('Age',      [{ name: 't', type: 'f32' }, { name: 'max', type: 'f32' }]);
+
+      // --- sim parameters (plain JS state the kernels close over) ---
+      var DT = 0.016, G = -1.7, RATE = 9, NX = 0.0, NY = -0.85;
+
+      // --- systems, defined in JS ---
+      // emit: command-only system, spawns RATE particles/tick from the nozzle.
+      w.defineSystem('emit', { commands: true }, function () {
+        for (var i = 0; i < RATE; i++) {
+          var warm = Math.random();
+          w.spawn([
+            [Position, [NX, NY]],
+            [Velocity, [(Math.random() - 0.5) * 0.5, 1.2 + Math.random() * 1.4]],
+            [Color,    [1.0, 0.5 + 0.35 * warm, 0.1 + 0.15 * warm]],
+            [Age,      [0.0, 1.8 + Math.random()]],
+          ]);
+        }
+      });
+      // gravity: write Velocity.
+      w.defineSystem('gravity', { write: [Velocity] }, function (n, v) {
+        var vy = v.Velocity.y;
+        for (var i = 0; i < n; i++) vy[i] += G * DT;
+      });
+      // integrate: read Velocity (written by gravity -> later wave), write Position.
+      w.defineSystem('integrate', { write: [Position], read: [Velocity] }, function (n, v) {
+        var px = v.Position.x, py = v.Position.y, vx = v.Velocity.x, vy = v.Velocity.y;
+        for (var i = 0; i < n; i++) { px[i] += vx[i] * DT; py[i] += vy[i] * DT; }
+      });
+      // age + reap: advance Age, destroy the expired ones via the entity handles.
+      w.defineSystem('age', { write: [Age], commands: true }, function (n, v, ent) {
+        var t = v.Age.t, max = v.Age.max;
+        for (var i = 0; i < n; i++) {
+          t[i] += DT;
+          if (t[i] >= max[i]) w.destroy(ent[2 * i], ent[2 * i + 1]);
+        }
+      });
+
+      // --- render: read the JS-defined columns, pack, draw (no C++ knows them) ---
+      function render() {
+        var px = w.fieldView(Position, 0), py = w.fieldView(Position, 1);
+        var cr = w.fieldView(Color, 0), cg = w.fieldView(Color, 1), cb = w.fieldView(Color, 2);
+        var at = w.fieldView(Age, 0), am = w.fieldView(Age, 1);
+        var n = px ? px.length : 0;
+        if (n === 0) { Module.draw_points(0); return; }
+        var buf = Module.scratch_view(n); // Float32Array, n*6: x,y,r,g,b,life
+        for (var i = 0; i < n; i++) {
+          var o = i * 6;
+          var life = am[i] > 0 ? Math.max(0, 1 - at[i] / am[i]) : 1;
+          buf[o] = px[i]; buf[o + 1] = py[i];
+          buf[o + 2] = cr[i]; buf[o + 3] = cg[i]; buf[o + 4] = cb[i]; buf[o + 5] = life;
+        }
+        Module.draw_points(n);
+      }
+
+      // --- per-frame: step the schedule, then render ---
+      var frames = 0, t0 = 0;
+      Module.onFrame = function (dt) {
+        w.tick();
+        render();
+        // HUD ~ every 0.4s
+        frames++;
+        var now = performance.now();
+        if (t0 === 0) t0 = now;
+        if (now - t0 >= 400) {
+          document.getElementById('fps').textContent = (frames * 1000 / (now - t0)).toFixed(0);
+          document.getElementById('count').textContent = w.entityCount();
+          frames = 0; t0 = now;
+        }
+      };
+    }
+
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      print:    function (t) { console.log(t); },
+      printErr: function (t) { console.error(t); },
+      onRuntimeInitialized: setup, // build the JS world before main() starts the loop
+    };
+  </script>
+  <script src="particles-js.js"></script>
+</body>
+</html>

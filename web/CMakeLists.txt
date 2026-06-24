@@ -94,6 +94,33 @@ add_custom_command(TARGET particles_web_mt POST_BUILD
         COMMENT "Copying multi-threaded demo HTML shell")
 
 # ---------------------------------------------------------------------------
+# Phase D: a *fully JavaScript-defined* particle fountain. The C++ is only the
+# ECS runtime (dynamic/bindings.cpp -> the DynamicWorld embind class) plus a
+# WebGL draw host (particles_js/host.cpp owns the context + a point-sprite draw).
+# Components, entities and systems are all defined in index-js.html.
+# ---------------------------------------------------------------------------
+add_executable(particles_js
+        dynamic/bindings.cpp
+        particles_js/host.cpp)
+target_link_libraries(particles_js PRIVATE ecs::ecs)
+target_link_options(particles_js PRIVATE
+        "-lembind"
+        "-sENVIRONMENT=web"
+        "-sUSE_GLFW=3"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sFULL_ES3=1"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-O2")
+set_target_properties(particles_js PROPERTIES OUTPUT_NAME particles-js SUFFIX ".js")
+
+add_custom_command(TARGET particles_js POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/particles_js/index-js.html
+                $<TARGET_FILE_DIR:particles_js>/index-js.html
+        COMMENT "Copying JS-defined particle demo HTML shell")
+
+# ---------------------------------------------------------------------------
 # Phase A: dynamic (JS-defined) components. An embind module exposing the runtime
 # component path (ecs::dynamic) to JavaScript as an ES module, plus a Node smoke
 # test. Headless, no GL. Verify with:
