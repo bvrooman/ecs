@@ -13,6 +13,7 @@
 #include "ecs/dynamic/world_ops.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
+#include "js_system.hpp"
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
@@ -63,21 +64,6 @@ double read_scalar(std::byte const* src, FieldType t) {
     return 0;
 }
 
-// A zero-copy JS typed-array aliasing `count` elements of type `t` at `base`.
-val make_view(FieldType t, void* base, std::size_t count) {
-    switch (t) {
-    case FieldType::f32:
-        return val(emscripten::typed_memory_view(count, reinterpret_cast<float*>(base)));
-    case FieldType::f64:
-        return val(emscripten::typed_memory_view(count, reinterpret_cast<double*>(base)));
-    case FieldType::i32:
-        return val(emscripten::typed_memory_view(count, reinterpret_cast<std::int32_t*>(base)));
-    case FieldType::u32:
-        return val(emscripten::typed_memory_view(count, reinterpret_cast<std::uint32_t*>(base)));
-    }
-    return val::null();
-}
-
 } // namespace
 
 class DynamicWorld {
@@ -111,6 +97,27 @@ public:
         WorldOps::remove(world_, from_val(e), static_cast<ComponentId>(id));
     }
 
+    // --- deferred ops, safe to call from inside a system (a JS kernel) --------
+    // Unlike createEntity/addComponent/destroyEntity (immediate, host-setup only),
+    // these record into the command buffer and apply at the wave barrier, so they
+    // don't disturb a running iteration.
+
+    // bundle: array of [componentId, [field values...]].
+    void spawn(val bundle) {
+        WorldOps::Bundle packed;
+        unsigned const n = bundle["length"].as<unsigned>();
+        packed.reserve(n);
+        for (unsigned i = 0; i < n; ++i) {
+            val pair      = bundle[i];
+            auto const id = static_cast<ComponentId>(pair[0].as<unsigned>());
+            packed.emplace_back(id, pack(id, pair[1]));
+        }
+        WorldOps::spawn_deferred(world_, std::move(packed));
+    }
+    void destroy(unsigned index, unsigned generation) {
+        WorldOps::destroy_deferred(world_, Entity {index, generation});
+    }
+
     // -> JS array of field values, or null if the entity lacks the component.
     val getComponent(val e, int id) {
         auto const& d = registry().desc(static_cast<ComponentId>(id));
@@ -135,56 +142,17 @@ public:
             return val::null();
         auto const count = column->size();
         void* base       = column->field_base(static_cast<std::size_t>(fieldIndex));
-        return make_view(column->desc().fields[fieldIndex].type, base, count);
+        return web::make_view(column->desc().fields[fieldIndex].type, base, count);
     }
 
-    // Register a JS-defined system. `spec` declares its component access --
-    // { write?: id[], read?: id[] } -- which the scheduler uses to level it
-    // against every other system. `kernel(count, views)` is invoked once per
-    // matching archetype with views[componentName][fieldName] = a zero-copy
-    // typed array over that field's contiguous storage (write-through mutates the
-    // world). Runs on the main thread (worker lanes are separate JS contexts).
+    // Register a JS-defined system. `spec` declares its access --
+    // { write?: id[], read?: id[], commands?: bool }. With a query it runs as
+    // kernel(count, views, entities) once per matching archetype -- views[
+    // component][field] = a zero-copy typed array, entities = [index, generation,
+    // ...] per row. With no query it is an emitter: kernel() fires once per tick
+    // and spawns via this world's spawn(). Runs main-thread. See js_system.hpp.
     int defineSystem(std::string name, val spec, val kernel) {
-        SystemAccess access;
-        std::vector<ComponentId> query;
-        auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
-            val arr = spec[key];
-            if (arr.isUndefined() || arr.isNull())
-                return;
-            unsigned const n = arr["length"].as<unsigned>();
-            for (unsigned i = 0; i < n; ++i) {
-                auto const id = static_cast<ComponentId>(arr[i].as<unsigned>());
-                into.push_back(id);
-                query.push_back(id);
-            }
-        };
-        collect("write", access.writes);
-        collect("read", access.reads);
-        std::ranges::sort(query);
-        query.erase(std::ranges::unique(query).begin(), query.end()); // also sorted -> a Signature
-
-        auto run = [kernel, query](World& w, Commands&, WorkerPool*) {
-            Signature const required(query.begin(), query.end());
-            for (auto const ai : w.matching_archetypes(required)) {
-                auto& arch       = *w.archetypes()[ai];
-                auto const count = arch.size();
-                if (count == 0)
-                    continue;
-                val views = val::object();
-                for (auto const cid : query) {
-                    auto const& d = registry().desc(cid);
-                    auto& col     = *arch.columns.at(cid); // IColumn: native or dynamic
-                    val fields    = val::object();
-                    for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
-                        fields.set(d.fields[fi].name,
-                                   make_view(d.fields[fi].type, col.field_base(fi), count));
-                    views.set(d.name, fields);
-                }
-                kernel(static_cast<unsigned>(count), views);
-            }
-        };
-        return static_cast<int>(
-            schedule_.add_dynamic(std::move(name), std::move(access), std::move(run)));
+        return static_cast<int>(web::add_js_system(schedule_, std::move(name), spec, kernel));
     }
 
     // Run the schedule once (inline, single-threaded): every JS system fires in
@@ -234,6 +202,8 @@ EMSCRIPTEN_BINDINGS(ecs_dynamic) {
         .function("entityCount", &DynamicWorld::entityCount)
         .function("fieldView", &DynamicWorld::fieldView)
         .function("defineSystem", &DynamicWorld::defineSystem)
+        .function("spawn", &DynamicWorld::spawn)
+        .function("destroy", &DynamicWorld::destroy)
         .function("tick", &DynamicWorld::tick)
         .function("waveCount", &DynamicWorld::waveCount);
 }

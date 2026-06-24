@@ -113,5 +113,38 @@ check(tick2Ok, 'after 2 ticks Pos=[6,-6], Vel=[3,-4]');
 const fp = w3.getComponent(fixed, Pos);
 check(fp[0] === 0 && fp[1] === 0, 'Position-only entity skipped by the {Position,Velocity} query');
 
+// --- Phase D: structural mutation from JS systems (emit + reap) --------------
+console.log('--- structural mutation (emit + reap) ---');
+const w4 = new M.DynamicWorld();
+const Life = w4.defineComponent('Life', [{ name: 'remaining', type: 'i32' }]);
+
+// emit: a command-only system (no query) that fires once per tick and spawns 10
+// entities, each with Life=3, through the deferred spawn().
+w4.defineSystem('emit', { commands: true }, () => {
+  for (let i = 0; i < 10; i++) w4.spawn([[Life, [3]]]);
+});
+// agereap: a query system that ages every Life and destroys the expired ones via
+// the deferred destroy(), using the per-row entity handles. Same wave as emit,
+// added after it, so it sees only entities that existed at the tick's start
+// (this tick's spawns flush at the wave barrier).
+w4.defineSystem('agereap', { write: [Life], commands: true }, (n, v, ent) => {
+  const life = v.Life.remaining;
+  for (let i = 0; i < n; i++) {
+    life[i] -= 1;
+    if (life[i] <= 0) w4.destroy(ent[2 * i], ent[2 * i + 1]);
+  }
+});
+
+check(w4.entityCount() === 0, 'starts empty');
+w4.tick();
+check(w4.entityCount() === 10, 'after 1 tick: 10 (emit spawned via deferred Commands)');
+w4.tick();
+check(w4.entityCount() === 20, 'after 2 ticks: 20 (growing)');
+w4.tick();
+check(w4.entityCount() === 30, 'after 3 ticks: 30 (steady state)');
+w4.tick();
+w4.tick();
+check(w4.entityCount() === 30, 'after 5 ticks: still 30 (reap balances emit, not 50)');
+
 console.log(`${checks - fails}/${checks} checks passed`);
 process.exit(fails === 0 ? 0 : 1);

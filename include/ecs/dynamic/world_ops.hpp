@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <memory>
 #include <ranges>
+#include <utility>
+#include <vector>
 
 namespace ecs::dynamic {
 
@@ -111,6 +113,63 @@ struct WorldOps {
     }
 
     static void destroy(World& w, Entity e) { w.destroy_now(e); }
+
+    // --- deferred (in-system) structural mutation -------------------------
+    // The immediate ops above are unsafe mid-tick (they relocate storage while a
+    // system iterates). These instead RECORD into the world's command buffer --
+    // the same one native Commands use -- so they apply at the next Schedule
+    // flush (wave barrier). A JS emit/reap kernel reaches them through the
+    // binding (DynamicWorld.spawn/destroy).
+
+    // A packed component bundle: (id, AoS bytes) per component, as a JS emitter
+    // hands it over.
+    using Bundle = std::vector<std::pair<ComponentId, std::vector<std::byte>>>;
+
+    // Place a reserved entity directly into the archetype matching `bundle`'s
+    // component set (one transition, not one-per-component) and scatter each
+    // component's bytes. Runs at flush, when nothing is iterating.
+    static void build_now(World& w, Entity e, Bundle const& bundle) {
+        if (e.index >= w.records_.size())
+            w.records_.resize(e.index + 1);
+        Signature sig;
+        sig.reserve(bundle.size());
+        for (auto const& [id, _] : bundle)
+            sig.push_back(id);
+        std::ranges::sort(sig);
+        sig.erase(std::ranges::unique(sig).begin(), sig.end());
+        auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
+            for (auto const& [id, _] : bundle)
+                b.columns.emplace(id, std::make_unique<DynamicColumn>(registry().desc(id)));
+        });
+        auto& arch     = *w.archetypes_[to];
+        auto& rec      = w.records_[e.index];
+        rec.alive      = true;
+        rec.generation = e.generation;
+        rec.archetype  = to;
+        rec.row        = static_cast<std::uint32_t>(arch.entities.size());
+        arch.entities.push_back(e);
+        for (auto const& [id, bytes] : bundle)
+            col(arch, id).push(bytes.data());
+        ++w.alive_count_;
+    }
+
+    // Reserve a handle now, build the entity at the next flush (like
+    // Commands::spawn). The returned handle is alive after that flush.
+    static Entity spawn_deferred(World& w, Bundle bundle) {
+        Entity const e = w.reserve();
+        w.commands_.record([e, bundle = std::move(bundle)](World& world) {
+            build_now(world, e, bundle);
+        });
+        return e;
+    }
+
+    // Destroy at the next flush (a no-op if the handle is already stale).
+    static void destroy_deferred(World& w, Entity e) {
+        w.commands_.record([e](World& world) {
+            if (world.alive(e))
+                world.destroy_now(e);
+        });
+    }
 
     // The first archetype that contains `id`, and its DynamicColumn -- the base
     // for a typed-array view. (Per-archetype iteration over all matches is

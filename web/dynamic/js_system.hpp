@@ -64,9 +64,23 @@ inline SystemId add_js_system(Schedule& schedule,
     };
     collect("write", access.writes);
     collect("read", access.reads);
+    if (val c = spec["commands"]; !c.isUndefined() && !c.isNull())
+        access.commands = c.as<bool>();
     std::ranges::sort(query);
     query.erase(std::ranges::unique(query).begin(), query.end()); // sorted+unique -> a Signature
 
+    // No query -> a command-only system (e.g. an emitter): kernel() fires once
+    // per tick. Its structural effects go through the kernel's closure
+    // (DynamicWorld.spawn/destroy), recorded as deferred ops applied at the wave
+    // barrier. Flag commands so the scheduler accounts for the structural effect.
+    if (query.empty()) {
+        access.commands = true;
+        return schedule.add_dynamic(
+            std::move(name), std::move(access),
+            [kernel](World&, Commands&, WorkerPool*) { kernel(); });
+    }
+
+    // Query system: kernel(count, views, entities) once per matching archetype.
     auto run = [kernel, query](World& w, Commands&, WorkerPool*) {
         Signature const required(query.begin(), query.end());
         for (auto const ai : w.matching_archetypes(required)) {
@@ -84,7 +98,11 @@ inline SystemId add_js_system(Schedule& schedule,
                                make_view(d.fields[fi].type, col.field_base(fi), count));
                 views.set(d.name, fields);
             }
-            kernel(static_cast<unsigned>(count), views);
+            // Per-row entity handles [index, generation, ...], so a kernel can
+            // hand a row back to DynamicWorld.destroy().
+            val entities = val(emscripten::typed_memory_view(
+                count * 2, reinterpret_cast<std::uint32_t*>(arch.entities.data())));
+            kernel(static_cast<unsigned>(count), views, entities);
         }
     };
     return schedule.add_dynamic(std::move(name), std::move(access), std::move(run));
