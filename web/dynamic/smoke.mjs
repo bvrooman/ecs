@@ -146,5 +146,34 @@ w4.tick();
 w4.tick();
 check(w4.entityCount() === 30, 'after 5 ticks: still 30 (reap balances emit, not 50)');
 
+// --- Phase E: parallel JS systems (defineParallelSystem) ---------------------
+// In this single-threaded build the kernel runs serially (1-lane pool); the same
+// API fans out across worker lanes under -pthread. This checks the integration:
+// a PURE source kernel, named views, params, and per-tick param snapshot.
+console.log('--- parallel JS systems ---');
+const w5 = new M.DynamicWorld();
+const Val = w5.defineComponent('Val', [{ name: 'x', type: 'f32' }]);
+const valEnts = [];
+for (let i = 0; i < 2000; i++) {
+  const e = w5.createEntity();
+  w5.addComponent(e, Val, [i]); // Val.x = i (integers, exact in f32)
+  valEnts.push(e);
+}
+
+const params = { k: 10 };
+w5.defineParallelSystem('scale', { write: [Val], params: params },
+  (lo, hi, c, p) => { for (let i = lo; i < hi; i++) c.Val.x[i] *= p.k; });
+
+w5.tick();
+let ok = true;
+for (let i = 0; i < 2000; i++) if (w5.getComponent(valEnts[i], Val)[0] !== i * 10) { ok = false; break; }
+check(ok, 'parallel system scaled all 2000 Val.x by p.k=10 (named views + params)');
+
+params.k = 2;     // mutate the params object; tick() snapshots it
+w5.tick();
+let ok2 = true;
+for (let i = 0; i < 2000; i++) if (w5.getComponent(valEnts[i], Val)[0] !== i * 20) { ok2 = false; break; }
+check(ok2, 'param change picked up next tick (k 10 -> 2, x10 then x2 = x20)');
+
 console.log(`${checks - fails}/${checks} checks passed`);
 process.exit(fails === 0 ? 0 : 1);

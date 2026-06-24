@@ -161,3 +161,26 @@ add_custom_command(TARGET ecs_dynamic POST_BUILD
                 ${CMAKE_CURRENT_SOURCE_DIR}/dynamic/smoke.mjs
                 $<TARGET_FILE_DIR:ecs_dynamic>/smoke_dynamic.mjs
         COMMENT "Copying dynamic-components node smoke test")
+
+# Multi-threaded build of the same module: -pthread so DynamicWorld's resident
+# WorkerPool fans defineParallelSystem out across Web Worker lanes. Same sources,
+# verified by smoke_parallel.mjs.  node build-wasm/web/smoke_parallel.mjs
+add_executable(ecs_dynamic_mt dynamic/bindings.cpp)
+target_link_libraries(ecs_dynamic_mt PRIVATE ecs::ecs)
+target_compile_options(ecs_dynamic_mt PRIVATE -pthread)
+target_link_options(ecs_dynamic_mt PRIVATE
+        -pthread
+        "-lembind"
+        "-sENVIRONMENT=node,worker"
+        "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
+        "-sPTHREAD_POOL_SIZE=4"
+        "-sINITIAL_MEMORY=134217728"
+        "-O2")
+set_target_properties(ecs_dynamic_mt PROPERTIES OUTPUT_NAME ecs_dynamic_mt SUFFIX ".mjs")
+
+add_custom_command(TARGET ecs_dynamic_mt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/dynamic/smoke_parallel.mjs
+                $<TARGET_FILE_DIR:ecs_dynamic_mt>/smoke_parallel.mjs
+        COMMENT "Copying parallel-system node smoke test")

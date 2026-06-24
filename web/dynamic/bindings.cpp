@@ -15,6 +15,7 @@
 #include "ecs/world.hpp"
 #include "js_system.hpp"
 
+#include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
@@ -22,9 +23,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <ranges>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace ecs;
@@ -68,6 +71,16 @@ double read_scalar(std::byte const* src, FieldType t) {
 
 class DynamicWorld {
 public:
+    DynamicWorld() {
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        // -pthread build: a resident pool so defineParallelSystem fans out across
+        // Web Worker lanes. (Single-threaded: no pool; parallel systems run
+        // serially via the 1-lane pool Schedule::run(World&) makes.)
+        unsigned const hw = std::thread::hardware_concurrency();
+        pool_ = std::make_unique<WorkerPool>(std::max(2u, std::min(4u, hw ? hw : 2u)));
+#endif
+    }
+
     // fields: JS array of { name: string, type: 'f32'|'f64'|'i32'|'u32' }.
     int defineComponent(std::string name, val fields) {
         std::vector<std::pair<std::string, FieldType>> fs;
@@ -155,13 +168,173 @@ public:
         return static_cast<int>(web::add_js_system(schedule_, std::move(name), spec, kernel));
     }
 
-    // Run the schedule once (inline, single-threaded): every JS system fires in
-    // wave order, reading/writing the world through its typed-array views.
-    void tick() { schedule_.run(world_); }
+    // Register a *parallel* JS system. Same access spec { write?, read? } as
+    // defineSystem (so it still levels), plus `params` -- a plain JS object the
+    // kernel reads as `p`, snapshotted to shared memory each tick(). The kernel
+    // (lo, hi, c, p) must be PURE (shipped as source via toString(), eval'd per
+    // worker lane): no closures, data-only. Each lane runs it over its slice
+    // [lo,hi); on a single-threaded build the 1-lane pool runs it serially.
+    int defineParallelSystem(std::string name, val spec, val kernel) {
+        SystemAccess access;
+        std::vector<ComponentId> query;
+        auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+            val arr = spec[key];
+            if (arr.isUndefined() || arr.isNull())
+                return;
+            unsigned const n = arr["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                auto const id = static_cast<ComponentId>(arr[i].as<unsigned>());
+                into.push_back(id);
+                query.push_back(id);
+            }
+        };
+        collect("write", access.writes);
+        collect("read", access.reads);
+        std::ranges::sort(query);
+        query.erase(std::ranges::unique(query).begin(), query.end());
+
+        // Params: hold the JS object + its key names; one shared f64 snapshot buffer.
+        ParallelSys ps;
+        ps.params     = spec["params"];
+        val pnamesArr = val::array();
+        if (!ps.params.isUndefined() && !ps.params.isNull()) {
+            val keys         = val::global("Object").call<val>("keys", ps.params);
+            unsigned const k = keys["length"].as<unsigned>();
+            for (unsigned i = 0; i < k; ++i) {
+                std::string key = keys[i].as<std::string>();
+                ps.names.push_back(key);
+                pnamesArr.call<void>("push", key);
+            }
+        }
+        ps.values        = std::make_shared<std::vector<double>>(ps.names.size(), 0.0);
+        auto values      = ps.values;
+        int const np     = static_cast<int>(ps.names.size());
+        parallel_.push_back(ps);
+
+        // Setup blob (parsed + cached once per worker): source, param names, and the
+        // view layout (component + field names, in query order).
+        std::string const src = kernel.call<std::string>("toString");
+        val blob              = val::object();
+        blob.set("src", "(" + src + ")"); // wrap so the worker's eval(blob.src) yields the fn
+        blob.set("params", pnamesArr);
+        val layout = val::array();
+        for (auto const cid : query) {
+            auto const& d = registry().desc(cid);
+            val comp      = val::object();
+            comp.set("n", d.name);
+            val f = val::array();
+            for (auto const& fld : d.fields)
+                f.call<void>("push", fld.name);
+            comp.set("f", f);
+            layout.call<void>("push", comp);
+        }
+        blob.set("layout", layout);
+        std::string const blobStr = val::global("JSON").call<std::string>("stringify", blob);
+
+        static int next_sid = 0;
+        int const sid       = next_sid++;
+
+        auto run = [query, blobStr, values, sid, np](World& w, Commands&, WorkerPool* pool) {
+            Signature const required(query.begin(), query.end());
+            for (auto const ai : w.matching_archetypes(required)) {
+                auto& arch       = *w.archetypes()[ai];
+                auto const count = arch.size();
+                if (count == 0)
+                    continue;
+                std::vector<std::uint32_t> bases; // field bases, in query order
+                for (auto const cid : query) {
+                    auto const& d = registry().desc(cid);
+                    auto& col     = *arch.columns.at(cid);
+                    for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
+                        bases.push_back(static_cast<std::uint32_t>(
+                            reinterpret_cast<std::uintptr_t>(col.field_base(fi))));
+                }
+                char const* const blobC = blobStr.c_str();
+                auto const bptr = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(bases.data()));
+                auto const nb   = static_cast<std::uint32_t>(bases.size());
+                auto const vptr = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(values->data()));
+                auto const cnt  = static_cast<std::uint32_t>(count);
+                // 1-lane pool -> serial on the caller; N-lane -> across worker lanes.
+                pool->parallel_for(count, [=](std::size_t b, std::size_t e) {
+                    // EM_ASM body must have NO top-level commas (the preprocessor
+                    // splits macro args on them) -- commas live only inside ( ).
+                    // clang-format off
+                    EM_ASM({
+                        var sid=$0;
+                        var blobPtr=$1;
+                        var lo=$2;
+                        var hi=$3;
+                        var count=$4;
+                        var bptr=$5;
+                        var nb=$6;
+                        var vptr=$7;
+                        var np=$8;
+                        if (!globalThis.__psys) globalThis.__psys = {};
+                        var R = globalThis.__psys;
+                        var S = R[sid];
+                        if (!S) {
+                            S = {};
+                            var blob = JSON.parse(UTF8ToString(blobPtr));
+                            S.fn = eval(blob.src);
+                            S.layout = blob.layout;
+                            S.params = blob.params;
+                            R[sid] = S;
+                        }
+                        var bases = new Uint32Array(HEAPU32.buffer, bptr, nb);
+                        var c = {};
+                        var k = 0;
+                        for (var ci=0; ci<S.layout.length; ci++) {
+                            var comp = S.layout[ci];
+                            var o = {};
+                            for (var fi=0; fi<comp.f.length; fi++)
+                                o[comp.f[fi]] = new Float32Array(HEAPF32.buffer, bases[k++], count);
+                            c[comp.n] = o;
+                        }
+                        var p = {};
+                        if (np > 0) {
+                            var pv = new Float64Array(HEAPF64.buffer, vptr, np);
+                            for (var pi=0; pi<S.params.length; pi++) p[S.params[pi]] = pv[pi];
+                        }
+                        S.fn(lo, hi, c, p);
+                    }, sid, blobC, (int)b, (int)e, cnt, bptr, nb, vptr, np);
+                    // clang-format on
+                });
+            }
+        };
+        return static_cast<int>(
+            schedule_.add_dynamic(std::move(name), std::move(access), std::move(run)));
+    }
+
+    // Run the schedule once. First snapshot every parallel system's params object
+    // into its shared buffer (here, on the main thread) so the worker lanes read a
+    // stable copy. Under -pthread the schedule runs on the resident pool (data
+    // systems fan out); otherwise the 1-lane pool runs everything serially.
+    void tick() {
+        for (auto& ps : parallel_) {
+            if (ps.params.isUndefined() || ps.params.isNull())
+                continue;
+            for (std::size_t i = 0; i < ps.names.size(); ++i)
+                (*ps.values)[i] = ps.params[ps.names[i]].as<double>();
+        }
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        schedule_.run(world_, *pool_);
+#else
+        schedule_.run(world_);
+#endif
+    }
 
     // Number of sequential waves -- proof the scheduler leveled the systems by
     // their declared access.
     int waveCount() { return static_cast<int>(schedule_.level_count()); }
+
+    // Worker-lane count of the resident pool (1 = single-threaded build / no pool).
+    int laneCount() {
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        return pool_ ? static_cast<int>(pool_->lanes()) : 1;
+#else
+        return 1;
+#endif
+    }
 
 private:
     std::vector<std::byte> pack(ComponentId id, val values) {
@@ -183,8 +356,20 @@ private:
         return Entity {e["index"].as<unsigned>(), e["generation"].as<unsigned>()};
     }
 
+    // Per parallel system: the JS params object (read each tick), its key names,
+    // and the shared f64 buffer the snapshot lands in (and the kernel reads as p).
+    struct ParallelSys {
+        val params;
+        std::vector<std::string> names;
+        std::shared_ptr<std::vector<double>> values;
+    };
+    std::vector<ParallelSys> parallel_;
+
     World world_;
     Schedule schedule_;
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    std::unique_ptr<WorkerPool> pool_;
+#endif
 };
 
 EMSCRIPTEN_BINDINGS(ecs_dynamic) {
@@ -202,8 +387,10 @@ EMSCRIPTEN_BINDINGS(ecs_dynamic) {
         .function("entityCount", &DynamicWorld::entityCount)
         .function("fieldView", &DynamicWorld::fieldView)
         .function("defineSystem", &DynamicWorld::defineSystem)
+        .function("defineParallelSystem", &DynamicWorld::defineParallelSystem)
         .function("spawn", &DynamicWorld::spawn)
         .function("destroy", &DynamicWorld::destroy)
         .function("tick", &DynamicWorld::tick)
-        .function("waveCount", &DynamicWorld::waveCount);
+        .function("waveCount", &DynamicWorld::waveCount)
+        .function("laneCount", &DynamicWorld::laneCount);
 }
