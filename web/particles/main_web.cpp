@@ -20,6 +20,7 @@
 #include "simulation.hpp"
 
 #include "../dynamic/js_system.hpp"
+#include "../gl_util.hpp"
 
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
@@ -35,76 +36,7 @@
 
 using namespace ecs;
 
-// GLES 3.0 / WebGL2 ports of examples/particles/shaders/particle.{vert,frag}:
-// `#version 300 es`, and the fragment shader needs an explicit float precision.
-// gl_PointSize is honoured implicitly in GLES (no GL_PROGRAM_POINT_SIZE enable).
-static char const* const kVertSrc = R"(#version 300 es
-layout(location = 0) in vec2 aPos;
-layout(location = 1) in vec4 aColor;
-out vec4 vColor;
-void main() {
-    vColor = aColor;
-    gl_Position = vec4(aPos, 0.0, 1.0);
-    gl_PointSize = mix(2.0, 11.0, aColor.a); // bright sparks shrink as they die
-}
-)";
-
-static char const* const kFragSrc = R"(#version 300 es
-precision highp float;
-in vec4 vColor;
-out vec4 FragColor;
-void main() {
-    vec2 d = gl_PointCoord - vec2(0.5);
-    float r = length(d) * 2.0;            // 0 at center .. 1 at edge
-    float falloff = 1.0 - smoothstep(0.0, 1.0, r);
-
-    float life = vColor.a;                // 1 when young .. 0 when old (age fade)
-    vec3 col = vColor.rgb * vec3(1.0, mix(0.45, 1.0, life), mix(0.12, 1.0, life));
-    col = mix(col, vec3(1.0), falloff * falloff * life); // white-hot young core
-    FragColor = vec4(col, life * falloff);
-}
-)";
-
 namespace {
-
-GLuint compile_shader(GLenum type, char const* src) {
-    GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
-    glCompileShader(s);
-    GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetShaderInfoLog(s, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "shader compile error: %s\n", log);
-        glDeleteShader(s);
-        return 0;
-    }
-    return s;
-}
-
-GLuint link_program(char const* vs_src, char const* fs_src) {
-    GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src);
-    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src);
-    if (!vs || !fs)
-        return 0;
-    GLuint p = glCreateProgram();
-    glAttachShader(p, vs);
-    glAttachShader(p, fs);
-    glLinkProgram(p);
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-    GLint ok = 0;
-    glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "program link error: %s\n", log);
-        glDeleteProgram(p);
-        return 0;
-    }
-    return p;
-}
 
 // All sim + render state, owned for the lifetime of the main loop. A single
 // instance is kept in a static so the C-style main-loop callback can reach it.
@@ -324,7 +256,7 @@ int main() {
     glfwMakeContextCurrent(app.window);
     std::printf("GL %s | %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
-    app.program = link_program(kVertSrc, kFragSrc);
+    app.program = web::link_program_files("/shaders/particle.vert", "/shaders/particle.frag");
     if (!app.program)
         return 1;
 

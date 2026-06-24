@@ -57,10 +57,10 @@ case "${1:-build}" in
         # COOP/COEP server so the multi-threaded pages' SharedArrayBuffer works;
         # the single-threaded pages are unaffected by the headers.
         echo ">> serving $DIR (cross-origin isolated)"
-        echo ">>   native, single-threaded : http://localhost:$PORT/"
-        echo ">>   native, multi-threaded   : http://localhost:$PORT/index-mt.html"
-        echo ">>   JS-defined               : http://localhost:$PORT/index-js.html"
-        echo ">>   JS-defined, parallel      : http://localhost:$PORT/index-js-mt.html"
+        echo ">>   native, single-threaded: http://localhost:$PORT/"
+        echo ">>   native, multi-threaded : http://localhost:$PORT/index-mt.html"
+        echo ">>   JS-defined             : http://localhost:$PORT/index-js.html"
+        echo ">>   JS-defined, parallel   : http://localhost:$PORT/index-js-mt.html"
         echo ">> Ctrl-C to stop"
         exec python3 "$REPO/web/coi-server.py" "$PORT" "$DIR"
         ;;

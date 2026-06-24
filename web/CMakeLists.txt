@@ -3,6 +3,15 @@
 # CMakeLists guard), so a native build never descends here.
 # ---------------------------------------------------------------------------
 
+# Static web assets (HTML/CSS/JS) live in web/public/ and are copied wholesale to
+# the build output dir so it is directly serveable. The GL demos embed the shared
+# GLSL from web/shaders/ into the wasm (--embed-file), read at runtime via gl_util.
+add_custom_target(web_public ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/public ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Copying static web assets to the serve dir")
+set(WEB_SHADERS_EMBED "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/shaders@/shaders")
+
 # Phase 0 smoke test: proves the ECS core compiles and runs under Emscripten with
 # the portable reflection backend, single-threaded. Emits a Node-runnable loader.
 #   run: node build-wasm/web/ecs_smoke.js
@@ -38,6 +47,7 @@ target_link_libraries(particles_web PRIVATE ecs::ecs)
 # EXIT_RUNTIME -- this is a main-loop app that never returns from main().
 target_link_options(particles_web PRIVATE
         "-lembind" # JS-defined systems over the native components (Phase C)
+        ${WEB_SHADERS_EMBED}
         "-sENVIRONMENT=web"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"
@@ -46,14 +56,6 @@ target_link_options(particles_web PRIVATE
         "-sALLOW_MEMORY_GROWTH=1"
         "-O2")
 set_target_properties(particles_web PROPERTIES OUTPUT_NAME particles SUFFIX ".js")
-
-# Drop the static HTML shell next to the generated particles.js so the build
-# output directory is directly serveable.
-add_custom_command(TARGET particles_web POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/particles/index.html
-                $<TARGET_FILE_DIR:particles_web>/index.html
-        COMMENT "Copying particle demo HTML shell")
 
 # ---------------------------------------------------------------------------
 # Phase 3: experimental multi-threaded build. The SAME sources, compiled with
@@ -77,6 +79,7 @@ target_compile_options(particles_web_mt PRIVATE -pthread)
 target_link_options(particles_web_mt PRIVATE
         -pthread
         "-lembind" # JS-defined systems over the native components (Phase C)
+        ${WEB_SHADERS_EMBED}
         "-sENVIRONMENT=web,worker"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"
@@ -86,12 +89,6 @@ target_link_options(particles_web_mt PRIVATE
         "-sINITIAL_MEMORY=134217728"
         "-O2")
 set_target_properties(particles_web_mt PROPERTIES OUTPUT_NAME particles-mt SUFFIX ".js")
-
-add_custom_command(TARGET particles_web_mt POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/particles/index-mt.html
-                $<TARGET_FILE_DIR:particles_web_mt>/index-mt.html
-        COMMENT "Copying multi-threaded demo HTML shell")
 
 # ---------------------------------------------------------------------------
 # Phase D: a *fully JavaScript-defined* particle fountain. The C++ is only the
@@ -105,6 +102,7 @@ add_executable(particles_js
 target_link_libraries(particles_js PRIVATE ecs::ecs)
 target_link_options(particles_js PRIVATE
         "-lembind"
+        ${WEB_SHADERS_EMBED}
         "-sENVIRONMENT=web"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"
@@ -113,12 +111,6 @@ target_link_options(particles_js PRIVATE
         "-sALLOW_MEMORY_GROWTH=1"
         "-O2")
 set_target_properties(particles_js PROPERTIES OUTPUT_NAME particles-js SUFFIX ".js")
-
-add_custom_command(TARGET particles_js POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/particles_js/index-js.html
-                $<TARGET_FILE_DIR:particles_js>/index-js.html
-        COMMENT "Copying JS-defined particle demo HTML shell")
 
 # Multi-threaded fold-in: the same JS-defined fountain, but its hot data systems
 # use defineParallelSystem -- gravity/turbulence/integrate fan out across Web
@@ -132,6 +124,7 @@ target_compile_options(particles_js_mt PRIVATE -pthread)
 target_link_options(particles_js_mt PRIVATE
         -pthread
         "-lembind"
+        ${WEB_SHADERS_EMBED}
         "-sENVIRONMENT=web,worker"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"
@@ -141,12 +134,6 @@ target_link_options(particles_js_mt PRIVATE
         "-sINITIAL_MEMORY=134217728"
         "-O2")
 set_target_properties(particles_js_mt PROPERTIES OUTPUT_NAME particles-js-mt SUFFIX ".js")
-
-add_custom_command(TARGET particles_js_mt POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_CURRENT_SOURCE_DIR}/particles_js/index-js-mt.html
-                $<TARGET_FILE_DIR:particles_js_mt>/index-js-mt.html
-        COMMENT "Copying multi-threaded JS-defined particle demo HTML shell")
 
 # ---------------------------------------------------------------------------
 # Stretch spike: parallel JS kernels (worker-eval'd). A -pthread node target that

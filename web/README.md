@@ -53,6 +53,17 @@ web/build-wasm.sh build particles_js_mt
 Targets: `ecs_smoke`, `particles_web`, `particles_web_mt`, `ecs_dynamic`,
 `ecs_dynamic_mt`, `particles_js`, `particles_js_mt`, `ecs_parallel_smoke`.
 
+## Source layout
+
+- `web/public/` — static assets served as-is: the four HTML pages, shared
+  `demo.css`, shared JS (`controls.js` for the C++ demos, `fountain.js` for the JS
+  demos), and the thin per-page bootstraps (`app-*.js`). Copied wholesale to the
+  build dir.
+- `web/shaders/` — GLSL (`particle.vert`/`.frag`), `--embed-file`'d into the GL
+  wasm and read at runtime via `web/gl_util.hpp` (shared shader compile/link).
+- `web/particles/`, `web/particles_js/` — the C++ render hosts; `web/dynamic/` —
+  the embind runtime + node smokes.
+
 ## CLion
 
 ### Code intelligence for the web targets (resolve, no false errors)

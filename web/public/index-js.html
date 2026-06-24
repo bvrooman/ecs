@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ecs — particle fountain (entities, components & systems in JavaScript)</title>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <h1>ecs particle fountain <span>· wasm · sim defined entirely in JavaScript</span></h1>
+
+  <div class="stage">
+    <canvas id="canvas" width="760" height="760"></canvas>
+    <div class="hud">
+      <div><span class="k">fps </span><span class="fps" id="fps">--</span></div>
+      <div><span class="k">particles </span><span class="count" id="count">0</span></div>
+    </div>
+  </div>
+
+  <footer>The C++ side is only the ECS runtime + a WebGL draw. Components
+  (<b>Position, Velocity, Color, Age</b>) and systems (<b>emit, gravity, integrate,
+  age+reap</b>) are defined in JavaScript (app-js.js) and stepped by the engine's scheduler.</footer>
+
+  <script src="fountain.js"></script>
+  <script src="app-js.js"></script>
+  <script src="particles-js.js"></script>
+</body>
+</html>
