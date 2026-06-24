@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ecs — particle fountain (WebAssembly)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%;
+    background: #07070c;
+    color: #d8d8e0;
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  body {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; box-sizing: border-box;
+  }
+  h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: .04em; color: #f0c789; }
+  h1 span { color: #6a6a78; }
+  .stage { position: relative; }
+  canvas {
+    display: block;
+    width: 900px; height: 900px; max-width: 90vmin; max-height: 90vmin;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px #1b1b26, 0 18px 60px -20px #000;
+    background: #05050a;
+  }
+  .hud {
+    position: absolute; top: 14px; left: 16px;
+    line-height: 1.5;
+    pointer-events: none; text-shadow: 0 1px 2px #000;
+  }
+  .hud .fps   { color: #ffffff; }
+  .hud .count { color: #f0c789; }
+  .hud .k     { color: #6a6a78; }
+  footer { color: #5a5a68; font-size: 12px; }
+  footer b { color: #8a8a98; font-weight: 500; }
+</style>
+</head>
+<body>
+  <h1>ecs particle fountain <span>· wasm · single-threaded</span></h1>
+  <div class="stage">
+    <canvas id="canvas" width="900" height="900" tabindex="-1"
+            oncontextmenu="event.preventDefault()"></canvas>
+    <div class="hud">
+      <div><span class="k">fps </span><span class="fps" id="fps">--</span></div>
+      <div><span class="k">particles </span><span class="count" id="count">0</span></div>
+    </div>
+  </div>
+  <footer>ECS schedule (<b>11 systems</b>, 5 waves) stepping at 120&nbsp;Hz, drawn as additive WebGL2 point sprites.</footer>
+
+  <script>
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      print:    function (t) { console.log(t); },
+      printErr: function (t) { console.error(t); },
+    };
+  </script>
+  <script src="particles.js"></script>
+</body>
+</html>

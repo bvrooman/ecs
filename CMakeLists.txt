@@ -16,6 +16,14 @@ option(ECS_BUILD_TOOLS "Build the tools" ON)
 option(ECS_REFLECT_NAMES "Register component/resource type names via reflection (tooling/diagnostics)" OFF)
 option(ECS_DEV_TOOLING "Development profile: reflected names + dump example schedules to SVG" OFF)
 
+# Emscripten's Clang has no P2996 static reflection (-freflection / <meta>), so
+# force the portable structured-bindings backend there regardless of the cached
+# value -- the WASM build works without the caller having to remember the flag.
+if (EMSCRIPTEN AND ECS_USE_P2996)
+    message(STATUS "ecs: Emscripten toolchain -- forcing ECS_USE_P2996=OFF (portable reflection)")
+    set(ECS_USE_P2996 OFF CACHE BOOL "Use C++26 P2996 static reflection" FORCE)
+endif ()
+
 if (ECS_USE_P2996)
     set(CMAKE_CXX_STANDARD 26)
 else ()
@@ -60,9 +68,16 @@ target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 # ---------------------------------------------------------------------------
 # Threads -- the WorkerPool (include/ecs/parallel/worker_pool.hpp) runs the schedule on
 # resident std::thread workers. No external dependencies otherwise.
+#
+# Under an Emscripten (WASM) toolchain we build single-threaded: a 1-lane
+# WorkerPool spawns no std::thread, so the schedule runs inline on the sole wasm
+# thread. Linking Threads::Threads there would inject -pthread and force a
+# SharedArrayBuffer build (needs cross-origin isolation), so skip it.
 # ---------------------------------------------------------------------------
-find_package(Threads REQUIRED)
-target_link_libraries(ecs INTERFACE Threads::Threads)
+if (NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+    target_link_libraries(ecs INTERFACE Threads::Threads)
+endif ()
 
 # ---------------------------------------------------------------------------
 # Tests & examples
@@ -82,4 +97,10 @@ endif ()
 
 if (ECS_BUILD_TOOLS)
     add_subdirectory(tools)
+endif ()
+
+# WebAssembly targets (Phase 0 smoke test; later the browser demo). Only under an
+# Emscripten toolchain -- native builds skip this entirely.
+if (EMSCRIPTEN)
+    add_subdirectory(web)
 endif ()

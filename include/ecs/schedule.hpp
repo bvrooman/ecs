@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include "detail/move_only_function.hpp"
 #include "query.hpp"
 #include "world.hpp"
 #include <algorithm>
@@ -157,7 +158,7 @@ public:
         // move_only_function (not function) so a system may capture a move-only
         // value (e.g. a unique_ptr or a move_only_function of its own). The
         // WorkerPool* is null except under run(World&, WorkerPool&).
-        std::move_only_function<void(World&, Commands&, WorkerPool*)> run;
+        ecs::detail::move_only_function<void(World&, Commands&, WorkerPool*)> run;
         int phase         = 0;
         std::size_t level = 0;
         bool once         = false;

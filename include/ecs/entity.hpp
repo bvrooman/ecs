@@ -40,6 +40,11 @@ inline ComponentId const component_id =
 template <>
 struct std::hash<ecs::Entity> {
     auto operator()(ecs::Entity const e) const noexcept {
-        return (static_cast<std::size_t>(e.generation) << 32) ^ e.index;
+        // Pack into a 64-bit key first: std::size_t is 32-bit on ILP32 targets
+        // (e.g. wasm32), where `generation << 32` would be undefined and drop the
+        // generation. Narrow to size_t only for the bucket index.
+        std::uint64_t const key =
+            (static_cast<std::uint64_t>(e.generation) << 32) ^ e.index;
+        return static_cast<std::size_t>(key);
     }
 };

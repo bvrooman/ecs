@@ -66,12 +66,15 @@ struct Column final : IColumn {
 using Signature = std::vector<ComponentId>;
 
 inline std::size_t hash_signature(Signature const& s) noexcept {
-    std::size_t h = 1469598103934665603ull; // FNV-1a
+    // Accumulate in an explicit 64-bit type: the FNV-1a offset basis and prime
+    // are 64-bit, which would truncate into a 32-bit std::size_t on ILP32 targets
+    // (e.g. wasm32). Narrow to size_t only for the returned bucket index.
+    std::uint64_t h = 1469598103934665603ull; // FNV-1a
     for (auto const id : s) {
         h ^= id;
         h *= 1099511628211ull;
     }
-    return h;
+    return static_cast<std::size_t>(h);
 }
 
 struct Archetype {

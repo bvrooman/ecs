@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "../detail/atomic_shared_ptr.hpp"
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -95,8 +96,8 @@ public:
     Reader reader() const { return Reader(*this); }
 
 private:
-    std::shared_ptr<T> writing_;                   // producer-owned, being filled
-    std::atomic<std::shared_ptr<T const>> latest_; // last published (immutable)
+    std::shared_ptr<T> writing_;                          // producer-owned, being filled
+    ecs::detail::atomic_shared_ptr<T const> latest_;      // last published (immutable)
 };
 
 } // namespace ecs::sync
