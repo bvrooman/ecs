@@ -37,6 +37,7 @@ target_link_libraries(particles_web PRIVATE ecs::ecs)
 # so no -pthread; ALLOW_MEMORY_GROWTH for the growing particle buffers. No
 # EXIT_RUNTIME -- this is a main-loop app that never returns from main().
 target_link_options(particles_web PRIVATE
+        "-lembind" # JS-defined systems over the native components (Phase C)
         "-sENVIRONMENT=web"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"
@@ -75,6 +76,7 @@ target_link_libraries(particles_web_mt PRIVATE ecs::ecs)
 target_compile_options(particles_web_mt PRIVATE -pthread)
 target_link_options(particles_web_mt PRIVATE
         -pthread
+        "-lembind" # JS-defined systems over the native components (Phase C)
         "-sENVIRONMENT=web,worker"
         "-sUSE_GLFW=3"
         "-sMIN_WEBGL_VERSION=2"

@@ -15,12 +15,16 @@
 // GL natively, is published to the surrounding page's DOM instead.
 
 #include "ecs/ecs.hpp"
+#include "ecs/dynamic/native.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
+
+#include "../dynamic/js_system.hpp"
 
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
 #include <emscripten.h>
+#include <emscripten/bind.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -281,6 +285,13 @@ int main() {
                 app.schedule.size(),
                 app.schedule.level_count());
 
+    // Expose the native particle components to the runtime layer so a JS-defined
+    // system can read/write them by name (Phase C).
+    dynamic::register_native<Position>("Position", {"x", "y"});
+    dynamic::register_native<Velocity>("Velocity", {"x", "y"});
+    dynamic::register_native<Color>("Color", {"r", "g", "b"});
+    dynamic::register_native<Age>("Age", {"t", "max"});
+
 #if defined(__EMSCRIPTEN_PTHREADS__)
     // Multi-threaded build: lane 0 is this (main) thread; lanes 1..N-1 are
     // resident Web Worker threads sharing memory via SharedArrayBuffer, and the
@@ -331,6 +342,38 @@ int main() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE); // additive: overlapping sparks glow
 
+    // Now that the world + schedule exist (g_app is set), let the page register
+    // any JS-defined systems; they join the wave plan and run each tick.
+    EM_ASM({
+        if (Module.onEcsReady)
+            Module.onEcsReady();
+    });
+
     emscripten_set_main_loop(frame, 0, 1); // 0 = drive from requestAnimationFrame
     return 0;
+}
+
+// --- JS-system interop (Phase C PoC) --------------------------------------
+// Exposed to the page via embind. ecs_components() hands JS the native component
+// ids; ecs_define_system() registers a system, authored in JavaScript, into the
+// live schedule -- where it runs each tick over the native particle components,
+// leveled against the C++ systems by its declared access.
+emscripten::val ecs_components() {
+    using emscripten::val;
+    val o = val::object();
+    o.set("Position", static_cast<int>(component_id<Position>));
+    o.set("Velocity", static_cast<int>(component_id<Velocity>));
+    o.set("Color", static_cast<int>(component_id<Color>));
+    o.set("Age", static_cast<int>(component_id<Age>));
+    return o;
+}
+
+void ecs_define_system(std::string name, emscripten::val spec, emscripten::val kernel) {
+    if (g_app)
+        dynamic::web::add_js_system(g_app->schedule, std::move(name), spec, kernel);
+}
+
+EMSCRIPTEN_BINDINGS(particles_js) {
+    emscripten::function("ecs_components", &ecs_components);
+    emscripten::function("ecs_define_system", &ecs_define_system);
 }
