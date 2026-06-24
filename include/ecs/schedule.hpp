@@ -183,6 +183,30 @@ public:
         return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
     }
 
+    // Register a system whose access is *declared* (a runtime SystemAccess)
+    // rather than derived from C++ parameter types -- the entry point for a
+    // JS-defined system. `run` is the type-erased body (typically a runtime query
+    // that dispatches per chunk) with the usual (World&, Commands&, WorkerPool*)
+    // signature. It conflicts and levels against every other system by `access`
+    // exactly like a native one, so JS and C++ systems share one wave plan.
+    template <class Run>
+    SystemId add_dynamic(std::string name,
+                         SystemAccess access,
+                         Run&& run,
+                         int phase = 0,
+                         bool once  = false) {
+        System sys;
+        auto const id = sys.id = ++next_id_;
+        sys.name      = std::move(name);
+        sys.access    = std::move(access);
+        sys.phase     = phase;
+        sys.once      = once;
+        sys.run       = std::forward<Run>(run);
+        systems_.push_back(std::move(sys));
+        dirty_ = true;
+        return id;
+    }
+
     // Unschedule a system by handle. Returns true if it was present.
     bool remove(SystemId id) {
         auto const n =

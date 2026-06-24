@@ -11,14 +11,17 @@
 #include "ecs/dynamic/dynamic_column.hpp"
 #include "ecs/dynamic/registry.hpp"
 #include "ecs/dynamic/world_ops.hpp"
+#include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -58,6 +61,21 @@ double read_scalar(std::byte const* src, FieldType t) {
     case FieldType::u32: { std::uint32_t u; std::memcpy(&u, src, 4); return u; }
     }
     return 0;
+}
+
+// A zero-copy JS typed-array aliasing `count` elements of type `t` at `base`.
+val make_view(FieldType t, void* base, std::size_t count) {
+    switch (t) {
+    case FieldType::f32:
+        return val(emscripten::typed_memory_view(count, reinterpret_cast<float*>(base)));
+    case FieldType::f64:
+        return val(emscripten::typed_memory_view(count, reinterpret_cast<double*>(base)));
+    case FieldType::i32:
+        return val(emscripten::typed_memory_view(count, reinterpret_cast<std::int32_t*>(base)));
+    case FieldType::u32:
+        return val(emscripten::typed_memory_view(count, reinterpret_cast<std::uint32_t*>(base)));
+    }
+    return val::null();
 }
 
 } // namespace
@@ -117,18 +135,65 @@ public:
             return val::null();
         auto const count = column->size();
         void* base       = column->field_base(static_cast<std::size_t>(fieldIndex));
-        switch (column->desc().fields[fieldIndex].type) {
-        case FieldType::f32:
-            return val(emscripten::typed_memory_view(count, reinterpret_cast<float*>(base)));
-        case FieldType::f64:
-            return val(emscripten::typed_memory_view(count, reinterpret_cast<double*>(base)));
-        case FieldType::i32:
-            return val(emscripten::typed_memory_view(count, reinterpret_cast<std::int32_t*>(base)));
-        case FieldType::u32:
-            return val(emscripten::typed_memory_view(count, reinterpret_cast<std::uint32_t*>(base)));
-        }
-        return val::null();
+        return make_view(column->desc().fields[fieldIndex].type, base, count);
     }
+
+    // Register a JS-defined system. `spec` declares its component access --
+    // { write?: id[], read?: id[] } -- which the scheduler uses to level it
+    // against every other system. `kernel(count, views)` is invoked once per
+    // matching archetype with views[componentName][fieldName] = a zero-copy
+    // typed array over that field's contiguous storage (write-through mutates the
+    // world). Runs on the main thread (worker lanes are separate JS contexts).
+    int defineSystem(std::string name, val spec, val kernel) {
+        SystemAccess access;
+        std::vector<ComponentId> query;
+        auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+            val arr = spec[key];
+            if (arr.isUndefined() || arr.isNull())
+                return;
+            unsigned const n = arr["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                auto const id = static_cast<ComponentId>(arr[i].as<unsigned>());
+                into.push_back(id);
+                query.push_back(id);
+            }
+        };
+        collect("write", access.writes);
+        collect("read", access.reads);
+        std::ranges::sort(query);
+        query.erase(std::ranges::unique(query).begin(), query.end()); // also sorted -> a Signature
+
+        auto run = [kernel, query](World& w, Commands&, WorkerPool*) {
+            Signature const required(query.begin(), query.end());
+            for (auto const ai : w.matching_archetypes(required)) {
+                auto& arch       = *w.archetypes()[ai];
+                auto const count = arch.size();
+                if (count == 0)
+                    continue;
+                val views = val::object();
+                for (auto const cid : query) {
+                    auto const& d = registry().desc(cid);
+                    auto& col     = static_cast<DynamicColumn&>(*arch.columns.at(cid));
+                    val fields    = val::object();
+                    for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
+                        fields.set(d.fields[fi].name,
+                                   make_view(d.fields[fi].type, col.field_base(fi), count));
+                    views.set(d.name, fields);
+                }
+                kernel(static_cast<unsigned>(count), views);
+            }
+        };
+        return static_cast<int>(
+            schedule_.add_dynamic(std::move(name), std::move(access), std::move(run)));
+    }
+
+    // Run the schedule once (inline, single-threaded): every JS system fires in
+    // wave order, reading/writing the world through its typed-array views.
+    void tick() { schedule_.run(world_); }
+
+    // Number of sequential waves -- proof the scheduler leveled the systems by
+    // their declared access.
+    int waveCount() { return static_cast<int>(schedule_.level_count()); }
 
 private:
     std::vector<std::byte> pack(ComponentId id, val values) {
@@ -151,6 +216,7 @@ private:
     }
 
     World world_;
+    Schedule schedule_;
 };
 
 EMSCRIPTEN_BINDINGS(ecs_dynamic) {
@@ -166,5 +232,8 @@ EMSCRIPTEN_BINDINGS(ecs_dynamic) {
         .function("removeComponent", &DynamicWorld::removeComponent)
         .function("getComponent", &DynamicWorld::getComponent)
         .function("entityCount", &DynamicWorld::entityCount)
-        .function("fieldView", &DynamicWorld::fieldView);
+        .function("fieldView", &DynamicWorld::fieldView)
+        .function("defineSystem", &DynamicWorld::defineSystem)
+        .function("tick", &DynamicWorld::tick)
+        .function("waveCount", &DynamicWorld::waveCount);
 }

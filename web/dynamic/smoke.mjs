@@ -69,5 +69,49 @@ check(w2.entityCount() === N - 1, `entityCount after destroy == ${N - 1} (got ${
 check(w2.getComponent(ents[0], Pos)[0] === 0, 'survivor es[0] keeps its value');
 check(w2.getComponent(ents[N - 1], Pos)[0] === (N - 1) * 10, 'swap-relocated survivor keeps its value');
 
+// --- Phase B: systems defined in JavaScript ---------------------------------
+console.log('--- JS-defined systems ---');
+const w3 = new M.DynamicWorld(); // reuses the globally-defined Position/Velocity
+const movers = [];
+for (let i = 0; i < 4; i++) {
+  const en = w3.createEntity();
+  w3.addComponent(en, Pos, [0, 0]);
+  w3.addComponent(en, Vel, [3, 0]);
+  movers.push(en);
+}
+const fixed = w3.createEntity();    // Position only -> the integrate query must skip it
+w3.addComponent(fixed, Pos, [0, 0]);
+
+// gravity writes Velocity; integrate reads Velocity and writes Position. The
+// shared Velocity access makes the scheduler run integrate *after* gravity.
+// (dt = 1, g = -2 -> integer arithmetic, exact in f32.)
+w3.defineSystem('gravity', { write: [Vel] }, (n, c) => {
+  const vy = c.Velocity.y;
+  for (let i = 0; i < n; i++) vy[i] += -2;
+});
+w3.defineSystem('integrate', { write: [Pos], read: [Vel] }, (n, c) => {
+  const px = c.Position.x, py = c.Position.y, vx = c.Velocity.x, vy = c.Velocity.y;
+  for (let i = 0; i < n; i++) { px[i] += vx[i]; py[i] += vy[i]; }
+});
+
+check(w3.waveCount() === 2, `scheduler leveled the systems into 2 waves (got ${w3.waveCount()})`);
+
+w3.tick();
+const tick1Ok = movers.every((e) => {
+  const p = w3.getComponent(e, Pos), v = w3.getComponent(e, Vel);
+  return p[0] === 3 && p[1] === -2 && v[0] === 3 && v[1] === -2;
+});
+check(tick1Ok, 'after 1 tick Pos=[3,-2], Vel=[3,-2] (integrate saw post-gravity velocity)');
+
+w3.tick();
+const tick2Ok = movers.every((e) => {
+  const p = w3.getComponent(e, Pos), v = w3.getComponent(e, Vel);
+  return p[0] === 6 && p[1] === -6 && v[0] === 3 && v[1] === -4;
+});
+check(tick2Ok, 'after 2 ticks Pos=[6,-6], Vel=[3,-4]');
+
+const fp = w3.getComponent(fixed, Pos);
+check(fp[0] === 0 && fp[1] === 0, 'Position-only entity skipped by the {Position,Velocity} query');
+
 console.log(`${checks - fails}/${checks} checks passed`);
 process.exit(fails === 0 ? 0 : 1);
