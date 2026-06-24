@@ -30,6 +30,22 @@
         "ECS_DEV_TOOLING": "OFF",
         "ECS_USE_P2996": "ON"
       }
+    },
+    {
+      "name": "wasm-config",
+      "displayName": "WASM (Emscripten)",
+      "description": "WebAssembly build. The toolchain file is a path inside the emscripten/emsdk container, so configure either via web/build-wasm.sh or, in CLion, with a Docker toolchain on this image (see web/README.md). Uses the portable reflection backend.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-wasm",
+      "toolchainFile": "/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ECS_USE_P2996": "OFF",
+        "ECS_BUILD_TESTS": "OFF",
+        "ECS_BUILD_EXAMPLES": "OFF",
+        "ECS_BUILD_BENCHMARKS": "OFF",
+        "ECS_BUILD_TOOLS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -42,6 +58,11 @@
       "name": "release-build",
       "displayName": "Release Build",
       "configurePreset": "release-config"
+    },
+    {
+      "name": "wasm-build",
+      "displayName": "WASM Build (all targets)",
+      "configurePreset": "wasm-config"
     }
   ]
 }

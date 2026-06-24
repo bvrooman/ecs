@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Build the WebAssembly targets inside the official emscripten/emsdk container,
-# using it as a self-contained, reproducible compiler (nothing is installed on
-# the host). Run from anywhere:
+# using it as a self-contained, reproducible compiler (nothing installed on the
+# host). It drives CMake through the `wasm-config` preset (CMakePresets.json), so
+# the exact configuration is reusable from CLion too -- with a Docker toolchain on
+# the same image, the targets build natively from the IDE. See web/README.md.
 #
-#   web/build-wasm.sh            # configure + build (ecs_smoke + particles)
-#   web/build-wasm.sh run        # ... then run the headless smoke test in node
-#   web/build-wasm.sh serve      # serve the built particle demo over http
+#   web/build-wasm.sh                  # configure + build every target
+#   web/build-wasm.sh build TARGET     # ... only TARGET (e.g. particles_js_mt)
+#   web/build-wasm.sh run [SMOKE]      # build, then run a node smoke:
+#                                      #   core (default) | dynamic | parallel
+#   web/build-wasm.sh serve            # serve the demos over http (COOP/COEP)
 #
-# Override the toolchain image (e.g. to track latest), or the serve port:
+# Override the toolchain image or the serve port:
 #   EMSDK_IMAGE=emscripten/emsdk:latest web/build-wasm.sh
 #   PORT=9000 web/build-wasm.sh serve
 set -euo pipefail
 
-# Pinned for reproducibility (emscripten 6.0.1: libc++ LLVM 21, node 22).
 IMAGE="${EMSDK_IMAGE:-emscripten/emsdk:6.0.1}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="build-wasm"
@@ -23,38 +26,44 @@ in_container() {
 }
 
 build() {
-    echo ">> configuring + building with $IMAGE"
-    in_container "emcmake cmake -B $BUILD_DIR -S . \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DECS_USE_P2996=OFF \
-            -DECS_BUILD_TESTS=OFF -DECS_BUILD_EXAMPLES=OFF \
-            -DECS_BUILD_BENCHMARKS=OFF -DECS_BUILD_TOOLS=OFF \
-        && cmake --build $BUILD_DIR -j"
-    echo ">> built $BUILD_DIR/web/ : ecs_smoke.js, particles.js (+ .wasm), index.html"
+    local target="${1:-}"
+    local build_args="-j"
+    [[ -n "$target" ]] && build_args="--target $target -j"
+    echo ">> configuring (wasm-config preset) + building with $IMAGE"
+    in_container "cmake --preset wasm-config && cmake --build $BUILD_DIR $build_args"
 }
 
 case "${1:-build}" in
     build)
-        build
+        build "${2:-}"
+        echo ">> built $BUILD_DIR/web/"
         ;;
     run)
         build
-        echo ">> running headless smoke test under node"
-        in_container "node $BUILD_DIR/web/ecs_smoke.js"
+        case "${2:-core}" in
+            core)     smoke="web/ecs_smoke.js" ;;
+            dynamic)  smoke="web/smoke_dynamic.mjs" ;;
+            parallel) smoke="web/smoke_parallel.mjs" ;;
+            *) echo "unknown smoke '${2}' (use: core | dynamic | parallel)"; exit 1 ;;
+        esac
+        echo ">> running $smoke under node"
+        in_container "node $BUILD_DIR/$smoke"
         ;;
     serve)
         DIR="$REPO/$BUILD_DIR/web"
         [[ -f "$DIR/particles.js" ]] || { echo "nothing built yet -- run: web/build-wasm.sh"; exit 1; }
-        # COOP/COEP server so the multi-threaded page's SharedArrayBuffer works;
-        # the single-threaded page is unaffected by the headers.
+        # COOP/COEP server so the multi-threaded pages' SharedArrayBuffer works;
+        # the single-threaded pages are unaffected by the headers.
         echo ">> serving $DIR (cross-origin isolated)"
-        echo ">>   single-threaded : http://localhost:$PORT/"
-        echo ">>   multi-threaded  : http://localhost:$PORT/index-mt.html"
+        echo ">>   native, single-threaded : http://localhost:$PORT/"
+        echo ">>   native, multi-threaded   : http://localhost:$PORT/index-mt.html"
+        echo ">>   JS-defined               : http://localhost:$PORT/index-js.html"
+        echo ">>   JS-defined, parallel      : http://localhost:$PORT/index-js-mt.html"
         echo ">> Ctrl-C to stop"
         exec python3 "$REPO/web/coi-server.py" "$PORT" "$DIR"
         ;;
     *)
-        echo "usage: web/build-wasm.sh [build|run|serve]"
+        echo "usage: web/build-wasm.sh [build [TARGET] | run [core|dynamic|parallel] | serve]"
         exit 1
         ;;
 esac
