@@ -17,6 +17,7 @@
 #pragma once
 
 #include "reflection/reflect.hpp"
+#include <array>
 #include <cstddef>
 #include <span>
 #include <tuple>
@@ -114,6 +115,19 @@ public:
         return std::span(c.data(), c.size());
     }
 
+    // Runtime (non-templated) base pointer of the i-th field's contiguous buffer
+    // -- the type-erased counterpart of column<I>(), for host (JS) access where
+    // the field index is only known at run time. Dispatches i through a static
+    // table of per-field getters.
+    void* field_base(std::size_t i) noexcept {
+        static constexpr std::array<void* (*)(soa_storage&), field_count> getters =
+            []<std::size_t... I>(std::index_sequence<I...>) {
+                return std::array<void* (*)(soa_storage&), field_count> {
+                    +[](soa_storage& s) -> void* { return std::get<I>(s.columns_).data(); }...};
+            }(std::make_index_sequence<field_count> {});
+        return getters[i](*this);
+    }
+
 private:
     template <class Self, class F>
     void apply_columns(this Self&& self, F&& f) {
@@ -148,6 +162,7 @@ public:
     void set(std::size_t, T const&) noexcept {}
     auto emplace_default() { return size_++; }
     auto swap_remove(std::size_t) { return --size_; }
+    void* field_base(std::size_t) noexcept { return nullptr; } // no fields
 
 private:
     std::size_t size_ = 0;

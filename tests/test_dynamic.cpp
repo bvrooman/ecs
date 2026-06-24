@@ -2,18 +2,25 @@
 // spine -- DynamicColumn + WorldOps -- directly in C++, independent of the wasm
 // binding, so storage bugs surface natively in milliseconds.
 #include "check.hpp"
+#include "ecs/dynamic/native.hpp"
 #include "ecs/dynamic/registry.hpp"
 #include "ecs/dynamic/world_ops.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 using namespace ecs;
 using namespace ecs::dynamic;
 
 // A packed {x:f32, y:f32} blob -- the interchange format for a 2-float component.
 struct F2 {
+    float x, y;
+};
+
+// A native (compile-time, reflected) component -- the Phase C subject.
+struct NPos {
     float x, y;
 };
 
@@ -218,6 +225,43 @@ static void dynamic_system_filters_by_archetype() {
     CHECK(fp.x == 0.f);  // Pos-only entity untouched (didn't match the query)
 }
 
+// Phase C: a native (C++) component exposed to the runtime layer. register_native
+// records its schema under component_id<NPos>; a runtime (Phase-B-style) system
+// then reads & writes its SoA field through the type-erased IColumn::field_base,
+// exactly as a JS system would. Entities are spawned natively (into Column<NPos>).
+static void native_component_runtime_access() {
+    auto const id = register_native<NPos>("NPos", {"x", "y"});
+    CHECK(id == component_id<NPos>);
+    CHECK(registry().desc(id).fields.size() == 2);
+    CHECK(registry().desc(id).fields[0].type == FieldType::f32);
+    CHECK(registry().desc(id).fields[0].name == "x");
+
+    World w;
+    Schedule sched;
+    // Spawn the native entities in an earlier phase, so they exist (spawn
+    // commands flush at the phase barrier) before the runtime system queries them.
+    sched.add_once(
+        "spawn",
+        [](World&, Commands& cmd) {
+            for (int i = 0; i < 4; ++i)
+                cmd.spawn(NPos {float(i), 0.f});
+        },
+        phase<-1> {});
+    SystemAccess acc;
+    acc.writes = {component_id<NPos>};
+    sched.add_dynamic("scale", acc, each_chunk({component_id<NPos>}, [](std::size_t n, Archetype& a) {
+        // Field 0 of a *native* column, reached through the runtime IColumn vtable.
+        auto* xs = static_cast<float*>(a.columns.at(component_id<NPos>)->field_base(0));
+        for (std::size_t i = 0; i < n; ++i)
+            xs[i] *= 10.f;
+    }));
+    sched.run(w);
+
+    CHECK(w.size() == 4);
+    for (int i = 0; i < 4; ++i)
+        CHECK((w.get<NPos>(Entity {std::uint32_t(i), 0}).x == float(i) * 10.f));
+}
+
 int main() {
     RUN_SUITE(round_trip);
     RUN_SUITE(archetype_transitions);
@@ -225,5 +269,6 @@ int main() {
     RUN_SUITE(destroy_keeps_storage_consistent);
     RUN_SUITE(dynamic_systems_run_and_level);
     RUN_SUITE(dynamic_system_filters_by_archetype);
+    RUN_SUITE(native_component_runtime_access);
     return REPORT();
 }

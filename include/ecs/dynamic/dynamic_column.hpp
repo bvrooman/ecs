@@ -92,7 +92,7 @@ public:
 
     // Base of the I-th field's contiguous buffer -- what a typed-array view wraps.
     [[nodiscard]]
-    void* field_base(std::size_t field_index) {
+    void* field_base(std::size_t field_index) override {
         return fields_[field_index].data();
     }
     [[nodiscard]]

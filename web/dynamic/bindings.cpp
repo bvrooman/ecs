@@ -173,7 +173,7 @@ public:
                 val views = val::object();
                 for (auto const cid : query) {
                     auto const& d = registry().desc(cid);
-                    auto& col     = static_cast<DynamicColumn&>(*arch.columns.at(cid));
+                    auto& col     = *arch.columns.at(cid); // IColumn: native or dynamic
                     val fields    = val::object();
                     for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
                         fields.set(d.fields[fi].name,

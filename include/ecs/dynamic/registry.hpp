@@ -16,12 +16,20 @@ namespace ecs::dynamic {
 
 class Registry {
 public:
-    // Register a component schema and return its fresh id. Field offsets/stride
-    // are computed by packing the fields in declaration order.
+    // Register a component schema under a fresh id (a JS-defined component).
     ComponentId define(std::string name,
                        std::vector<std::pair<std::string, FieldType>> const& fields) {
+        return define_with_id(ecs::detail::next_component_id(), std::move(name), fields);
+    }
+
+    // Register (or replace) a schema under a *specific* id -- used to describe a
+    // native component type T under its component_id<T> (see native.hpp), so the
+    // runtime/JS layer can view native columns by name. Offsets/stride are
+    // computed by packing the fields in declaration order.
+    ComponentId define_with_id(ComponentId id, std::string name,
+                               std::vector<std::pair<std::string, FieldType>> const& fields) {
         ComponentDesc d;
-        d.id   = ecs::detail::next_component_id();
+        d.id   = id;
         d.name = std::move(name);
         std::size_t off = 0;
         for (auto const& [fname, ftype] : fields) {
@@ -30,7 +38,8 @@ public:
             off += sz;
         }
         d.stride = off;
-        return descs_.emplace(d.id, std::move(d)).first->first;
+        descs_.insert_or_assign(id, std::move(d));
+        return id;
     }
 
     [[nodiscard]]

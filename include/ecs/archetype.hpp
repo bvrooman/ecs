@@ -40,6 +40,12 @@ struct IColumn {
     virtual std::unique_ptr<IColumn> clone_empty() const = 0;
     [[nodiscard]]
     virtual std::size_t size() const = 0;
+    // Base pointer of the i-th field's contiguous (SoA) buffer. Lets a host --
+    // e.g. a JS system -- read/write a component's fields by index without
+    // knowing its C++ type; the field's element type comes from a registered
+    // descriptor (see dynamic/). Valid until the column relocates/reallocates.
+    [[nodiscard]]
+    virtual void* field_base(std::size_t i) = 0;
 };
 
 template <class T>
@@ -59,6 +65,10 @@ struct Column final : IColumn {
     [[nodiscard]]
     std::size_t size() const override {
         return store.size();
+    }
+    [[nodiscard]]
+    void* field_base(std::size_t i) override {
+        return store.field_base(i);
     }
 };
 
