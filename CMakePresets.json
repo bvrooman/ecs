@@ -14,7 +14,21 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_COMPILER": "g++-16",
-        "ECS_DEV_TOOLING": "ON"
+        "ECS_DEV_TOOLING": "ON",
+        "ECS_USE_P2996": "ON"
+      }
+    },
+    {
+      "name": "release-config",
+      "displayName": "Release Config",
+      "description": "Release build.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++-16",
+        "ECS_DEV_TOOLING": "OFF",
+        "ECS_USE_P2996": "ON"
       }
     }
   ],
@@ -23,6 +37,11 @@
       "name": "dev-build",
       "displayName": "Development Build",
       "configurePreset": "dev-config"
+    },
+    {
+      "name": "release-build",
+      "displayName": "Release Build",
+      "configurePreset": "release-config"
     }
   ]
 }
