@@ -120,6 +120,34 @@ add_custom_command(TARGET particles_js POST_BUILD
                 $<TARGET_FILE_DIR:particles_js>/index-js.html
         COMMENT "Copying JS-defined particle demo HTML shell")
 
+# Multi-threaded fold-in: the same JS-defined fountain, but its hot data systems
+# use defineParallelSystem -- gravity/turbulence/integrate fan out across Web
+# Worker lanes. Needs cross-origin isolation (COOP/COEP) to load; serve via
+# web/coi-server.py. Fixed memory keeps the shared HEAPF32.buffer stable.
+add_executable(particles_js_mt
+        dynamic/bindings.cpp
+        particles_js/host.cpp)
+target_link_libraries(particles_js_mt PRIVATE ecs::ecs)
+target_compile_options(particles_js_mt PRIVATE -pthread)
+target_link_options(particles_js_mt PRIVATE
+        -pthread
+        "-lembind"
+        "-sENVIRONMENT=web,worker"
+        "-sUSE_GLFW=3"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sFULL_ES3=1"
+        "-sPTHREAD_POOL_SIZE=8"
+        "-sINITIAL_MEMORY=134217728"
+        "-O2")
+set_target_properties(particles_js_mt PROPERTIES OUTPUT_NAME particles-js-mt SUFFIX ".js")
+
+add_custom_command(TARGET particles_js_mt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/particles_js/index-js-mt.html
+                $<TARGET_FILE_DIR:particles_js_mt>/index-js-mt.html
+        COMMENT "Copying multi-threaded JS-defined particle demo HTML shell")
+
 # ---------------------------------------------------------------------------
 # Stretch spike: parallel JS kernels (worker-eval'd). A -pthread node target that
 # dispatches an eval'd JS kernel across WorkerPool lanes over shared memory --
