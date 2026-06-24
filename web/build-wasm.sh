@@ -7,12 +7,13 @@
 #   web/build-wasm.sh run        # ... then run the headless smoke test in node
 #   web/build-wasm.sh serve      # serve the built particle demo over http
 #
-# Override the toolchain image to pin a version, or the serve port:
-#   EMSDK_IMAGE=emscripten/emsdk:4.0.16 web/build-wasm.sh
+# Override the toolchain image (e.g. to track latest), or the serve port:
+#   EMSDK_IMAGE=emscripten/emsdk:latest web/build-wasm.sh
 #   PORT=9000 web/build-wasm.sh serve
 set -euo pipefail
 
-IMAGE="${EMSDK_IMAGE:-emscripten/emsdk:latest}"
+# Pinned for reproducibility (emscripten 6.0.1: libc++ LLVM 21, node 22).
+IMAGE="${EMSDK_IMAGE:-emscripten/emsdk:6.0.1}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="build-wasm"
 PORT="${PORT:-8080}"

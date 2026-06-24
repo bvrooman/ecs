@@ -78,16 +78,17 @@ void build_particle_schedule(Schedule& schedule) {
     schedule.add("clock", [](ResMut<Clock> c) { c->t += cfg::kDt; });
 
     // emitter: spawn short-lived particles (with zeroed force fields) through
-    // Commands, using the RNG resource for spread. Serial (structural). wave 0.
-    schedule.add("emitter", [](Commands& cmd, ResMut<Rng> rng) {
+    // Commands, reading the Emitter resource (rate + nozzle) and the RNG for
+    // spread. Serial (structural). wave 0.
+    schedule.add("emitter", [](Commands& cmd, ResMut<Rng> rng, Res<Emitter> em) {
         auto& g = rng->gen;
         std::uniform_real_distribution<float> spreadX(-0.50f, 0.50f);
         std::uniform_real_distribution<float> launchY(1.20f, 2.60f);
         std::uniform_real_distribution<float> warmth(0.0f, 1.0f);
         std::uniform_real_distribution<float> lifespan(1.8f, 2.8f);
-        for (int i = 0; i < cfg::kEmitPerTick; ++i) {
+        for (int i = 0; i < em->per_tick; ++i) {
             float u = warmth(g); // deep orange -> bright yellow
-            cmd.spawn(Position {cfg::kOriginX, cfg::kOriginY},
+            cmd.spawn(Position {em->origin_x, em->origin_y},
                       Velocity {spreadX(g), launchY(g)},
                       Color {1.0f, 0.50f + 0.35f * u, 0.10f + 0.15f * u},
                       Age {0.0f, lifespan(g)},

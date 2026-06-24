@@ -109,6 +109,7 @@ struct App {
     GLuint program = 0, vao = 0, vbo = 0;
     GLsizei count = 0;
     int fbw = 0, fbh = 0;
+    bool paused = false;
 
     double last_ms   = 0.0; // emscripten_get_now() of the previous frame
     double sim_accum = 0.0; // unspent real time, stepped out in fixed kDt ticks
@@ -127,10 +128,12 @@ void frame() {
     a.last_ms        = now;
     if (dt > 0.25)
         dt = 0.25; // clamp after a tab-switch/stall so we don't spiral
-    a.sim_accum += dt;
-    for (int steps = 0; a.sim_accum >= cfg::kDt && steps < 8; ++steps) {
-        a.schedule.run(a.world); // inline, single-threaded (WorkerPool{1})
-        a.sim_accum -= cfg::kDt;
+    if (!a.paused) {
+        a.sim_accum += dt;
+        for (int steps = 0; a.sim_accum >= cfg::kDt && steps < 8; ++steps) {
+            a.schedule.run(a.world); // inline, single-threaded (WorkerPool{1})
+            a.sim_accum -= cfg::kDt;
+        }
     }
 
     // --- match the viewport to the (possibly resized) canvas ------------------
@@ -179,6 +182,50 @@ void frame() {
 
 } // namespace
 
+// --- JS-callable control surface ------------------------------------------
+// Exposed to the page (EMSCRIPTEN_KEEPALIVE -> Module._ecs_*) so the HTML
+// controls can drive the live simulation. Each just pokes a resource or a flag
+// on the running World -- safe because the demo is single-threaded, so these run
+// between frames, never concurrently with schedule.run.
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE void ecs_set_gravity(float accel) {
+    if (g_app)
+        g_app->world.resource<Gravity>().accel = accel;
+}
+
+EMSCRIPTEN_KEEPALIVE void ecs_set_emit_rate(int per_tick) {
+    if (g_app)
+        g_app->world.resource<Emitter>().per_tick = per_tick;
+}
+
+// Nozzle position in clip space (-1..1), as handed over from a canvas pointer event.
+EMSCRIPTEN_KEEPALIVE void ecs_set_nozzle(float clip_x, float clip_y) {
+    if (!g_app)
+        return;
+    auto& e    = g_app->world.resource<Emitter>();
+    e.origin_x = clip_x;
+    e.origin_y = clip_y;
+}
+
+EMSCRIPTEN_KEEPALIVE void ecs_set_paused(int paused) {
+    if (g_app)
+        g_app->paused = (paused != 0);
+}
+
+// Destroy every live particle (they refill from the emitter on the next ticks).
+EMSCRIPTEN_KEEPALIVE void ecs_reset() {
+    if (!g_app)
+        return;
+    Schedule clear;
+    clear.add_once("reset", [](Query<Position const> q, Commands& cmd) {
+        q.each([&](Entity e, Position const&) { cmd.destroy(e); });
+    });
+    clear.run(g_app->world);
+}
+
+} // extern "C"
+
 int main() {
     static App app;
     g_app = &app;
@@ -189,6 +236,8 @@ int main() {
     // under wasm. The visual is plenty varied from the per-particle spread.
     app.world.emplace_resource<Rng>(Rng {std::mt19937 {0xC0FFEEu}});
     app.world.emplace_resource<Clock>(Clock {0.0f});
+    app.world.emplace_resource<Emitter>(
+        Emitter {cfg::kEmitPerTick, cfg::kOriginX, cfg::kOriginY});
     app.world.emplace_resource<TripleBuffer<RenderSnapshot>>();
     build_particle_schedule(app.schedule);
     app.snapshots = &app.world.resource<TripleBuffer<RenderSnapshot>>();

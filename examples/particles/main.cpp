@@ -111,6 +111,8 @@ int main() {
     world.emplace_resource<Gravity>(cfg::kGravity);
     world.emplace_resource<Rng>(Rng {std::mt19937 {std::random_device {}()}});
     world.emplace_resource<Clock>(Clock {0.0f});
+    world.emplace_resource<Emitter>(
+        Emitter {cfg::kEmitPerTick, cfg::kOriginX, cfg::kOriginY});
     world.emplace_resource<TripleBuffer<RenderSnapshot>>();
 
     Schedule schedule;
