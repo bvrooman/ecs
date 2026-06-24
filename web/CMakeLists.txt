@@ -53,3 +53,40 @@ add_custom_command(TARGET particles_web POST_BUILD
                 ${CMAKE_CURRENT_SOURCE_DIR}/particles/index.html
                 $<TARGET_FILE_DIR:particles_web>/index.html
         COMMENT "Copying particle demo HTML shell")
+
+# ---------------------------------------------------------------------------
+# Phase 3: experimental multi-threaded build. The SAME sources, compiled with
+# -pthread, so the real WorkerPool (parallel/worker_pool.hpp) spins up resident
+# Web Worker lanes over SharedArrayBuffer and the data-parallel field systems run
+# across them. Needs cross-origin isolation (COOP/COEP) to load -- see
+# web/coi-server.py / `build-wasm.sh serve`. The single-threaded build above
+# stays the host-anywhere default.
+# ---------------------------------------------------------------------------
+add_executable(particles_web_mt
+        particles/main_web.cpp
+        ${PARTICLES_NATIVE_DIR}/simulation.cpp)
+target_include_directories(particles_web_mt PRIVATE ${PARTICLES_NATIVE_DIR})
+target_link_libraries(particles_web_mt PRIVATE ecs::ecs)
+
+# -pthread must be on both compile and link (it sets the shared-memory ABI for
+# every TU). PTHREAD_POOL_SIZE pre-warms enough workers that pool (re)creation on
+# the main thread never has to block on the event loop. Fixed memory (no growth)
+# sidesteps growable-SharedArrayBuffer entirely.
+target_compile_options(particles_web_mt PRIVATE -pthread)
+target_link_options(particles_web_mt PRIVATE
+        -pthread
+        "-sENVIRONMENT=web,worker"
+        "-sUSE_GLFW=3"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sFULL_ES3=1"
+        "-sPTHREAD_POOL_SIZE=8"
+        "-sINITIAL_MEMORY=134217728"
+        "-O2")
+set_target_properties(particles_web_mt PROPERTIES OUTPUT_NAME particles-mt SUFFIX ".js")
+
+add_custom_command(TARGET particles_web_mt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/particles/index-mt.html
+                $<TARGET_FILE_DIR:particles_web_mt>/index-mt.html
+        COMMENT "Copying multi-threaded demo HTML shell")

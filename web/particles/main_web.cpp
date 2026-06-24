@@ -22,9 +22,12 @@
 #include <GLFW/glfw3.h>
 #include <emscripten.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <random>
+#include <thread>
 
 using namespace ecs;
 
@@ -111,6 +114,9 @@ struct App {
     int fbw = 0, fbh = 0;
     bool paused = false;
 
+    std::unique_ptr<WorkerPool> pool; // null = inline; set in the -pthread build
+    double tick_ms_ema = 0.0;         // smoothed schedule.run() cost, ms/tick
+
     double last_ms   = 0.0; // emscripten_get_now() of the previous frame
     double sim_accum = 0.0; // unspent real time, stepped out in fixed kDt ticks
     double fps_t0    = 0.0;
@@ -130,9 +136,20 @@ void frame() {
         dt = 0.25; // clamp after a tab-switch/stall so we don't spiral
     if (!a.paused) {
         a.sim_accum += dt;
-        for (int steps = 0; a.sim_accum >= cfg::kDt && steps < 8; ++steps) {
-            a.schedule.run(a.world); // inline, single-threaded (WorkerPool{1})
+        double const t0 = emscripten_get_now();
+        int steps       = 0;
+        for (; a.sim_accum >= cfg::kDt && steps < 8; ++steps) {
+            // With a WorkerPool the data-parallel systems fan out across worker
+            // lanes; without one the schedule runs inline on this thread.
+            if (a.pool)
+                a.schedule.run(a.world, *a.pool);
+            else
+                a.schedule.run(a.world);
             a.sim_accum -= cfg::kDt;
+        }
+        if (steps > 0) {
+            double const per = (emscripten_get_now() - t0) / steps;
+            a.tick_ms_ema = a.tick_ms_ema == 0.0 ? per : a.tick_ms_ema * 0.9 + per * 0.1;
         }
     }
 
@@ -171,11 +188,14 @@ void frame() {
         double const fps = a.fps_frames / el;
         a.fps_frames     = 0;
         a.fps_t0         = now;
+        int const lanes = a.pool ? static_cast<int>(a.pool->lanes()) : 1;
         // clang-format off
         EM_ASM({
             var f = document.getElementById('fps');   if (f) f.textContent = $0.toFixed(0);
             var c = document.getElementById('count'); if (c) c.textContent = $1;
-        }, fps, static_cast<int>(a.count));
+            var t = document.getElementById('tick');  if (t) t.textContent = $2.toFixed(3);
+            var l = document.getElementById('lanes'); if (l) l.textContent = $3;
+        }, fps, static_cast<int>(a.count), a.tick_ms_ema, lanes);
         // clang-format on
     }
 }
@@ -185,8 +205,9 @@ void frame() {
 // --- JS-callable control surface ------------------------------------------
 // Exposed to the page (EMSCRIPTEN_KEEPALIVE -> Module._ecs_*) so the HTML
 // controls can drive the live simulation. Each just pokes a resource or a flag
-// on the running World -- safe because the demo is single-threaded, so these run
-// between frames, never concurrently with schedule.run.
+// on the running World. These run on the main thread between frames (JS is
+// single-threaded, and the main thread is busy inside schedule.run during a
+// dispatch), so never concurrently with a running system.
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE void ecs_set_gravity(float accel) {
@@ -224,6 +245,21 @@ EMSCRIPTEN_KEEPALIVE void ecs_reset() {
     clear.run(g_app->world);
 }
 
+// Multi-threaded build only: pick the WorkerPool lane count live (1 = inline;
+// higher rebuilds the resident worker set). A no-op in the single-threaded build.
+EMSCRIPTEN_KEEPALIVE void ecs_set_lanes(int lanes) {
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    if (!g_app)
+        return;
+    lanes = lanes < 1 ? 1 : (lanes > 8 ? 8 : lanes);
+    g_app->pool.reset(); // join the old workers first so the warm pool can refill
+    if (lanes > 1)
+        g_app->pool = std::make_unique<WorkerPool>(static_cast<unsigned>(lanes));
+#else
+    (void)lanes;
+#endif
+}
+
 } // extern "C"
 
 int main() {
@@ -244,6 +280,20 @@ int main() {
     std::printf("schedule: %zu systems across %zu parallel levels\n",
                 app.schedule.size(),
                 app.schedule.level_count());
+
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    // Multi-threaded build: lane 0 is this (main) thread; lanes 1..N-1 are
+    // resident Web Worker threads sharing memory via SharedArrayBuffer, and the
+    // data-parallel field systems fan out across them each tick.
+    {
+        unsigned const hw    = std::thread::hardware_concurrency();
+        unsigned const lanes = std::max(2u, std::min(4u, hw ? hw : 2u));
+        app.pool             = std::make_unique<WorkerPool>(lanes);
+        std::printf("execution: %u-lane WorkerPool (Web Worker threads)\n", lanes);
+    }
+#else
+    std::printf("execution: inline (single-threaded)\n");
+#endif
 
     // --- GLFW (Emscripten port) + WebGL2 context ------------------------------
     if (!glfwInit()) {

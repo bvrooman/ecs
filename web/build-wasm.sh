@@ -45,9 +45,13 @@ case "${1:-build}" in
     serve)
         DIR="$REPO/$BUILD_DIR/web"
         [[ -f "$DIR/particles.js" ]] || { echo "nothing built yet -- run: web/build-wasm.sh"; exit 1; }
-        echo ">> serving $DIR"
-        echo ">> open http://localhost:$PORT/  (Ctrl-C to stop)"
-        exec python3 -m http.server "$PORT" --directory "$DIR"
+        # COOP/COEP server so the multi-threaded page's SharedArrayBuffer works;
+        # the single-threaded page is unaffected by the headers.
+        echo ">> serving $DIR (cross-origin isolated)"
+        echo ">>   single-threaded : http://localhost:$PORT/"
+        echo ">>   multi-threaded  : http://localhost:$PORT/index-mt.html"
+        echo ">> Ctrl-C to stop"
+        exec python3 "$REPO/web/coi-server.py" "$PORT" "$DIR"
         ;;
     *)
         echo "usage: web/build-wasm.sh [build|run|serve]"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ecs — particle fountain (WebAssembly)</title>
+<title>ecs — particle fountain (WebAssembly, multi-threaded)</title>
 <style>
   :root { color-scheme: dark; }
   html, body {
@@ -19,6 +19,7 @@
   }
   h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: .04em; color: #f0c789; }
   h1 span { color: #6a6a78; }
+  .warn { color: #e6a4a4; font-size: 13px; max-width: 88vmin; text-align: center; }
   .stage { position: relative; }
   canvas {
     display: block;
@@ -37,6 +38,7 @@
   .hud .fps   { color: #ffffff; }
   .hud .count { color: #f0c789; }
   .hud .tick  { color: #9fd0f0; }
+  .hud .lanes { color: #b6e6a4; }
   .hud .k     { color: #6a6a78; }
 
   .controls {
@@ -45,8 +47,9 @@
     background: #0e0e16; border: 1px solid #1b1b26; border-radius: 10px;
   }
   .controls label { display: flex; align-items: center; gap: 8px; color: #9a9aa8; }
-  .controls input[type=range] { width: 120px; accent-color: #f0a849; }
-  .controls .val { color: #d8d8e0; min-width: 34px; text-align: right; }
+  .controls input[type=range] { width: 110px; accent-color: #f0a849; }
+  .controls input[type=range].lanes { accent-color: #7fcf6a; }
+  .controls .val { color: #d8d8e0; min-width: 30px; text-align: right; }
   .controls button {
     font: inherit; color: #d8d8e0;
     background: #1a1a26; border: 1px solid #2a2a3a; border-radius: 7px;
@@ -60,7 +63,11 @@
 </style>
 </head>
 <body>
-  <h1>ecs particle fountain <span>· wasm · single-threaded</span></h1>
+  <h1>ecs particle fountain <span>· wasm · multi-threaded (-pthread)</span></h1>
+  <div class="warn" id="coiWarn" style="display:none">
+    ⚠ page is not cross-origin isolated — SharedArrayBuffer is unavailable and the
+    worker pool can't start. Serve with <b>web/build-wasm.sh serve</b> (COOP/COEP).
+  </div>
 
   <div class="stage">
     <canvas id="canvas" width="760" height="760" tabindex="-1"
@@ -69,6 +76,7 @@
       <div><span class="k">fps </span><span class="fps" id="fps">--</span></div>
       <div><span class="k">particles </span><span class="count" id="count">0</span></div>
       <div><span class="k">tick </span><span class="tick" id="tick">--</span><span class="k"> ms</span></div>
+      <div><span class="k">lanes </span><span class="lanes" id="lanes">--</span></div>
     </div>
   </div>
 
@@ -81,12 +89,18 @@
       <input id="emit" type="range" min="0" max="80" step="1" value="20">
       <span class="val" id="emitVal">20</span>
     </label>
+    <label>worker lanes
+      <input id="lanesCtl" class="lanes" type="range" min="1" max="8" step="1" value="4">
+      <span class="val" id="lanesCtlVal">4</span>
+    </label>
     <button id="pause">pause</button>
     <button id="reset">reset</button>
-    <span class="hint">move the cursor over the canvas to aim the nozzle</span>
+  </div>
+  <div class="controls" style="border:none; background:none; padding-top:0;">
+    <span class="hint">lane 1 = inline · 2–8 = resident Web Worker threads · move the cursor over the canvas to aim the nozzle</span>
   </div>
 
-  <footer>ECS schedule (<b>11 systems</b>, 5 waves) stepping at 120&nbsp;Hz, drawn as additive WebGL2 point sprites.</footer>
+  <footer>ECS schedule (<b>11 systems</b>, 5 waves) at 120&nbsp;Hz; the 3 turbulence-field systems fan out across worker lanes via the <b>WorkerPool</b>.</footer>
 
   <script>
     function wireControls() {
@@ -104,6 +118,12 @@
         call('_ecs_set_emit_rate', [parseInt(em.value, 10)]);
       });
 
+      // Worker lanes: update the label live, but only rebuild the pool on release
+      // (each rebuild joins + respawns resident worker threads).
+      var lc = document.getElementById('lanesCtl'), lcv = document.getElementById('lanesCtlVal');
+      lc.addEventListener('input', function () { lcv.textContent = lc.value; });
+      lc.addEventListener('change', function () { call('_ecs_set_lanes', [parseInt(lc.value, 10)]); });
+
       var paused = false, pauseBtn = document.getElementById('pause');
       pauseBtn.addEventListener('click', function () {
         paused = !paused;
@@ -115,8 +135,6 @@
         call('_ecs_reset', []);
       });
 
-      // Cursor over the canvas aims the nozzle (clip space, y up); leaving snaps
-      // it back to the default bottom-centre origin.
       var cv = document.getElementById('canvas');
       cv.addEventListener('pointermove', function (e) {
         var r = cv.getBoundingClientRect();
@@ -129,6 +147,8 @@
       });
     }
 
+    if (!self.crossOriginIsolated) document.getElementById('coiWarn').style.display = '';
+
     var Module = {
       canvas: document.getElementById('canvas'),
       print:    function (t) { console.log(t); },
@@ -136,6 +156,6 @@
       onRuntimeInitialized: wireControls,
     };
   </script>
-  <script src="particles.js"></script>
+  <script src="particles-mt.js"></script>
 </body>
 </html>
