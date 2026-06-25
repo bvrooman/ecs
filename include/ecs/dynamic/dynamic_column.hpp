@@ -51,7 +51,8 @@ public:
             auto& src     = fields_[i];
             dst.fields_[i].insert(dst.fields_[i].end(),
                                   src.begin() + static_cast<std::ptrdiff_t>(row * sz),
-                                  src.begin() + static_cast<std::ptrdiff_t>((row + 1) * sz));
+                                  src.begin() +
+                                      static_cast<std::ptrdiff_t>((row + 1) * sz));
         }
         ++dst.count_;
     }

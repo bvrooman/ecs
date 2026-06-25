@@ -133,13 +133,14 @@ struct WorldOps {
             w.records_.resize(e.index + 1);
         Signature sig;
         sig.reserve(bundle.size());
-        for (auto const& [id, _] : bundle)
+        for (auto const& id : bundle | std::views::keys)
             sig.push_back(id);
         std::ranges::sort(sig);
         sig.erase(std::ranges::unique(sig).begin(), sig.end());
-        auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
-            for (auto const& [id, _] : bundle)
-                b.columns.emplace(id, std::make_unique<DynamicColumn>(registry().desc(id)));
+        auto const to  = w.get_or_create_archetype(sig, [&](Archetype& b) {
+            for (auto const& id : bundle | std::views::keys)
+                b.columns.emplace(id,
+                                  std::make_unique<DynamicColumn>(registry().desc(id)));
         });
         auto& arch     = *w.archetypes_[to];
         auto& rec      = w.records_[e.index];

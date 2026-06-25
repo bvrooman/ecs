@@ -42,7 +42,7 @@ add_executable(particles_web
         examples/particles/main_web.cpp
         ${PARTICLES_NATIVE_DIR}/simulation.cpp)
 target_include_directories(particles_web PRIVATE ${PARTICLES_NATIVE_DIR})
-target_link_libraries(particles_web PRIVATE ecs::ecs)
+target_link_libraries(particles_web PRIVATE ecs::ecs ecs::diag)
 
 # GLFW's Emscripten port + a forced WebGL2 (GLES 3.0) context. Single-threaded,
 # so no -pthread; ALLOW_MEMORY_GROWTH for the growing particle buffers. No
@@ -71,7 +71,7 @@ add_executable(particles_web_mt
         examples/particles/main_web.cpp
         ${PARTICLES_NATIVE_DIR}/simulation.cpp)
 target_include_directories(particles_web_mt PRIVATE ${PARTICLES_NATIVE_DIR})
-target_link_libraries(particles_web_mt PRIVATE ecs::ecs)
+target_link_libraries(particles_web_mt PRIVATE ecs::ecs ecs::diag)
 
 # -pthread must be on both compile and link (it sets the shared-memory ABI for
 # every TU). PTHREAD_POOL_SIZE pre-warms enough workers that pool (re)creation on
@@ -101,7 +101,7 @@ set_target_properties(particles_web_mt PROPERTIES OUTPUT_NAME particles-mt SUFFI
 add_executable(particles_js
         dynamic/bindings.cpp
         examples/particles_js/host.cpp)
-target_link_libraries(particles_js PRIVATE ecs::ecs)
+target_link_libraries(particles_js PRIVATE ecs::ecs ecs::diag)
 target_link_options(particles_js PRIVATE
         "-lembind"
         ${WEB_SHADERS_EMBED}
@@ -121,7 +121,7 @@ set_target_properties(particles_js PROPERTIES OUTPUT_NAME particles-js SUFFIX ".
 add_executable(particles_js_mt
         dynamic/bindings.cpp
         examples/particles_js/host.cpp)
-target_link_libraries(particles_js_mt PRIVATE ecs::ecs)
+target_link_libraries(particles_js_mt PRIVATE ecs::ecs ecs::diag)
 target_compile_options(particles_js_mt PRIVATE -pthread)
 target_link_options(particles_js_mt PRIVATE
         -pthread
@@ -162,7 +162,7 @@ set_target_properties(ecs_parallel_smoke PROPERTIES OUTPUT_NAME ecs_parallel_smo
 #   node build-wasm/web/smoke_dynamic.mjs
 # ---------------------------------------------------------------------------
 add_executable(ecs_dynamic dynamic/bindings.cpp)
-target_link_libraries(ecs_dynamic PRIVATE ecs::ecs)
+target_link_libraries(ecs_dynamic PRIVATE ecs::ecs ecs::diag)
 target_link_options(ecs_dynamic PRIVATE
         "-lembind"
         "-sENVIRONMENT=node"
@@ -183,7 +183,7 @@ add_custom_command(TARGET ecs_dynamic POST_BUILD
 # WorkerPool fans defineParallelSystem out across Web Worker lanes. Same sources,
 # verified by smoke_parallel.mjs.  node build-wasm/web/smoke_parallel.mjs
 add_executable(ecs_dynamic_mt dynamic/bindings.cpp)
-target_link_libraries(ecs_dynamic_mt PRIVATE ecs::ecs)
+target_link_libraries(ecs_dynamic_mt PRIVATE ecs::ecs ecs::diag)
 target_compile_options(ecs_dynamic_mt PRIVATE -pthread)
 target_link_options(ecs_dynamic_mt PRIVATE
         -pthread

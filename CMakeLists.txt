@@ -66,6 +66,16 @@ target_include_directories(schedule_viz INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/to
 target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
+# Header-only timing diagnostics (tools/stats.hpp -> ecs::diag::TickStats):
+# periodic per-tick timing distributions (mean/p50/p99/max). No engine
+# dependency; like the visualizer it lives in tools/, not the core 'ecs' headers,
+# so examples (native + web) link this to log their stats.
+# ---------------------------------------------------------------------------
+add_library(diag INTERFACE)
+add_library(ecs::diag ALIAS diag)
+target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+
+# ---------------------------------------------------------------------------
 # Threads -- the WorkerPool (include/ecs/parallel/worker_pool.hpp) runs the schedule on
 # resident std::thread workers. No external dependencies otherwise.
 #

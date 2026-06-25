@@ -14,15 +14,14 @@
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 #include "js_system.hpp"
-
-#include <emscripten.h>
-#include <emscripten/bind.h>
-#include <emscripten/val.h>
-
+#include "stats.hpp" // ecs::diag::TickStats (tools/, via the ecs::diag include path)
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <emscripten.h>
+#include <emscripten/bind.h>
+#include <emscripten/val.h>
 #include <memory>
 #include <ranges>
 #include <stdexcept>
@@ -50,19 +49,50 @@ FieldType parse_type(std::string const& s) {
 
 void write_scalar(std::byte* dst, FieldType t, double v) {
     switch (t) {
-    case FieldType::f32: { float f = static_cast<float>(v); std::memcpy(dst, &f, 4); break; }
-    case FieldType::f64: { std::memcpy(dst, &v, 8); break; }
-    case FieldType::i32: { std::int32_t i = static_cast<std::int32_t>(v); std::memcpy(dst, &i, 4); break; }
-    case FieldType::u32: { std::uint32_t u = static_cast<std::uint32_t>(v); std::memcpy(dst, &u, 4); break; }
+    case FieldType::f32: {
+        auto f = static_cast<float>(v);
+        std::memcpy(dst, &f, 4);
+        break;
+    }
+    case FieldType::f64: {
+        std::memcpy(dst, &v, 8);
+        break;
+    }
+    case FieldType::i32: {
+        auto i = static_cast<std::int32_t>(v);
+        std::memcpy(dst, &i, 4);
+        break;
+    }
+    case FieldType::u32: {
+        auto u = static_cast<std::uint32_t>(v);
+        std::memcpy(dst, &u, 4);
+        break;
+    }
     }
 }
 
 double read_scalar(std::byte const* src, FieldType t) {
     switch (t) {
-    case FieldType::f32: { float f; std::memcpy(&f, src, 4); return f; }
-    case FieldType::f64: { double d; std::memcpy(&d, src, 8); return d; }
-    case FieldType::i32: { std::int32_t i; std::memcpy(&i, src, 4); return i; }
-    case FieldType::u32: { std::uint32_t u; std::memcpy(&u, src, 4); return u; }
+    case FieldType::f32: {
+        float f;
+        std::memcpy(&f, src, 4);
+        return f;
+    }
+    case FieldType::f64: {
+        double d;
+        std::memcpy(&d, src, 8);
+        return d;
+    }
+    case FieldType::i32: {
+        std::int32_t i;
+        std::memcpy(&i, src, 4);
+        return i;
+    }
+    case FieldType::u32: {
+        std::uint32_t u;
+        std::memcpy(&u, src, 4);
+        return u;
+    }
     }
     return 0;
 }
@@ -79,6 +109,12 @@ public:
         unsigned const hw = std::thread::hardware_concurrency();
         pool_ = std::make_unique<WorkerPool>(std::max(2u, std::min(4u, hw ? hw : 2u)));
 #endif
+        // ?stats in the page URL -> time each tick() so JS can poll the per-tick
+        // distribution via pollStats() (no env var in a browser). Guarded so the
+        // node smoke modules, where `location` is undefined, just see it off.
+        stats_on_ = EM_ASM_INT(
+            { return (typeof location !== 'undefined'
+                      && location.search.indexOf('stats') >= 0) ? 1 : 0; });
     }
 
     // fields: JS array of { name: string, type: 'f32'|'f64'|'i32'|'u32' }.
@@ -87,7 +123,8 @@ public:
         unsigned const n = fields["length"].as<unsigned>();
         for (unsigned i = 0; i < n; ++i) {
             val f = fields[i];
-            fs.emplace_back(f["name"].as<std::string>(), parse_type(f["type"].as<std::string>()));
+            fs.emplace_back(f["name"].as<std::string>(),
+                            parse_type(f["type"].as<std::string>()));
         }
         return static_cast<int>(registry().define(std::move(name), fs));
     }
@@ -135,7 +172,10 @@ public:
     val getComponent(val e, int id) {
         auto const& d = registry().desc(static_cast<ComponentId>(id));
         std::vector<std::byte> blob(d.stride);
-        if (!WorldOps::get(world_, from_val(e), static_cast<ComponentId>(id), blob.data()))
+        if (!WorldOps::get(world_,
+                           from_val(e),
+                           static_cast<ComponentId>(id),
+                           blob.data()))
             return val::null();
         val out = val::array();
         for (std::size_t i = 0; i < d.fields.size(); ++i)
@@ -165,7 +205,8 @@ public:
     // ...] per row. With no query it is an emitter: kernel() fires once per tick
     // and spawns via this world's spawn(). Runs main-thread. See js_system.hpp.
     int defineSystem(std::string name, val spec, val kernel) {
-        return static_cast<int>(web::add_js_system(schedule_, std::move(name), spec, kernel));
+        return static_cast<int>(
+            web::add_js_system(schedule_, std::move(name), spec, kernel));
     }
 
     // Register a *parallel* JS system. Same access spec { write?, read? } as
@@ -198,24 +239,26 @@ public:
         ps.params     = spec["params"];
         val pnamesArr = val::array();
         if (!ps.params.isUndefined() && !ps.params.isNull()) {
-            val keys         = val::global("Object").call<val>("keys", ps.params);
-            unsigned const k = keys["length"].as<unsigned>();
+            auto keys    = val::global("Object").call<val>("keys", ps.params);
+            auto const k = keys["length"].as<unsigned>();
             for (unsigned i = 0; i < k; ++i) {
-                std::string key = keys[i].as<std::string>();
+                auto key = keys[i].as<std::string>();
                 ps.names.push_back(key);
                 pnamesArr.call<void>("push", key);
             }
         }
-        ps.values        = std::make_shared<std::vector<double>>(ps.names.size(), 0.0);
-        auto values      = ps.values;
-        int const np     = static_cast<int>(ps.names.size());
+
+        ps.values    = std::make_shared<std::vector<double>>(ps.names.size(), 0.0);
+        auto values  = ps.values;
+        int const np = static_cast<int>(ps.names.size());
         parallel_.push_back(ps);
 
         // Setup blob (parsed + cached once per worker): source, param names, and the
         // view layout (component + field names, in query order).
-        std::string const src = kernel.call<std::string>("toString");
-        val blob              = val::object();
-        blob.set("src", "(" + src + ")"); // wrap so the worker's eval(blob.src) yields the fn
+        auto const src = kernel.call<std::string>("toString");
+        auto blob      = val::object();
+        blob.set("src",
+                 "(" + src + ")"); // wrap so the worker's eval(blob.src) yields the fn
         blob.set("params", pnamesArr);
         val layout = val::array();
         for (auto const cid : query) {
@@ -229,12 +272,14 @@ public:
             layout.call<void>("push", comp);
         }
         blob.set("layout", layout);
-        std::string const blobStr = val::global("JSON").call<std::string>("stringify", blob);
+        auto const blobStr = val::global("JSON").call<std::string>("stringify", blob);
 
         static int next_sid = 0;
         int const sid       = next_sid++;
 
-        auto run = [query, blobStr, values, sid, np](World& w, Commands&, WorkerPool* pool) {
+        auto run = [query, blobStr, values, sid, np](World& w,
+                                                     Commands&,
+                                                     WorkerPool* pool) {
             Signature const required(query.begin(), query.end());
             for (auto const ai : w.matching_archetypes(required)) {
                 auto& arch       = *w.archetypes()[ai];
@@ -250,10 +295,12 @@ public:
                             reinterpret_cast<std::uintptr_t>(col.field_base(fi))));
                 }
                 char const* const blobC = blobStr.c_str();
-                auto const bptr = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(bases.data()));
+                auto const bptr         = static_cast<std::uint32_t>(
+                    reinterpret_cast<std::uintptr_t>(bases.data()));
                 auto const nb   = static_cast<std::uint32_t>(bases.size());
-                auto const vptr = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(values->data()));
-                auto const cnt  = static_cast<std::uint32_t>(count);
+                auto const vptr = static_cast<std::uint32_t>(
+                    reinterpret_cast<std::uintptr_t>(values->data()));
+                auto const cnt = static_cast<std::uint32_t>(count);
                 // 1-lane pool -> serial on the caller; N-lane -> across worker lanes.
                 pool->parallel_for(count, [=](std::size_t b, std::size_t e) {
                     // EM_ASM body must have NO top-level commas (the preprocessor
@@ -301,8 +348,9 @@ public:
                 });
             }
         };
-        return static_cast<int>(
-            schedule_.add_dynamic(std::move(name), std::move(access), std::move(run)));
+        return static_cast<int>(schedule_.add_dynamic(std::move(name),
+                                                      std::move(access),
+                                                      std::move(run)));
     }
 
     // Run the schedule once. First snapshot every parallel system's params object
@@ -316,11 +364,14 @@ public:
             for (std::size_t i = 0; i < ps.names.size(); ++i)
                 (*ps.values)[i] = ps.params[ps.names[i]].as<double>();
         }
+        double const t0 = stats_on_ ? emscripten_get_now() : 0.0;
 #if defined(__EMSCRIPTEN_PTHREADS__)
         schedule_.run(world_, *pool_);
 #else
         schedule_.run(world_);
 #endif
+        if (stats_on_)
+            tick_stats_.sample((emscripten_get_now() - t0) * 1000.0); // ms -> us
     }
 
     // Number of sequential waves -- proof the scheduler leveled the systems by
@@ -336,12 +387,26 @@ public:
 #endif
     }
 
+    // True when the page was opened with ?stats. JS queries this once to decide
+    // whether to poll; tick() only times itself (and pollStats() only reports)
+    // when on, so there is no cost otherwise.
+    bool statsOn() const { return stats_on_; }
+
+    // The per-tick timing distribution as one formatted line, ~every 2s; "" the
+    // rest of the time. JS: `const s = w.pollStats(); if (s) console.log(s);`
+    std::string pollStats() {
+        if (auto const s = tick_stats_.due())
+            return diag::TickStats::format(*s, "sim tick");
+        return {};
+    }
+
 private:
     std::vector<std::byte> pack(ComponentId id, val values) {
         auto const& d = registry().desc(id);
-        std::vector<std::byte> blob(d.stride);
+        auto blob     = std::vector<std::byte>(d.stride);
         for (std::size_t i = 0; i < d.fields.size(); ++i)
-            write_scalar(blob.data() + d.fields[i].offset, d.fields[i].type,
+            write_scalar(blob.data() + d.fields[i].offset,
+                         d.fields[i].type,
                          values[i].as<double>());
         return blob;
     }
@@ -370,6 +435,8 @@ private:
 #if defined(__EMSCRIPTEN_PTHREADS__)
     std::unique_ptr<WorkerPool> pool_;
 #endif
+    diag::TickStats tick_stats_; // per-tick timing distribution -> JS (?stats)
+    bool stats_on_ = false;
 };
 
 EMSCRIPTEN_BINDINGS(ecs_dynamic) {
@@ -392,5 +459,7 @@ EMSCRIPTEN_BINDINGS(ecs_dynamic) {
         .function("destroy", &DynamicWorld::destroy)
         .function("tick", &DynamicWorld::tick)
         .function("waveCount", &DynamicWorld::waveCount)
-        .function("laneCount", &DynamicWorld::laneCount);
+        .function("laneCount", &DynamicWorld::laneCount)
+        .function("statsOn", &DynamicWorld::statsOn)
+        .function("pollStats", &DynamicWorld::pollStats);
 }

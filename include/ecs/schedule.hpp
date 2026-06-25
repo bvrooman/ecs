@@ -194,14 +194,15 @@ public:
                          SystemAccess access,
                          Run&& run,
                          int phase = 0,
-                         bool once  = false) {
+                         bool once = false) {
+        auto const id = ++next_id_;
         System sys;
-        auto const id = sys.id = ++next_id_;
-        sys.name      = std::move(name);
-        sys.access    = std::move(access);
-        sys.phase     = phase;
-        sys.once      = once;
-        sys.run       = std::forward<Run>(run);
+        sys.id     = id;
+        sys.name   = std::move(name);
+        sys.access = std::move(access);
+        sys.phase  = phase;
+        sys.once   = once;
+        sys.run    = std::forward<Run>(run);
         systems_.push_back(std::move(sys));
         dirty_ = true;
         return id;

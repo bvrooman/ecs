@@ -21,6 +21,7 @@
 
 #include "../../dynamic/js_system.hpp"
 #include "../gl_util.hpp"
+#include "stats.hpp" // ecs::diag::TickStats (tools/, via the ecs::diag include path)
 
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
@@ -53,6 +54,9 @@ struct App {
     std::unique_ptr<WorkerPool> pool; // null = inline; set in the -pthread build
     double tick_ms_ema = 0.0;         // smoothed schedule.run() cost, ms/tick
 
+    diag::TickStats tick_stats; // per-tick timing distribution -> console (?stats)
+    bool stats_on = false;
+
     double last_ms   = 0.0; // emscripten_get_now() of the previous frame
     double sim_accum = 0.0; // unspent real time, stepped out in fixed kDt ticks
     double fps_t0    = 0.0;
@@ -77,16 +81,23 @@ void frame() {
         for (; a.sim_accum >= cfg::kDt && steps < 8; ++steps) {
             // With a WorkerPool the data-parallel systems fan out across worker
             // lanes; without one the schedule runs inline on this thread.
+            double const tick_t0 = a.stats_on ? emscripten_get_now() : 0.0;
             if (a.pool)
                 a.schedule.run(a.world, *a.pool);
             else
                 a.schedule.run(a.world);
             a.sim_accum -= cfg::kDt;
+            if (a.stats_on)
+                a.tick_stats.sample((emscripten_get_now() - tick_t0) * 1000.0); // ms -> us
         }
         if (steps > 0) {
             double const per = (emscripten_get_now() - t0) / steps;
             a.tick_ms_ema = a.tick_ms_ema == 0.0 ? per : a.tick_ms_ema * 0.9 + per * 0.1;
         }
+        // ?stats: log the per-tick timing distribution to the console ~every 2s.
+        if (a.stats_on)
+            if (auto const s = a.tick_stats.due())
+                std::printf("%s\n", diag::TickStats::format(*s, "sim tick").c_str());
     }
 
     // --- match the viewport to the (possibly resized) canvas ------------------
@@ -201,6 +212,9 @@ EMSCRIPTEN_KEEPALIVE void ecs_set_lanes(int lanes) {
 int main() {
     static App app;
     g_app = &app;
+    // ?stats in the page URL -> log the per-tick timing distribution to the
+    // browser console (no env var in a browser; this is the toggle).
+    app.stats_on = EM_ASM_INT({ return location.search.indexOf('stats') >= 0 ? 1 : 0; });
 
     // --- world + schedule (identical to the native example) -------------------
     app.world.emplace_resource<Gravity>(cfg::kGravity);

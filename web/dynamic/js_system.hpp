@@ -13,12 +13,10 @@
 #include "ecs/dynamic/registry.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
-
-#include <emscripten/val.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <emscripten/val.h>
 #include <ranges>
 #include <string>
 #include <vector>
@@ -67,7 +65,8 @@ inline SystemId add_js_system(Schedule& schedule,
     if (val c = spec["commands"]; !c.isUndefined() && !c.isNull())
         access.commands = c.as<bool>();
     std::ranges::sort(query);
-    query.erase(std::ranges::unique(query).begin(), query.end()); // sorted+unique -> a Signature
+    query.erase(std::ranges::unique(query).begin(),
+                query.end()); // sorted+unique -> a Signature
 
     // No query -> a command-only system (e.g. an emitter): kernel() fires once
     // per tick. Its structural effects go through the kernel's closure
@@ -75,9 +74,11 @@ inline SystemId add_js_system(Schedule& schedule,
     // barrier. Flag commands so the scheduler accounts for the structural effect.
     if (query.empty()) {
         access.commands = true;
-        return schedule.add_dynamic(
-            std::move(name), std::move(access),
-            [kernel](World&, Commands&, WorkerPool*) { kernel(); });
+        return schedule.add_dynamic(std::move(name),
+                                    std::move(access),
+                                    [kernel](World&, Commands&, WorkerPool*) {
+                                        kernel();
+                                    });
     }
 
     // Query system: kernel(count, views, entities) once per matching archetype.
@@ -100,8 +101,9 @@ inline SystemId add_js_system(Schedule& schedule,
             }
             // Per-row entity handles [index, generation, ...], so a kernel can
             // hand a row back to DynamicWorld.destroy().
-            val entities = val(emscripten::typed_memory_view(
-                count * 2, reinterpret_cast<std::uint32_t*>(arch.entities.data())));
+            auto entities = val(emscripten::typed_memory_view(
+                count * 2,
+                reinterpret_cast<std::uint32_t*>(arch.entities.data())));
             kernel(static_cast<unsigned>(count), views, entities);
         }
     };
