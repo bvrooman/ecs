@@ -72,10 +72,10 @@ public:
         Scope& operator=(Scope const&) = delete;
         Scope& operator=(Scope&&)      = delete;
         ~Scope() {
-            if (owner_)
-                owner_->sample(std::chrono::duration<double, std::micro>(clock::now() -
-                                                                         t0_)
-                                   .count());
+            if (owner_) {
+                using duration = std::chrono::duration<double, std::micro>;
+                owner_->sample(duration(clock::now() - t0_).count());
+            }
         }
 
     private:

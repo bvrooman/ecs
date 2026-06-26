@@ -11,7 +11,7 @@ function setup() {
     var C = fountainComponents(w);
 
     var RATE = 9;
-    var P = {dt: 0.016, gravity: -1.7, time: 0}; // params the kernels read as `p`
+    var P = {dt: 1 / 120, gravity: -1.7, time: 0}; // dt is a FIXED 120 Hz step (see onFrame)
 
     // --- STRUCTURAL systems: main-thread (spawn/destroy, close over JS) ---
     w.defineSystem('emit', {commands: true}, function () {
@@ -53,10 +53,16 @@ function setup() {
     var render = fountainRenderer(w, C);
     var hud = fountainHud(w, {lanes: true});
     var STATS = w.statsOn(); // ?stats -> log the per-tick timing distribution
+    var acc = 0; // unspent real time, drained in fixed P.dt steps
     Module.onFrame = function (dt) {
-        P.dt = Math.min(dt, 0.05);
-        P.time += P.dt;
-        w.tick();   // emit/age on main thread; gravity/turbulence/integrate fan out
+        acc += Math.min(dt, 0.05); // clamp the catch-up after a tab-switch/stall
+        // Fixed-timestep accumulator: run as many fixed P.dt ticks as the elapsed
+        // real time calls for, so sim time stays independent of the render rate.
+        for (var steps = 0; acc >= P.dt && steps < 8; steps++) {
+            P.time += P.dt;
+            w.tick(); // emit/age on main thread; gravity/integrate fan out to lanes
+            acc -= P.dt;
+        }
         if (STATS) {
             var s = w.pollStats();
             if (s) console.log(s);

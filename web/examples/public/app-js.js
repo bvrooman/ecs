@@ -5,10 +5,12 @@ function setup() {
     var w = new Module.DynamicWorld();
     var C = fountainComponents(w);
 
-    // Sim parameters (plain JS state the kernels close over). DT is refreshed from
-    // the real frame dt each tick (see onFrame) so motion and lifetime are
-    // frame-rate independent, matching app-js-mt; the 0.016 is just the seed.
-    var DT = 0.016, G = -1.7, RATE = 9, NX = 0.0, NY = -0.85;
+    // Sim parameters (plain JS state the kernels close over). DT is a FIXED 120 Hz
+    // timestep; onFrame drains the real elapsed time in fixed DT ticks (a
+    // fixed-timestep accumulator), so sim time advances at a steady rate
+    // independent of the render frame rate -- and the particle count no longer
+    // drifts with fps.
+    var DT = 1 / 120, G = -1.7, RATE = 9, NX = 0.0, NY = -0.85;
     
     // emit: command-only system, spawns RATE particles/tick from the nozzle.
     w.defineSystem('emit', {commands: true}, function () {
@@ -47,9 +49,13 @@ function setup() {
     var render = fountainRenderer(w, C);
     var hud = fountainHud(w);
     var STATS = w.statsOn(); // ?stats -> log the per-tick timing distribution
+    var acc = 0; // unspent real time, drained in fixed DT steps
     Module.onFrame = function (dt) {
-        DT = Math.min(dt, 0.05); // real frame dt (clamped), like app-js-mt's P.dt
-        w.tick();
+        acc += Math.min(dt, 0.05); // clamp the catch-up after a tab-switch/stall
+        for (var steps = 0; acc >= DT && steps < 8; steps++) {
+            w.tick();
+            acc -= DT;
+        }
         if (STATS) {
             var s = w.pollStats();
             if (s) console.log(s);

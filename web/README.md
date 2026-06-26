@@ -65,6 +65,9 @@ Targets: `ecs_smoke`, `particles_web`, `particles_web_mt`, `ecs_dynamic`,
   (worker-eval spike), `smoke_dynamic.mjs`, `smoke_parallel.mjs`.
 - `web/dynamic/` — the embind runtime: `bindings.cpp` (the `DynamicWorld` module,
   shared by the smokes and the JS demos) and the `js_system.hpp` helper.
+- `web/docs/` — design notes. [`sim-on-worker-decoupling.md`](docs/sim-on-worker-decoupling.md):
+  a deferred proposal to run the JS fountain's sim on its own worker thread for true
+  render-independence — covers the closure constraint, the architecture, and feasibility.
 
 ## CLion
 

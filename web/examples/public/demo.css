@@ -41,6 +41,7 @@ canvas.interactive { cursor: crosshair; touch-action: none; }
 .hud .count { color: #f0c789; }
 .hud .tick  { color: #9fd0f0; }
 .hud .lanes { color: #b6e6a4; }
+.hud .sim   { color: #c8a4e6; }
 .hud .k     { color: #6a6a78; }
 
 .controls {
