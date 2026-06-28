@@ -165,12 +165,18 @@ int main() {
         float const nx = w ? float(mx) / float(w) * 2.0f - 1.0f : 0.0f;
         float const ny = h ? 1.0f - float(my) / float(h) * 2.0f : 0.0f; // flip Y
         s->cursor.store(pack_cursor(nx, ny), std::memory_order_relaxed);
+        // A move *over* the window means the cursor is in it -> active. Do not
+        // rely on the enter event alone: if the window opens under the cursor it
+        // never fires, and the follow would stay off until the cursor left and
+        // re-entered. (This is what made live steering silently do nothing.)
+        s->flags.fetch_or(1u, std::memory_order_relaxed);
     });
     glfwSetCursorEnterCallback(window, [](GLFWwindow* win, int entered) {
-        auto* s        = static_cast<WindowState*>(glfwGetWindowUserPointer(win));
-        std::uint32_t f = s->flags.load(std::memory_order_relaxed);
-        f               = entered ? (f | 1u) : (f & ~1u);
-        s->flags.store(f, std::memory_order_relaxed);
+        auto* s = static_cast<WindowState*>(glfwGetWindowUserPointer(win));
+        if (entered)
+            s->flags.fetch_or(1u, std::memory_order_relaxed);
+        else
+            s->flags.fetch_and(~1u, std::memory_order_relaxed);
     });
     if (glfwGetWindowAttrib(window, GLFW_HOVERED))
         wstate.flags.store(1u, std::memory_order_relaxed);
