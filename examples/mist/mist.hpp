@@ -108,8 +108,14 @@ inline constexpr float kRoamX      = 0.60f; // screen-x amplitude (clip units)
 inline constexpr float kRoamY      = 0.50f; // screen-y amplitude
 inline constexpr float kRoamZc     = 0.10f; // mid depth of the goal's z swing
 inline constexpr float kRoamZ      = 0.10f; // z amplitude (peak ~d=0.15: sweeps overhead)
-inline constexpr float kBound      = 2.60f; // soft wall radius
+inline constexpr float kBound      = 2.60f; // soft wall radius (view plane, xy)
 inline constexpr float kBoundForce = 2.50f;
+// Depth band (world z). The sphere above is too loose in z -- the flock can
+// recede until it is a tiny speck. Hold it in a readable depth range instead:
+// it may sweep forward toward the camera (kZFront, looms large) but not drift
+// back into the far haze. d = kCamZ - z, so this keeps d in ~[0.4, 1.95].
+inline constexpr float kZFront = 1.10f;  // nearest world-z (d=0.40: looms large)
+inline constexpr float kZBack  = -0.45f; // farthest world-z (d=1.95: still a readable size)
 
 // Uniform spatial grid covering the roaming volume, for the boids neighbourhood
 // (a bird's cell + its 6 face neighbours). The flock is a dense blob roaming a

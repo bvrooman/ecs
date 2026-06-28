@@ -82,14 +82,21 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
             auto& g = rng->gen;
             std::uniform_real_distribution<float> p(-0.45f, 0.45f);
             std::uniform_real_distribution<float> j(-0.06f, 0.06f);
-            // Start near the gathered equilibrium: a moderate spread, centred at
-            // the working depth (~kRoamZc), all moving together on one shared
-            // heading (little jitter). So it reads as a coherent murmuration from
-            // t=0, instead of spending a minute contracting from a large diffuse
-            // scatter (or untangling random per-bird velocities).
-            for (int i = 0; i < count; ++i)
-                cmd.spawn(Position {p(g), p(g), cfg::kRoamZc + p(g)},
-                          Velocity {0.5f + j(g), 0.15f + j(g), j(g)});
+            // Start as a gently swirling disc centred on screen, at the working
+            // depth (~kRoamZc). The velocity is a curl (rotational) field, v ~
+            // (-y, x): locally coherent -- neighbours share a heading, so
+            // alignment stays happy and it reads as a murmuration from t=0 -- but
+            // its centre of mass stays put. A single shared heading instead
+            // translated the whole flock off-screen (it rushed to the top-edge
+            // before the goal could rein it back); the swirl lingers in the middle.
+            for (int i = 0; i < count; ++i) {
+                float const px = p(g), py = p(g);
+                // Swirl (-y, x) + a gentle shared forward drift (+z): the drift
+                // gives the dead-centre birds (whose swirl velocity is ~0) a
+                // coherent heading too, so the centre doesn't evacuate into a ring.
+                cmd.spawn(Position {px, py, cfg::kRoamZc + p(g)},
+                          Velocity {-py + j(g), px + j(g), 0.20f + j(g)});
+            }
         },
         phase<-1> {});
 
@@ -126,7 +133,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
             sy = cur->y;
         } else {
             sx = cfg::kRoamX * std::sin(0.062f * t) * std::cos(0.035f * t + 0.5f);
-            sy = cfg::kRoamY * std::sin(0.051f * t + 1.3f);
+            sy = cfg::kRoamY * std::sin(0.051f * t); // phase 0: starts centred, not at the top edge
         }
         float const gz = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f);
         float const d  = cfg::kCamZ - gz;
@@ -225,12 +232,18 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                         std::sin(k * x - 0.8f * t) + std::sin(1.7f * k * y + 0.5f * t),
                         T.wander);
 
-                // Soft boundary: steer back when straying past the roam radius.
-                float const r2 = x * x + y * y + z * z;
+                // Soft boundary in the view plane (xy): steer back past the wall.
+                float const r2 = x * x + y * y;
                 if (r2 > cfg::kBound * cfg::kBound) {
                     float const r = std::sqrt(r2);
-                    add_dir(ax, ay, az, -x, -y, -z, cfg::kBoundForce * (r - cfg::kBound));
+                    add_dir(ax, ay, az, -x, -y, 0.0f, cfg::kBoundForce * (r - cfg::kBound));
                 }
+                // Depth band: let the flock sweep forward toward the camera but
+                // not recede into the far haze, so it stays a readable size.
+                if (z < cfg::kZBack)
+                    add_dir(ax, ay, az, 0.0f, 0.0f, 1.0f, cfg::kBoundForce * (cfg::kZBack - z));
+                else if (z > cfg::kZFront)
+                    add_dir(ax, ay, az, 0.0f, 0.0f, -1.0f, cfg::kBoundForce * (z - cfg::kZFront));
 
                 // Apply the steering, then pull speed back to the cruise so the
                 // birds always fly (turning, not speeding up or stopping).
