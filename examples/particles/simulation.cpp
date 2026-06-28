@@ -31,7 +31,7 @@ namespace {
 // Divergence-free curl of a sin/cos potential, summed over kTurbOctaves octaves.
 // Deliberately compute-bound (a few transcendentals per octave) -- this per-
 // particle cost is the workload that makes parallel scheduling worthwhile.
-inline void curl_force(float x, float y, float t, float seed, float& ox, float& oy) {
+void curl_force(float x, float y, float t, float seed, float& ox, float& oy) {
     float fx = 0.0f, fy = 0.0f;
     float freq = 1.3f + seed;
     float amp  = 1.0f;

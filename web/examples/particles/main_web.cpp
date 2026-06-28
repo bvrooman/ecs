@@ -154,8 +154,8 @@ void frame() {
     glUseProgram(a.program);
     glBindVertexArray(a.vao);
     if (a.snapshots->consume()) {
-        RenderSnapshot const& snap = a.snapshots->front();
-        a.count                    = static_cast<GLsizei>(snap.size());
+        auto const& snap = a.snapshots->front();
+        a.count          = static_cast<GLsizei>(snap.size());
         glBindBuffer(GL_ARRAY_BUFFER, a.vbo);
         glBufferData(GL_ARRAY_BUFFER,
                      snap.size() * sizeof(GpuParticle),
