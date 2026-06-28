@@ -74,7 +74,14 @@ inline constexpr float kFarFade  = 3.40f; // depth where birds haze fully out
 // weighted sum of boids rules + the goal, applied as an acceleration, after
 // which speed is pulled back to the cruise. Weights are dimensionless.
 inline constexpr float kCruise   = 0.65f; // clip units / s
-inline constexpr float kGoalSeek = 1.00f; // pull toward the goal/cursor (eagerness of the chase)
+// Pull toward the goal. Two strengths because they want opposite things (a fact
+// the metric sweep surfaced): the slow hands-off WANDER wants a gentle pull, or
+// the constant-speed flock collapses into a tight orbiting ring; the CURSOR (a
+// faster, user-driven target) wants a strong pull to actually track it. So the
+// strong value is used only while steering. kGoalFollow ~2.0 was the sweep knee:
+// follow_err ~0.1 on smooth motion without dispersing (see examples/mist/tools).
+inline constexpr float kGoalSeek   = 1.00f; // pull toward the wandering roost (hands-off)
+inline constexpr float kGoalFollow = 2.00f; // pull toward the cursor (while steering)
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding

@@ -53,7 +53,7 @@ inline void add_dir(float& ax, float& ay, float& az,
 // recompiling (e.g. ECS_GOALSEEK=1.6 ECS_SOFTCAP=60 ./mist). Defaults are the
 // cfg values; the grid and camera stay compile-time.
 struct Tuning {
-    float cruise, goalSeek, cohesion, alignment, separation, softCap, wander;
+    float cruise, goalSeek, goalFollow, cohesion, alignment, separation, softCap, wander;
 };
 inline float env_f(char const* key, float dflt) {
     char const* v = std::getenv(key);
@@ -62,6 +62,7 @@ inline float env_f(char const* key, float dflt) {
 inline Tuning read_tuning() {
     return Tuning {env_f("ECS_CRUISE", cfg::kCruise),
                    env_f("ECS_GOALSEEK", cfg::kGoalSeek),
+                   env_f("ECS_GOALFOLLOW", cfg::kGoalFollow),
                    env_f("ECS_COHESION", cfg::kCohesion),
                    env_f("ECS_ALIGN", cfg::kAlignment),
                    env_f("ECS_SEPARATION", cfg::kSeparation),
@@ -156,11 +157,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                  [T](Query<Position const, Velocity> q,
                      Res<FlockGrid> grid,
                      Res<Goal> goal,
+                     Res<Cursor> cur,
                      Res<Clock> clk) {
         Goal const G       = *goal;
+        // Strong pull only while steering; gentle while wandering (else it rings).
+        float const goalw  = cur->active ? T.goalFollow : T.goalSeek;
         float const t      = clk->t;
         FlockGrid const& g = *grid;
-        q.for_each_chunk([G, t, &g, T](std::span<Entity>,
+        q.for_each_chunk([G, goalw, t, &g, T](std::span<Entity>,
                                     chunk<Position const> pos,
                                     chunk<Velocity> vel) {
             auto const px = pos.column<0>();
@@ -206,8 +210,10 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                 }
 
                 // Goal seek: the flock flies toward the goal -- the wandering
-                // roost, or the cursor when you are steering (set in `goal`).
-                add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, T.goalSeek);
+                // roost, or the cursor when you are steering (set in `goal`). The
+                // weight (goalw) is stronger while steering so it tracks closely
+                // without ringing up the hands-off wander.
+                add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, goalw);
 
                 // Wander: per-bird 3D turbulence -- neighbours diverge a little,
                 // which breaks thin lines/sheets into volume and adds a living
