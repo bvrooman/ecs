@@ -74,19 +74,11 @@ inline constexpr float kFarFade  = 3.40f; // depth where birds haze fully out
 // weighted sum of boids rules + the goal, applied as an acceleration, after
 // which speed is pulled back to the cruise. Weights are dimensionless.
 inline constexpr float kCruise   = 0.65f; // clip units / s
-inline constexpr float kGoalSeek = 0.75f; // pull toward the wandering goal (the roost)
-// Radial damping toward the goal: opposes a bird's in/out motion relative to the
-// goal so the flock *settles* onto it within seconds, instead of sloshing in and
-// out for ~a minute (the constant-speed flight has no other damping -- that slow
-// bulk swing was what made the cursor feel unresponsive at the start). Only the
-// radial component is damped; tangential wheeling/folding is untouched. Higher =
-// settles tighter/faster onto the goal; lower = a looser murmuration that still
-// drifts in and out a little. ~0.8 holds it on the goal within a few seconds.
-inline constexpr float kSettle     = 0.80f;
+inline constexpr float kGoalSeek = 1.00f; // pull toward the goal/cursor (eagerness of the chase)
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding
-inline constexpr float kSoftCap    = 20.0f; // per-cell density before separation bites
+inline constexpr float kSoftCap    = 40.0f; // per-cell density before separation bites
 // Per-bird turbulence: a 3D noise "wander" so neighbours diverge a little -- it
 // breaks the flock out of thin lines/sheets and gives it 3D volume and a
 // living shimmer. Gentle, so it adds body without dispersing the mass.

@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <thread>
 #include <vector>
@@ -55,6 +56,27 @@ static void prefer_performance_cores() {
 #if defined(__APPLE__)
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
+}
+
+// Drive the cursor along a scripted path (ECS_CURSOR_PATH) so the *follow*
+// behaviour can be exercised headless -- something a static ECS_CURSOR cannot do.
+// `t` is elapsed seconds; writes a clip-space (-1..1) point.
+static void scripted_cursor(char const* path, double t, float& px, float& py) {
+    if (std::strcmp(path, "step") == 0) {
+        // Jump between the four quadrants every 4 s -- a step response (how fast,
+        // and how closely, the flock reaches a freshly-placed cursor).
+        static constexpr float wx[4] = {0.5f, -0.5f, -0.5f, 0.5f};
+        static constexpr float wy[4] = {0.4f, 0.4f, -0.4f, -0.4f};
+        int const k = int(t / 4.0) & 3;
+        px = wx[k];
+        py = wy[k];
+    } else if (std::strcmp(path, "sweep") == 0) {
+        px = 0.7f * float(std::sin(0.5 * t)); // horizontal back-and-forth
+        py = 0.0f;
+    } else { // "circle" (default): a steady orbit, for sustained tracking
+        px = 0.6f * float(std::cos(0.6 * t));
+        py = 0.6f * float(std::sin(0.6 * t));
+    }
 }
 
 // The 3D view (camera, focal, clip/fade depths) lives in cfg (mist.hpp) so the
@@ -290,6 +312,20 @@ int main() {
                 cap_at = v;
         bool captured     = false;
         auto const loop_t0 = std::chrono::steady_clock::now();
+        // ECS_CURSOR_PATH=circle|step|sweep drives the cursor over time (headless
+        // follow tests). ECS_FILMSTRIP=<dir> grabs ECS_FILMSTRIP_N frames every
+        // ECS_FILMSTRIP_EVERY seconds into <dir>/NN.bmp, to montage into a single
+        // strip and review motion across time.
+        char const* cursorPath = std::getenv("ECS_CURSOR_PATH");
+        char const* filmDir    = std::getenv("ECS_FILMSTRIP");
+        double film_every = 2.5, film_next = 0.0;
+        int film_n = 12, film_shot = 0;
+        if (char const* a = std::getenv("ECS_FILMSTRIP_EVERY"))
+            if (double v = std::atof(a); v > 0.0)
+                film_every = v;
+        if (char const* a = std::getenv("ECS_FILMSTRIP_N"))
+            if (int v = std::atoi(a); v > 0)
+                film_n = v;
 
         while (!stop.load(std::memory_order_acquire)) {
             CGLLockContext(cgl); // serialize this frame against a resize/move update
@@ -299,6 +335,15 @@ int main() {
             if (sz != last_size) {
                 last_size = sz;
                 glViewport(0, 0, fbw, fbh);
+            }
+
+            double const elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_t0).count();
+            if (cursorPath) { // drive the scripted cursor (overrides live input)
+                float px, py;
+                scripted_cursor(cursorPath, elapsed, px, py);
+                wstate.cursor.store(pack_cursor(px, py), std::memory_order_relaxed);
+                wstate.flags.store(1u, std::memory_order_relaxed);
             }
 
             glUseProgram(program);
@@ -377,6 +422,19 @@ int main() {
                             fbh,
                             int(count_pts));
                 std::fflush(stdout);
+            }
+
+            // Filmstrip: grab successive frames into <dir>/NN.bmp at a fixed
+            // cadence, to montage into one image and read the motion over time.
+            if (filmDir && film_shot < film_n && count_pts > 0 && elapsed >= film_next) {
+                char fpath[512];
+                std::snprintf(fpath, sizeof(fpath), "%s/%02d.bmp", filmDir, film_shot);
+                std::vector<unsigned char> px(std::size_t(fbw) * fbh * 4);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, fbw, fbh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                glutil::write_bmp(fpath, fbw, fbh, px.data());
+                ++film_shot;
+                film_next += film_every;
             }
 
             glfwSwapBuffers(window);

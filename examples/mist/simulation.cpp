@@ -25,6 +25,9 @@
 #include "mist.hpp"
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <fstream>
+#include <memory>
 #include <random>
 #include <span>
 
@@ -46,25 +49,45 @@ inline void add_dir(float& ax, float& ay, float& az,
     }
 }
 
+// Runtime-overridable steering weights, so the flight can be swept/tuned without
+// recompiling (e.g. ECS_GOALSEEK=1.6 ECS_SOFTCAP=60 ./mist). Defaults are the
+// cfg values; the grid and camera stay compile-time.
+struct Tuning {
+    float cruise, goalSeek, cohesion, alignment, separation, softCap, wander;
+};
+inline float env_f(char const* key, float dflt) {
+    char const* v = std::getenv(key);
+    return (v && *v) ? float(std::atof(v)) : dflt;
+}
+inline Tuning read_tuning() {
+    return Tuning {env_f("ECS_CRUISE", cfg::kCruise),
+                   env_f("ECS_GOALSEEK", cfg::kGoalSeek),
+                   env_f("ECS_COHESION", cfg::kCohesion),
+                   env_f("ECS_ALIGN", cfg::kAlignment),
+                   env_f("ECS_SEPARATION", cfg::kSeparation),
+                   env_f("ECS_SOFTCAP", cfg::kSoftCap),
+                   env_f("ECS_WANDER", cfg::kWander)};
+}
+
 } // namespace
 
 void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
+    Tuning const T = read_tuning(); // steering weights (env-overridable, for sweeps)
     // scatter: seed the flock once in a loose blob with small random velocities,
     // then remove itself. phase<-1> runs before the per-tick work.
     schedule.add_once(
         "scatter",
         [count](Commands& cmd, ResMut<Rng> rng) {
             auto& g = rng->gen;
-            std::uniform_real_distribution<float> p(-0.7f, 0.7f);
+            std::uniform_real_distribution<float> p(-0.45f, 0.45f);
             std::uniform_real_distribution<float> j(-0.06f, 0.06f);
-            // Start the whole flock already moving together -- one shared heading
-            // with only a little jitter, so it is a *coherent* mass from t=0.
-            // Seeding random per-bird velocities (then renormalising to cruise)
-            // instead makes every bird fly off in its own direction: a chaotic
-            // cloud that alignment takes ~2 minutes to untangle, during which the
-            // flock is too diffuse for the cursor's steering to show.
+            // Start near the gathered equilibrium: a moderate spread, centred at
+            // the working depth (~kRoamZc), all moving together on one shared
+            // heading (little jitter). So it reads as a coherent murmuration from
+            // t=0, instead of spending a minute contracting from a large diffuse
+            // scatter (or untangling random per-bird velocities).
             for (int i = 0; i < count; ++i)
-                cmd.spawn(Position {p(g), p(g), p(g) - 0.3f},
+                cmd.spawn(Position {p(g), p(g), cfg::kRoamZc + p(g)},
                           Velocity {0.5f + j(g), 0.15f + j(g), j(g)});
         },
         phase<-1> {});
@@ -130,14 +153,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
     // acceleration, apply it, then pull speed back to the cruise. (The cursor
     // acts through the goal above, so there is no per-bird cursor force here.)
     schedule.add("steer",
-                 [](Query<Position const, Velocity> q,
-                    Res<FlockGrid> grid,
-                    Res<Goal> goal,
-                    Res<Clock> clk) {
+                 [T](Query<Position const, Velocity> q,
+                     Res<FlockGrid> grid,
+                     Res<Goal> goal,
+                     Res<Clock> clk) {
         Goal const G       = *goal;
         float const t      = clk->t;
         FlockGrid const& g = *grid;
-        q.for_each_chunk([G, t, &g](std::span<Entity>,
+        q.for_each_chunk([G, t, &g, T](std::span<Entity>,
                                     chunk<Position const> pos,
                                     chunk<Velocity> vel) {
             auto const px = pos.column<0>();
@@ -170,21 +193,21 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
 
                 // Cohesion: toward the local centre of mass.
                 add_dir(ax, ay, az, spx * invn - x, spy * invn - y, spz * invn - z,
-                        cfg::kCohesion);
+                        T.cohesion);
                 // Alignment: toward the local mean heading.
-                add_dir(ax, ay, az, svx, svy, svz, cfg::kAlignment);
+                add_dir(ax, ay, az, svx, svy, svz, T.alignment);
 
                 // Separation: only crowded cells push down the density gradient.
-                if (float(g.count[c]) > cfg::kSoftCap) {
+                if (float(g.count[c]) > T.softCap) {
                     float const sgx = float(g.count_at(ix - 1, iy, iz) - g.count_at(ix + 1, iy, iz));
                     float const sgy = float(g.count_at(ix, iy - 1, iz) - g.count_at(ix, iy + 1, iz));
                     float const sgz = float(g.count_at(ix, iy, iz - 1) - g.count_at(ix, iy, iz + 1));
-                    add_dir(ax, ay, az, sgx, sgy, sgz, cfg::kSeparation);
+                    add_dir(ax, ay, az, sgx, sgy, sgz, T.separation);
                 }
 
                 // Goal seek: the flock flies toward the goal -- the wandering
                 // roost, or the cursor when you are steering (set in `goal`).
-                add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, cfg::kGoalSeek);
+                add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, T.goalSeek);
 
                 // Wander: per-bird 3D turbulence -- neighbours diverge a little,
                 // which breaks thin lines/sheets into volume and adds a living
@@ -194,7 +217,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                         std::sin(k * y + 0.7f * t) + std::sin(1.7f * k * z - 0.5f * t),
                         std::sin(k * z + 0.6f * t) + std::sin(1.7f * k * x + 0.4f * t),
                         std::sin(k * x - 0.8f * t) + std::sin(1.7f * k * y + 0.5f * t),
-                        cfg::kWander);
+                        T.wander);
 
                 // Soft boundary: steer back when straying past the roam radius.
                 float const r2 = x * x + y * y + z * z;
@@ -210,7 +233,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                 float nvz = vz[i] + az * cfg::kDt;
                 float const sp = std::sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
                 if (sp > 1e-5f) {
-                    float const f = cfg::kCruise / sp;
+                    float const f = T.cruise / sp;
                     nvx *= f; nvy *= f; nvz *= f;
                 }
                 vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
@@ -249,4 +272,51 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                      });
                      ch->publish();
                  });
+
+    // metrics (optional, ECS_METRICS=<path.csv>): log whole-flock dynamics each
+    // tick so behaviour can be reviewed *quantitatively over time* (not by eye on
+    // a single frame). Columns: sim time; the centre of mass projected to screen
+    // (com_sx,com_sy) and its depth; the goal projected to screen (= the cursor
+    // when steering); follow_err = screen distance from the flock's centre to the
+    // goal (0 = sitting on it; a non-decaying oscillation = the undamped wheel);
+    // spread = RMS world radius of the flock (compact vs diffuse); coherence =
+    // |mean velocity| / mean speed in [0,1] (1 = flying together, ~0 = wheeling /
+    // scrambled). Two cheap serial passes, only when enabled. Reads settled
+    // positions, so it lands in the last wave.
+    if (char const* mpath = std::getenv("ECS_METRICS")) {
+        auto out = std::make_shared<std::ofstream>(mpath);
+        *out << "t,com_sx,com_sy,com_z,goal_sx,goal_sy,follow_err,spread,coherence\n";
+        schedule.add("metrics",
+                     [out](Query<Position const, Velocity const> q, Res<Goal> goal,
+                           Res<Clock> clk) {
+            float cx = 0, cy = 0, cz = 0, vx = 0, vy = 0, vz = 0, spd = 0;
+            int n = 0;
+            q.each([&](Entity, Position const& p, Velocity const& v) {
+                cx += p.x; cy += p.y; cz += p.z;
+                vx += v.x; vy += v.y; vz += v.z;
+                spd += std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                ++n;
+            });
+            if (n == 0) return;
+            float const inv = 1.0f / float(n);
+            float const mcx = cx * inv, mcy = cy * inv, mcz = cz * inv;
+            float const mspd = spd * inv;
+            float svar = 0;
+            q.each([&](Entity, Position const& p, Velocity const&) {
+                float const dx = p.x - mcx, dy = p.y - mcy, dz = p.z - mcz;
+                svar += dx * dx + dy * dy + dz * dz;
+            });
+            float const spread = std::sqrt(svar * inv);
+            float const ci = cfg::kFocal / (cfg::kCamZ - mcz);     // CoM -> screen
+            float const gi = cfg::kFocal / (cfg::kCamZ - goal->z); // goal -> screen
+            float const csx = mcx * ci, csy = mcy * ci;
+            float const gsx = goal->x * gi, gsy = goal->y * gi;
+            float const ferr = std::sqrt((csx - gsx) * (csx - gsx) + (csy - gsy) * (csy - gsy));
+            float const coh =
+                mspd > 1e-5f ? std::sqrt(vx * vx + vy * vy + vz * vz) * inv / mspd : 0.0f;
+            *out << clk->t << ',' << csx << ',' << csy << ',' << mcz << ',' << gsx << ','
+                 << gsy << ',' << ferr << ',' << spread << ',' << coh << '\n';
+            out->flush(); // headless runs are killed by timeout; don't lose buffered rows
+        });
+    }
 }
