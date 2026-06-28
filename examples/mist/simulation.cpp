@@ -55,11 +55,17 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         "scatter",
         [count](Commands& cmd, ResMut<Rng> rng) {
             auto& g = rng->gen;
-            std::uniform_real_distribution<float> p(-0.8f, 0.8f);
-            std::uniform_real_distribution<float> v(-0.1f, 0.1f);
+            std::uniform_real_distribution<float> p(-0.7f, 0.7f);
+            std::uniform_real_distribution<float> j(-0.06f, 0.06f);
+            // Start the whole flock already moving together -- one shared heading
+            // with only a little jitter, so it is a *coherent* mass from t=0.
+            // Seeding random per-bird velocities (then renormalising to cruise)
+            // instead makes every bird fly off in its own direction: a chaotic
+            // cloud that alignment takes ~2 minutes to untangle, during which the
+            // flock is too diffuse for the cursor's steering to show.
             for (int i = 0; i < count; ++i)
                 cmd.spawn(Position {p(g), p(g), p(g) - 0.3f},
-                          Velocity {v(g), v(g), v(g)});
+                          Velocity {0.5f + j(g), 0.15f + j(g), j(g)});
         },
         phase<-1> {});
 
@@ -79,16 +85,25 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
     // clock: advance sim time (drives the goal's wander). wave 0.
     schedule.add("clock", [](ResMut<Clock> c) { c->t += cfg::kDt; });
 
-    // goal: move the global attractor on a slow Lissajous through the volume.
-    // Its z swings up near the camera, so the flock periodically sweeps over the
-    // viewer. wave 0.
-    schedule.add("goal", [](ResMut<Goal> go, Res<Clock> clk) {
+    // goal: set the global attractor the whole flock flies toward. This is the
+    // single force that steers the murmuration as a mass, so the *cursor steers
+    // here*, not as a local per-bird pull (which only ever made a swarm point).
+    // When the cursor is active it *is* the goal -- point where the flock should
+    // fly and the whole mass turns and heads there. Otherwise the goal wanders on
+    // a slow Lissajous on its own. The xy target is in screen space (so the flock
+    // stays in view at any depth) and converted to world at the goal's depth; the
+    // depth gz keeps its autonomous swing either way, so the overhead sweeps
+    // persist whether or not you are steering. wave 0.
+    schedule.add("goal", [](ResMut<Goal> go, Res<Clock> clk, Res<Cursor> cur) {
         float const t = clk->t;
-        // Wander in screen space (sx, sy) at a swinging depth gz, then convert
-        // to a world position that projects to (sx, sy) -- so the flock stays in
-        // view at every depth, and looms centred as gz nears the camera.
-        float const sx = cfg::kRoamX * std::sin(0.062f * t) * std::cos(0.035f * t + 0.5f);
-        float const sy = cfg::kRoamY * std::sin(0.051f * t + 1.3f);
+        float sx, sy;
+        if (cur->active) {
+            sx = cur->x; // the cursor is the destination -- you fly the flock
+            sy = cur->y;
+        } else {
+            sx = cfg::kRoamX * std::sin(0.062f * t) * std::cos(0.035f * t + 0.5f);
+            sy = cfg::kRoamY * std::sin(0.051f * t + 1.3f);
+        }
         float const gz = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f);
         float const d  = cfg::kCamZ - gz;
         go->x = sx * d / cfg::kFocal;
@@ -111,19 +126,18 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         });
     });
 
-    // steer: turn each bird. Accumulate the boids rules + goal + predator into a
-    // steering acceleration, apply it, then pull speed back to the cruise.
+    // steer: turn each bird. Accumulate the boids rules + goal into a steering
+    // acceleration, apply it, then pull speed back to the cruise. (The cursor
+    // acts through the goal above, so there is no per-bird cursor force here.)
     schedule.add("steer",
                  [](Query<Position const, Velocity> q,
                     Res<FlockGrid> grid,
                     Res<Goal> goal,
-                    Res<Cursor> cur,
                     Res<Clock> clk) {
         Goal const G       = *goal;
-        Cursor const C     = *cur;
         float const t      = clk->t;
         FlockGrid const& g = *grid;
-        q.for_each_chunk([G, C, t, &g](std::span<Entity>,
+        q.for_each_chunk([G, t, &g](std::span<Entity>,
                                     chunk<Position const> pos,
                                     chunk<Velocity> vel) {
             auto const px = pos.column<0>();
@@ -168,25 +182,9 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                     add_dir(ax, ay, az, sgx, sgy, sgz, cfg::kSeparation);
                 }
 
-                // Goal seek: the flock always flies toward its wandering roost.
+                // Goal seek: the flock flies toward the goal -- the wandering
+                // roost, or the cursor when you are steering (set in `goal`).
                 add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, cfg::kGoalSeek);
-
-                // Cursor lure (local): a bird whose screen position falls within
-                // kCursorRadius of the pointer is gently drawn toward it, with a
-                // falloff -- you tease a tendril of the flock to the cursor while
-                // the rest keeps flying its pattern.
-                float const d = cfg::kCamZ - z;
-                if (C.active && d > cfg::kNearClip) {
-                    float const inv = cfg::kFocal / d;
-                    float const sdx = C.x - x * inv;
-                    float const sdy = C.y - y * inv;
-                    float const sd  = std::sqrt(sdx * sdx + sdy * sdy);
-                    if (sd < cfg::kCursorRadius) {
-                        float fall = 1.0f - sd / cfg::kCursorRadius;
-                        fall *= fall;
-                        add_dir(ax, ay, az, sdx, sdy, 0.0f, cfg::kAttract * fall);
-                    }
-                }
 
                 // Wander: per-bird 3D turbulence -- neighbours diverge a little,
                 // which breaks thin lines/sheets into volume and adds a living

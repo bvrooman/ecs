@@ -73,7 +73,14 @@ int main() {
 
     // --- world + schedule + cross-thread channel --------------------------
     World world;
-    world.emplace_resource<Rng>(Rng {std::mt19937 {std::random_device {}()}});
+    // Seed: random by default, or ECS_SEED=<n> for a reproducible run (same
+    // scatter + deterministic schedule => identical evolution, handy for
+    // comparing the same flock at different timestamps).
+    unsigned seed = std::random_device {}();
+    if (char const* s = std::getenv("ECS_SEED"))
+        if (unsigned v = unsigned(std::strtoul(s, nullptr, 10)); v != 0)
+            seed = v;
+    world.emplace_resource<Rng>(Rng {std::mt19937 {seed}});
     world.emplace_resource<Clock>(Clock {0.0f});
     world.emplace_resource<Cursor>(Cursor {});
     world.emplace_resource<Goal>(Goal {0.0f, 0.0f, 0.0f}); // wandering flock attractor
@@ -342,12 +349,18 @@ int main() {
             }
             if (has_overlay) {
                 float const s = std::max(2.0f, fbh / 320.0f); // glyph cell, px
-                char count_text[28];
+                char count_text[28], time_text[24];
                 std::snprintf(count_text, sizeof(count_text), "PARTICLES %d", int(count_pts));
-                // FPS = render frames/s, SIM = schedule ticks/s, then live count.
+                // Elapsed sim time (ticks x dt) -- matches ECS_CAPTURE_AT and the
+                // goal's phase, so behaviour can be read against a timestamp.
+                double const sim_time =
+                    double(ticks.load(std::memory_order_relaxed)) * double(cfg::kDt);
+                std::snprintf(time_text, sizeof(time_text), "TIME %.1f", sim_time);
+                // FPS = render frames/s, SIM = schedule ticks/s, TIME = sim secs.
                 overlay.draw(fps_text, 2.0f * s, 2.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
                 overlay.draw(sim_text, 2.0f * s, 11.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
-                overlay.draw(count_text, 2.0f * s, 20.0f * s, s, fbw, fbh, 0.35f, 0.35f, 0.4f);
+                overlay.draw(time_text, 2.0f * s, 20.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
+                overlay.draw(count_text, 2.0f * s, 29.0f * s, s, fbw, fbh, 0.35f, 0.35f, 0.4f);
             }
 
             // Grab one frame after the cloud has had cap_at seconds to organize.

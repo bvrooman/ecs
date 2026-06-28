@@ -57,7 +57,7 @@ namespace cfg {
 // so the look is independent of this rate.
 inline constexpr int kSimHz = 60;
 inline constexpr float kDt  = 1.0f / kSimHz;
-inline constexpr int kCount = 105000; // birds (ECS_PARTICLES overrides)
+inline constexpr int kCount = 85000; // birds (ECS_PARTICLES overrides)
 
 // Camera (shared with the renderer): a fixed perspective view from +kCamZ
 // looking toward -z, sitting close so the flock looms large as it sweeps near.
@@ -73,24 +73,32 @@ inline constexpr float kFarFade  = 3.40f; // depth where birds haze fully out
 // that is what makes it read as flight, not floating). Per-tick steering is the
 // weighted sum of boids rules + the goal, applied as an acceleration, after
 // which speed is pulled back to the cruise. Weights are dimensionless.
-inline constexpr float kCruise     = 0.55f; // clip units / s
-inline constexpr float kGoalSeek   = 0.75f; // pull toward the wandering goal (the roost)
+inline constexpr float kCruise   = 0.65f; // clip units / s
+inline constexpr float kGoalSeek = 0.75f; // pull toward the wandering goal (the roost)
+// Radial damping toward the goal: opposes a bird's in/out motion relative to the
+// goal so the flock *settles* onto it within seconds, instead of sloshing in and
+// out for ~a minute (the constant-speed flight has no other damping -- that slow
+// bulk swing was what made the cursor feel unresponsive at the start). Only the
+// radial component is damped; tangential wheeling/folding is untouched. Higher =
+// settles tighter/faster onto the goal; lower = a looser murmuration that still
+// drifts in and out a little. ~0.8 holds it on the goal within a few seconds.
+inline constexpr float kSettle     = 0.80f;
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding
-inline constexpr float kSoftCap    = 18.0f; // per-cell density before separation bites
+inline constexpr float kSoftCap    = 20.0f; // per-cell density before separation bites
 // Per-bird turbulence: a 3D noise "wander" so neighbours diverge a little -- it
 // breaks the flock out of thin lines/sheets and gives it 3D volume and a
 // living shimmer. Gentle, so it adds body without dispersing the mass.
 inline constexpr float kWander     = 0.30f;
 inline constexpr float kWanderFreq = 1.9f;
 
-// The cursor is a *local* attractor: only birds whose screen position lands
-// within kCursorRadius of the pointer are drawn toward it (with a falloff), so
-// you tease a tendril of the flock to the cursor while the rest of the
-// murmuration keeps flying its wandering pattern. Gentle on purpose.
-inline constexpr float kAttract      = 0.75f;
-inline constexpr float kCursorRadius = 0.90f; // clip-space lure radius
+// The cursor *steers the whole murmuration's direction* -- it is not a local
+// attractor (that only ever made a swarm point). While the cursor is in the
+// window it becomes the flock's goal (see the `goal` system): the whole mass
+// turns and flies toward where you point, then resumes wandering when you leave.
+// How hard it chases the cursor is just kGoalSeek (above) -- raise that for a
+// snappier, more responsive steer, lower it for a lazier turn.
 
 // The goal wanders on a slow Lissajous. Its xy targets are in *screen* space
 // (bounded apparent position) and converted to world at the goal's depth, so
@@ -100,7 +108,7 @@ inline constexpr float kCursorRadius = 0.90f; // clip-space lure radius
 inline constexpr float kRoamX      = 0.60f; // screen-x amplitude (clip units)
 inline constexpr float kRoamY      = 0.50f; // screen-y amplitude
 inline constexpr float kRoamZc     = 0.10f; // mid depth of the goal's z swing
-inline constexpr float kRoamZ      = 1.00f; // z amplitude (peak ~d=0.15: sweeps overhead)
+inline constexpr float kRoamZ      = 0.10f; // z amplitude (peak ~d=0.15: sweeps overhead)
 inline constexpr float kBound      = 2.60f; // soft wall radius
 inline constexpr float kBoundForce = 2.50f;
 
@@ -109,7 +117,7 @@ inline constexpr float kBoundForce = 2.50f;
 // large grid, so most cells are empty; indices are clamped at the edges (the
 // flock stays interior, kept in by the soft boundary).
 inline constexpr float kGridHalf = 3.0f;
-inline constexpr int kGridDim    = 30;
+inline constexpr int kGridDim    = 50;
 inline constexpr float kGridCell = 2.0f * kGridHalf / kGridDim;
 inline constexpr float kGridMin  = -kGridHalf;
 } // namespace cfg
