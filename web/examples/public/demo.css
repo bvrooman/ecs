@@ -1,0 +1,67 @@
+/* Shared styling for the WebAssembly particle demos. Each page uses the subset
+   of these rules its markup needs (controls only on the C++ demos, .warn only on
+   the cross-origin-isolated pages, etc.). */
+
+:root { color-scheme: dark; }
+
+html, body {
+  margin: 0; min-height: 100%;
+  background: #07070c;
+  color: #d8d8e0;
+  font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+body {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; box-sizing: border-box;
+}
+
+h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: .04em; color: #f0c789; }
+h1 span { color: #6a6a78; }
+
+.warn { color: #e6a4a4; font-size: 13px; max-width: 88vmin; text-align: center; }
+
+.stage { position: relative; }
+canvas {
+  display: block;
+  width: 760px; height: 760px; max-width: 88vmin; max-height: 88vmin;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #1b1b26, 0 18px 60px -20px #000;
+  background: #05050a;
+}
+/* Canvases that take pointer input (the C++ demos aim the nozzle with it). */
+canvas.interactive { cursor: crosshair; touch-action: none; }
+
+.hud {
+  position: absolute; top: 14px; left: 16px;
+  line-height: 1.5;
+  pointer-events: none; text-shadow: 0 1px 2px #000;
+}
+.hud .fps   { color: #ffffff; }
+.hud .count { color: #f0c789; }
+.hud .tick  { color: #9fd0f0; }
+.hud .lanes { color: #b6e6a4; }
+.hud .sim   { color: #c8a4e6; }
+.hud .k     { color: #6a6a78; }
+
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 18px;
+  padding: 10px 16px;
+  background: #0e0e16; border: 1px solid #1b1b26; border-radius: 10px;
+}
+.controls.bare { border: none; background: none; padding-top: 0; }
+.controls label { display: flex; align-items: center; gap: 8px; color: #9a9aa8; }
+.controls input[type=range] { width: 120px; accent-color: #f0a849; }
+.controls input[type=range].lanes { width: 110px; accent-color: #7fcf6a; }
+.controls .val { color: #d8d8e0; min-width: 32px; text-align: right; }
+.controls button {
+  font: inherit; color: #d8d8e0;
+  background: #1a1a26; border: 1px solid #2a2a3a; border-radius: 7px;
+  padding: 5px 12px; cursor: pointer;
+}
+.controls button:hover { background: #20202e; border-color: #3a3a4e; }
+.controls button:active { background: #2a2a3a; }
+.controls .hint { color: #5a5a68; }
+
+footer { color: #5a5a68; font-size: 12px; max-width: 88vmin; text-align: center; }
+footer b { color: #8a8a98; font-weight: 500; }

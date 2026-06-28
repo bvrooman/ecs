@@ -47,6 +47,14 @@ struct Clock {
     float t;
 }; // sim time, advanced each tick; drives the animated force fields
 
+// Runtime-tunable emitter knobs: spawn count per tick and nozzle position. Held
+// as a resource (not cfg:: constants) so a host can adjust them live -- the web
+// demo drives these from sliders and the cursor. Defaults mirror the cfg:: values.
+struct Emitter {
+    int per_tick;
+    float origin_x, origin_y;
+};
+
 // One draw-ready vertex: clip-space position + RGBA. This is what crosses the
 // thread boundary; the ECS knows nothing about GL.
 struct GpuParticle {

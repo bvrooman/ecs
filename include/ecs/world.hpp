@@ -42,6 +42,13 @@ namespace detail {
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 } // namespace detail
 
+// Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
+// reuse World's generic archetype machinery via friendship -- forward-declared
+// here so World can befriend it without depending on the dynamic module.
+namespace dynamic {
+struct WorldOps;
+}
+
 class World {
 public:
     World() {
@@ -131,8 +138,9 @@ public:
     }
 
 private:
-    friend class Commands; // the mutation API; records into commands_
-    friend class Schedule; // creates Commands and flushes at barriers
+    friend class Commands;         // the mutation API; records into commands_
+    friend class Schedule;         // creates Commands and flushes at barriers
+    friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
 
     struct Record {
         std::uint32_t archetype  = 0;

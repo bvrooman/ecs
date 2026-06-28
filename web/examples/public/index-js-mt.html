@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ecs — JS fountain, data systems parallel across worker lanes</title>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <h1>ecs JS fountain <span>· wasm · data systems parallel across worker lanes</span></h1>
+  <div class="warn" id="coiWarn" style="display:none">
+    ⚠ not cross-origin isolated — SharedArrayBuffer is unavailable, so the worker
+    pool can't start. Serve with <b>web/build-wasm.sh serve</b> (COOP/COEP).
+  </div>
+
+  <div class="stage">
+    <canvas id="canvas" width="760" height="760"></canvas>
+    <div class="hud">
+      <div><span class="k">fps </span><span class="fps" id="fps">--</span></div>
+      <div><span class="k">particles </span><span class="count" id="count">0</span></div>
+      <div><span class="k">lanes </span><span class="lanes" id="lanes">--</span></div>
+    </div>
+  </div>
+
+  <footer>Same JS-defined sim, but <b>gravity, turbulence &amp; integrate</b> are
+  <b>defineParallelSystem</b> — each ticks across the worker lanes (pure kernels,
+  eval'd per lane over <b>SharedArrayBuffer</b>). <b>emit</b> &amp; <b>age+reap</b>
+  (structural) stay main-thread.</footer>
+
+  <script src="fountain.js"></script>
+  <script src="app-js-mt.js"></script>
+  <script src="particles-js-mt.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ecs — particle fountain (WebAssembly, multi-threaded)</title>
+    <link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<h1>ecs particle fountain <span>· wasm · multi-threaded (-pthread)</span></h1>
+<div class="warn" id="coiWarn" style="display:none">
+    ⚠ page is not cross-origin isolated — SharedArrayBuffer is unavailable and the
+    worker pool can't start. Serve with <b>web/build-wasm.sh serve</b> (COOP/COEP).
+</div>
+
+<div class="stage">
+    <canvas id="canvas" class="interactive" width="760" height="760" tabindex="-1"
+            oncontextmenu="event.preventDefault()"></canvas>
+    <div class="hud">
+        <div><span class="k">fps </span><span class="fps" id="fps">--</span><span class="k"> render</span></div>
+        <div><span class="k">sim </span><span class="sim" id="sim">--</span><span class="k"> Hz</span></div>
+        <div><span class="k">particles </span><span class="count" id="count">0</span></div>
+        <div><span class="k">tick </span><span class="tick" id="tick">--</span><span class="k"> ms</span></div>
+        <div><span class="k">lanes </span><span class="lanes" id="lanes">--</span></div>
+    </div>
+</div>
+
+<div class="controls">
+    <label>gravity
+        <input id="gravity" type="range" min="-4" max="2" step="0.1" value="-1.7">
+        <span class="val" id="gravityVal">-1.7</span>
+    </label>
+    <label>emit / tick
+        <input id="emit" type="range" min="0" max="150" step="1" value="20">
+        <span class="val" id="emitVal">20</span>
+    </label>
+    <label>worker lanes
+        <input id="lanesCtl" class="lanes" type="range" min="1" max="8" step="1" value="4">
+        <span class="val" id="lanesCtlVal">4</span>
+    </label>
+    <button id="pause">pause</button>
+    <button id="reset">reset</button>
+</div>
+<div class="controls bare">
+    <span class="hint">lane 1 = inline · 2–8 = resident Web Worker threads · move the cursor over the canvas to aim the nozzle</span>
+</div>
+
+<footer>ECS schedule (<b>11 systems</b>, 5 waves) at 120&nbsp;Hz; the 3 turbulence-field systems fan out across worker
+    lanes via the <b>WorkerPool</b>.
+</footer>
+
+<script src="controls.js"></script>
+<script src="app-cpp-mt.js"></script>
+<script src="particles-mt.js"></script>
+</body>
+</html>

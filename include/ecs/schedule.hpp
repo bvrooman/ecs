@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include "detail/move_only_function.hpp"
 #include "query.hpp"
 #include "world.hpp"
 #include <algorithm>
@@ -157,7 +158,7 @@ public:
         // move_only_function (not function) so a system may capture a move-only
         // value (e.g. a unique_ptr or a move_only_function of its own). The
         // WorkerPool* is null except under run(World&, WorkerPool&).
-        std::move_only_function<void(World&, Commands&, WorkerPool*)> run;
+        ecs::detail::move_only_function<void(World&, Commands&, WorkerPool*)> run;
         int phase         = 0;
         std::size_t level = 0;
         bool once         = false;
@@ -180,6 +181,31 @@ public:
     template <class Fn, int P = 0>
     SystemId add_once(std::string name, Fn&& fn, phase<P> = {}) {
         return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
+    }
+
+    // Register a system whose access is *declared* (a runtime SystemAccess)
+    // rather than derived from C++ parameter types -- the entry point for a
+    // JS-defined system. `run` is the type-erased body (typically a runtime query
+    // that dispatches per chunk) with the usual (World&, Commands&, WorkerPool*)
+    // signature. It conflicts and levels against every other system by `access`
+    // exactly like a native one, so JS and C++ systems share one wave plan.
+    template <class Run>
+    SystemId add_dynamic(std::string name,
+                         SystemAccess access,
+                         Run&& run,
+                         int phase = 0,
+                         bool once = false) {
+        auto const id = ++next_id_;
+        System sys;
+        sys.id     = id;
+        sys.name   = std::move(name);
+        sys.access = std::move(access);
+        sys.phase  = phase;
+        sys.once   = once;
+        sys.run    = std::forward<Run>(run);
+        systems_.push_back(std::move(sys));
+        dirty_ = true;
+        return id;
     }
 
     // Unschedule a system by handle. Returns true if it was present.

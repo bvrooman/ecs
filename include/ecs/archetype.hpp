@@ -40,6 +40,12 @@ struct IColumn {
     virtual std::unique_ptr<IColumn> clone_empty() const = 0;
     [[nodiscard]]
     virtual std::size_t size() const = 0;
+    // Base pointer of the i-th field's contiguous (SoA) buffer. Lets a host --
+    // e.g. a JS system -- read/write a component's fields by index without
+    // knowing its C++ type; the field's element type comes from a registered
+    // descriptor (see dynamic/). Valid until the column relocates/reallocates.
+    [[nodiscard]]
+    virtual void* field_base(std::size_t i) = 0;
 };
 
 template <class T>
@@ -60,18 +66,25 @@ struct Column final : IColumn {
     std::size_t size() const override {
         return store.size();
     }
+    [[nodiscard]]
+    void* field_base(std::size_t i) override {
+        return store.field_base(i);
+    }
 };
 
 // Sorted list of component ids -- the identity of an archetype.
 using Signature = std::vector<ComponentId>;
 
 inline std::size_t hash_signature(Signature const& s) noexcept {
-    std::size_t h = 1469598103934665603ull; // FNV-1a
+    // Accumulate in an explicit 64-bit type: the FNV-1a offset basis and prime
+    // are 64-bit, which would truncate into a 32-bit std::size_t on ILP32 targets
+    // (e.g. wasm32). Narrow to size_t only for the returned bucket index.
+    std::uint64_t h = 1469598103934665603ull; // FNV-1a
     for (auto const id : s) {
         h ^= id;
         h *= 1099511628211ull;
     }
-    return h;
+    return static_cast<std::size_t>(h);
 }
 
 struct Archetype {
