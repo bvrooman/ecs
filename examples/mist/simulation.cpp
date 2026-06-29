@@ -54,6 +54,7 @@ inline void add_dir(float& ax, float& ay, float& az,
 // cfg values; the grid and camera stay compile-time.
 struct Tuning {
     float cruise, goalSeek, goalFollow, cohesion, alignment, separation, softCap, wander;
+    float dive; // fly-over dive depth
 };
 inline float env_f(char const* key, float dflt) {
     char const* v = std::getenv(key);
@@ -67,7 +68,8 @@ inline Tuning read_tuning() {
                    env_f("ECS_ALIGN", cfg::kAlignment),
                    env_f("ECS_SEPARATION", cfg::kSeparation),
                    env_f("ECS_SOFTCAP", cfg::kSoftCap),
-                   env_f("ECS_WANDER", cfg::kWander)};
+                   env_f("ECS_WANDER", cfg::kWander),
+                   env_f("ECS_DIVE", cfg::kDiveAmp)};
 }
 
 } // namespace
@@ -125,7 +127,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
     // stays in view at any depth) and converted to world at the goal's depth; the
     // depth gz keeps its autonomous swing either way, so the overhead sweeps
     // persist whether or not you are steering. wave 0.
-    schedule.add("goal", [](ResMut<Goal> go, Res<Clock> clk, Res<Cursor> cur) {
+    schedule.add("goal", [T](ResMut<Goal> go, Res<Clock> clk, Res<Cursor> cur) {
         float const t = clk->t;
         float sx, sy;
         if (cur->active) {
@@ -135,8 +137,18 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
             sx = cfg::kRoamX * std::sin(0.062f * t) * std::cos(0.035f * t + 0.5f);
             sy = cfg::kRoamY * std::sin(0.051f * t); // phase 0: starts centred, not at the top edge
         }
-        float const gz = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f);
-        float const d  = cfg::kCamZ - gz;
+        // Depth: the gentle autonomous swing, plus a periodic fly-over dive --
+        // a sharp pulse toward the camera (pow() is ~0 most of the cycle, then a
+        // brief spike). Clamped just in front of the cull plane so the screen-space
+        // projection stays valid (d>0) while the flock's leading edge streams past.
+        // Only hands-off: while you steer, the dive is suppressed so the follow
+        // stays smooth (a surprise surge cameraward would fight your control).
+        float const dive = cur->active
+            ? 0.0f
+            : T.dive * std::pow(std::max(0.0f, std::sin(cfg::kDiveFreq * t)), 8.0f);
+        float gz = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f) + dive;
+        gz = std::min(gz, 1.35f);
+        float const d = cfg::kCamZ - gz;
         go->x = sx * d / cfg::kFocal;
         go->y = sy * d / cfg::kFocal;
         go->z = gz;
@@ -238,12 +250,15 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                     float const r = std::sqrt(r2);
                     add_dir(ax, ay, az, -x, -y, 0.0f, cfg::kBoundForce * (r - cfg::kBound));
                 }
-                // Depth band: let the flock sweep forward toward the camera but
-                // not recede into the far haze, so it stays a readable size.
+                // Depth band: hold the flock at a readable size -- not receding
+                // into the far haze (kZBack), nor drifting forward of kZFront...
+                // except the front cap follows a forward goal dive (G.z), so the
+                // flock can chase the goal toward the camera during a fly-over.
                 if (z < cfg::kZBack)
                     add_dir(ax, ay, az, 0.0f, 0.0f, 1.0f, cfg::kBoundForce * (cfg::kZBack - z));
-                else if (z > cfg::kZFront)
-                    add_dir(ax, ay, az, 0.0f, 0.0f, -1.0f, cfg::kBoundForce * (z - cfg::kZFront));
+                float const zfront = std::max(cfg::kZFront, G.z + 0.25f);
+                if (z > zfront)
+                    add_dir(ax, ay, az, 0.0f, 0.0f, -1.0f, cfg::kBoundForce * (z - zfront));
 
                 // Apply the steering, then pull speed back to the cruise so the
                 // birds always fly (turning, not speeding up or stopping).

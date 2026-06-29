@@ -73,7 +73,7 @@ inline constexpr float kFarFade  = 3.40f; // depth where birds haze fully out
 // that is what makes it read as flight, not floating). Per-tick steering is the
 // weighted sum of boids rules + the goal, applied as an acceleration, after
 // which speed is pulled back to the cruise. Weights are dimensionless.
-inline constexpr float kCruise   = 0.65f; // clip units / s
+inline constexpr float kCruise = 0.65f; // clip units / s
 // Pull toward the goal. Two strengths because they want opposite things (a fact
 // the metric sweep surfaced): the slow hands-off WANDER wants a gentle pull, or
 // the constant-speed flock collapses into a tight orbiting ring; the CURSOR (a
@@ -107,15 +107,24 @@ inline constexpr float kWanderFreq = 1.9f;
 inline constexpr float kRoamX      = 0.60f; // screen-x amplitude (clip units)
 inline constexpr float kRoamY      = 0.50f; // screen-y amplitude
 inline constexpr float kRoamZc     = 0.10f; // mid depth of the goal's z swing
-inline constexpr float kRoamZ      = 0.10f; // z amplitude (peak ~d=0.15: sweeps overhead)
+inline constexpr float kRoamZ      = 0.20f; // z amplitude (peak ~d=0.15: sweeps overhead)
 inline constexpr float kBound      = 2.60f; // soft wall radius (view plane, xy)
 inline constexpr float kBoundForce = 2.50f;
 // Depth band (world z). The sphere above is too loose in z -- the flock can
 // recede until it is a tiny speck. Hold it in a readable depth range instead:
 // it may sweep forward toward the camera (kZFront, looms large) but not drift
 // back into the far haze. d = kCamZ - z, so this keeps d in ~[0.4, 1.95].
-inline constexpr float kZFront = 1.10f;  // nearest world-z (d=0.40: looms large)
-inline constexpr float kZBack  = -0.45f; // farthest world-z (d=1.95: still a readable size)
+inline constexpr float kZFront = 1.10f; // nearest world-z (d=0.40: looms large)
+inline constexpr float kZBack =
+    -0.45f; // farthest world-z (d=1.95: still a readable size)
+
+// Fly-over: the goal periodically dives toward the camera so the whole flock
+// surges forward, looms over the viewer, and the leading edge streams past (and
+// culls) -- the "flies over you" beat from a real murmuration. A sharp periodic
+// pulse (mostly ~0, a brief spike) added to the goal's depth; the front of the
+// depth band follows the dive so the flock can actually chase it forward.
+inline constexpr float kDiveAmp  = 0.85f; // forward depth of the dive (peak ~d=0.26: looms huge)
+inline constexpr float kDiveFreq = 0.18f; // ~one fly-over every 2*pi/kDiveFreq ~ 35 s
 
 // Uniform spatial grid covering the roaming volume, for the boids neighbourhood
 // (a bird's cell + its 6 face neighbours). The flock is a dense blob roaming a
