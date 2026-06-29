@@ -85,7 +85,7 @@ inline constexpr float kGoalFollow = 2.00f; // pull toward the cursor (while ste
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding
-inline constexpr float kSoftCap    = 40.0f; // per-cell density before separation bites
+inline constexpr float kSoftCap    = 30.0f; // per-cell density before separation bites
 // Per-bird turbulence: a 3D noise "wander" so neighbours diverge a little -- it
 // breaks the flock out of thin lines/sheets and gives it 3D volume and a
 // living shimmer. Gentle, so it adds body without dispersing the mass.
@@ -123,7 +123,8 @@ inline constexpr float kZBack =
 // culls) -- the "flies over you" beat from a real murmuration. A sharp periodic
 // pulse (mostly ~0, a brief spike) added to the goal's depth; the front of the
 // depth band follows the dive so the flock can actually chase it forward.
-inline constexpr float kDiveAmp  = 0.85f; // forward depth of the dive (peak ~d=0.26: looms huge)
+inline constexpr float kDiveAmp =
+    0.85f; // forward depth of the dive (peak ~d=0.26: looms huge)
 inline constexpr float kDiveFreq = 0.18f; // ~one fly-over every 2*pi/kDiveFreq ~ 35 s
 
 // Uniform spatial grid covering the roaming volume, for the boids neighbourhood

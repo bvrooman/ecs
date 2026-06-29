@@ -200,9 +200,10 @@ int main() {
 
     // --- simulation thread: runs the schedule at a fixed tick rate ---------
     // Serial by default. ECS_POOL=<n> runs the schedule on an n-lane WorkerPool
-    // (the `flow` curl-noise kernel is the part that scales). On an 8P+2E M1 Max
-    // the live sweet spot is ~4 -- it must leave a P-core for the render and
-    // main threads. ECS_STATS=1 prints per-tick timing every ~2s.
+    // (the `steer` boids kernel is the part that scales -- measured ~2-3x: 85k
+    // birds 5.4ms inline -> 2.4ms at 4 lanes). On an 8P+2E M1 Max the sweet spot
+    // is ~4 -- it must leave P-cores for the render and main threads (8 lanes
+    // oversubscribes and stutters). ECS_STATS=1 prints per-tick timing every ~2s.
     int pool_n = 0; // 0 = serial (1 lane)
     if (char const* p = std::getenv("ECS_POOL"))
         pool_n = std::atoi(p);
