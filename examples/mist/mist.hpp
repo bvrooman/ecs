@@ -36,12 +36,12 @@ struct Goal {
     float x, y, z;
 }; // the moving point the whole flock flies toward (the "intention")
 
-// The cursor, in clip space (-1..1), as a *predator* the flock veers away from.
-// Written each tick by `input`; `aspect` keeps the avoided region round.
+// The cursor, in clip space (-1..1). While it is inside the window (`active`) it
+// becomes the flock's goal -- the murmuration flies toward where you point (see
+// the `goal` system); otherwise the goal wanders on its own. Written by `input`.
 struct Cursor {
     float x = 0.0f, y = 0.0f;
-    bool active  = false;
-    float aspect = 1.0f;
+    bool active = false;
 };
 
 // One draw-ready vertex: just the 3D position (colour is a constant black; depth
@@ -62,8 +62,9 @@ inline constexpr int kCount = 85000; // birds (ECS_PARTICLES overrides)
 // Camera (shared with the renderer): a fixed perspective view from +kCamZ
 // looking toward -z, sitting close so the flock looms large as it sweeps near.
 // Birds nearer than kNearClip (z past the camera) are culled -- they have flown
-// over/behind the viewer. Lives here, not just in main, because `steer` needs it
-// to push the flock away from the cursor's screen ray (the predator void).
+// over/behind the viewer. Lives here, not just in main, because the `goal` system
+// needs it to convert the screen-space goal/cursor to world at the goal's depth
+// (and the renderer feeds the same constants to the shader).
 inline constexpr float kCamZ     = 1.50f;
 inline constexpr float kFocal    = 1.30f;
 inline constexpr float kNearClip = 0.10f; // cull birds closer than this depth
@@ -146,8 +147,8 @@ struct FlockGrid {
     static constexpr int dim   = cfg::kGridDim;
     static constexpr int cells = dim * dim * dim;
 
-    std::vector<std::uint16_t> count;
-    std::vector<float> sx, sy, sz; // sum of positions per cell
+    std::vector<std::uint32_t> count; // uint32: a dense cell can exceed 65535 at high ECS_PARTICLES
+    std::vector<float> sx, sy, sz;    // sum of positions per cell
     std::vector<float> vx, vy, vz; // sum of velocities per cell
 
     FlockGrid()
@@ -176,7 +177,7 @@ struct FlockGrid {
     }
 
     void clear() {
-        std::fill(count.begin(), count.end(), std::uint16_t(0));
+        std::fill(count.begin(), count.end(), std::uint32_t(0));
         std::fill(sx.begin(), sx.end(), 0.0f);
         std::fill(sy.begin(), sy.end(), 0.0f);
         std::fill(sz.begin(), sz.end(), 0.0f);
@@ -206,7 +207,6 @@ inline float cursor_x(std::uint64_t p) {
 inline float cursor_y(std::uint64_t p) { return std::bit_cast<float>(std::uint32_t(p)); }
 
 struct MistInput {
-    std::atomic<std::uint64_t> const* cursor  = nullptr;
-    std::atomic<std::uint32_t> const* flags   = nullptr;
-    std::atomic<std::uint64_t> const* fb_size = nullptr;
+    std::atomic<std::uint64_t> const* cursor = nullptr;
+    std::atomic<std::uint32_t> const* flags  = nullptr;
 };

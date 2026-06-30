@@ -5,7 +5,7 @@
 //
 //   phase -1: scatter                 (one-shot: seed the flock)
 //   wave 0:   input | clock | goal | grid
-//   wave 1:   steer                   (boids + goal + predator -> Velocity)
+//   wave 1:   steer                   (boids + goal -> Velocity)
 //   wave 2:   integrate               (Velocity -> Position)
 //   wave 3:   extract                 (publish the draw-ready frame)
 //
@@ -14,8 +14,8 @@
 // kernel) reads each bird's cell + 6 face neighbours to apply Reynolds boids --
 // cohesion (toward the local centre of mass), alignment (toward the local mean
 // heading) and separation (away from crowding) -- plus a pull toward the slowly
-// wandering `goal` (which flies the whole flock around) and a shove away from
-// the cursor's screen ray (a predator). The accumulated steering is applied as
+// wandering `goal` (which flies the whole flock around, and which the cursor
+// takes over when you steer). The accumulated steering is applied as
 // an acceleration, then speed is pulled back to a cruise: steering turns the
 // birds, it does not speed them up or stop them, which is what makes the flock
 // read as *flight* rather than drifting. Commands flush at each wave barrier.
@@ -102,18 +102,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         },
         phase<-1> {});
 
-    // input: copy the latest cursor (and window aspect) into the Cursor
-    // resource on the sim thread (single-writer); `steer` reads it. wave 0.
+    // input: copy the latest cursor into the Cursor resource on the sim thread
+    // (single-writer); `goal`/`steer` read it. wave 0.
     schedule.add("input", [in](ResMut<Cursor> cur) {
         std::uint64_t const c = in.cursor->load(std::memory_order_relaxed);
         std::uint32_t const f = in.flags->load(std::memory_order_relaxed);
-        std::uint64_t const s = in.fb_size->load(std::memory_order_relaxed);
-        cur->x                = cursor_x(c);
-        cur->y                = cursor_y(c);
-        cur->active           = (f & 1u) != 0;
-        // std::printf("active: %d, (x: %f, y: %f)\n", cur->active, cur->x, cur->y);
-        int const w = int(s >> 32), h = int(s & 0xffffffffu);
-        cur->aspect = h ? float(w) / float(h) : 1.0f;
+        cur->x      = cursor_x(c);
+        cur->y      = cursor_y(c);
+        cur->active = (f & 1u) != 0;
     });
 
     // clock: advance sim time (drives the goal's wander). wave 0.
@@ -405,10 +401,13 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                              svar += dx * dx + dy * dy + dz * dz;
                          });
                          float const spread = std::sqrt(svar * inv);
+                         // CoM/goal -> screen. Floor the depth at the cull plane:
+                         // a deep fly-over can carry the CoM past the camera
+                         // (kCamZ - z <= 0), which would divide by ~0 and flip.
                          float const ci =
-                             cfg::kFocal / (cfg::kCamZ - mcz); // CoM -> screen
+                             cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - mcz);
                          float const gi =
-                             cfg::kFocal / (cfg::kCamZ - goal->z); // goal -> screen
+                             cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - goal->z);
                          float const csx = mcx * ci, csy = mcy * ci;
                          float const gsx = goal->x * gi, gsy = goal->y * gi;
                          float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +

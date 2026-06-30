@@ -1,7 +1,8 @@
 // examples/mist/main.cpp
 //
-// A drifting cloud of black point-particles -- a fine mist that flows over a
-// white page along an animated curl-noise field and parts around the cursor,
+// A starling murmuration -- thousands of tiny black point-particles that flock by
+// Reynolds boids over a white page, led around (and over) the camera by a slowly
+// wandering goal the cursor can take over to steer while the pointer is in-window,
 // driven entirely by the ECS library. The thread architecture mirrors the
 // particle fountain (examples/particles): three threads, each a clear role, all
 // decoupled by lock-free snapshots:
@@ -79,8 +80,9 @@ static void scripted_cursor(char const* path, double t, float& px, float& py) {
 }
 
 // The 3D view (camera, focal, clip/fade depths) lives in cfg (mist.hpp) so the
-// simulation can share it for the cursor-predator projection; the renderer just
-// feeds those constants to the shader below.
+// simulation can share it -- the `goal` system converts the screen-space goal to
+// world space at the goal's depth; the renderer feeds the same constants to the
+// shader below.
 
 int main() {
     prefer_performance_cores(); // main / window-event thread
@@ -112,7 +114,7 @@ int main() {
 
     Schedule schedule;
     build_mist_schedule(schedule,
-                        MistInput {&wstate.cursor, &wstate.flags, &wstate.fb_size},
+                        MistInput {&wstate.cursor, &wstate.flags},
                         count);
     std::printf("mist: %d particles; schedule %zu systems across %zu levels\n",
                 count,
@@ -360,7 +362,8 @@ int main() {
                 glUniform1f(u_point, std::max(1.0f, float(fbh) / 560.0f));
 
             // Pull the newest published snapshot, if any, and re-upload. "Latest
-            // wins": when the 120 Hz sim outruns the display, frames are skipped.
+            // wins": when the sim produces frames faster than the display, stale
+            // ones are skipped.
             if (snapshots.consume()) {
                 RenderSnapshot const& snap = snapshots.front();
                 count_pts                  = static_cast<GLsizei>(snap.size());
