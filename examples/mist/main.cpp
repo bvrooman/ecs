@@ -24,7 +24,6 @@
 #include "mist.hpp"
 #include "simulation.hpp"
 #include "stats.hpp" // ecs::diag::TickStats -- per-tick timing distribution
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -67,9 +66,9 @@ static void scripted_cursor(char const* path, double t, float& px, float& py) {
         // and how closely, the flock reaches a freshly-placed cursor).
         static constexpr float wx[4] = {0.5f, -0.5f, -0.5f, 0.5f};
         static constexpr float wy[4] = {0.4f, 0.4f, -0.4f, -0.4f};
-        int const k = int(t / 4.0) & 3;
-        px = wx[k];
-        py = wy[k];
+        int const k                  = int(t / 4.0) & 3;
+        px                           = wx[k];
+        py                           = wy[k];
     } else if (std::strcmp(path, "sweep") == 0) {
         px = 0.7f * float(std::sin(0.5 * t)); // horizontal back-and-forth
         py = 0.0f;
@@ -155,9 +154,12 @@ int main() {
         auto* s = static_cast<WindowState*>(glfwGetWindowUserPointer(win));
         s->fb_size.store(pack_size(w, h), std::memory_order_relaxed);
     });
-    // Cursor handoff (main -> sim): publish the pointer position in clip space
-    // and whether it is inside the window. These callbacks run on the main
-    // thread during event polling and touch neither GL nor the ECS.
+    // Cursor handoff (main -> sim): this callback publishes the pointer position
+    // in clip space. Whether the cursor is *inside* the window (the active bit) is
+    // NOT set here -- it is polled per frame from GLFW_HOVERED in the event loop
+    // below. Event-driven active was fragile: the leave event could be missed, or a
+    // trailing move could re-set it, leaving the flock stuck following a cursor
+    // that had left. Runs on the main thread; touches neither GL nor the ECS.
     glfwSetCursorPosCallback(window, [](GLFWwindow* win, double mx, double my) {
         auto* s = static_cast<WindowState*>(glfwGetWindowUserPointer(win));
         int w, h;
@@ -165,24 +167,10 @@ int main() {
         float const nx = w ? float(mx) / float(w) * 2.0f - 1.0f : 0.0f;
         float const ny = h ? 1.0f - float(my) / float(h) * 2.0f : 0.0f; // flip Y
         s->cursor.store(pack_cursor(nx, ny), std::memory_order_relaxed);
-        // A move *over* the window means the cursor is in it -> active. Do not
-        // rely on the enter event alone: if the window opens under the cursor it
-        // never fires, and the follow would stay off until the cursor left and
-        // re-entered. (This is what made live steering silently do nothing.)
-        s->flags.fetch_or(1u, std::memory_order_relaxed);
     });
-    glfwSetCursorEnterCallback(window, [](GLFWwindow* win, int entered) {
-        auto* s = static_cast<WindowState*>(glfwGetWindowUserPointer(win));
-        if (entered)
-            s->flags.fetch_or(1u, std::memory_order_relaxed);
-        else
-            s->flags.fetch_and(~1u, std::memory_order_relaxed);
-    });
-    if (glfwGetWindowAttrib(window, GLFW_HOVERED))
-        wstate.flags.store(1u, std::memory_order_relaxed);
     // ECS_CURSOR="x,y" seeds a fixed active cursor in clip space (-1..1) so the
-    // avoided void is visible without moving the mouse (handy for a static
-    // capture); live pointer motion still overrides it.
+    // follow is visible without a real mouse (handy for a static capture); the
+    // per-frame hover poll below is skipped while it (or ECS_CURSOR_PATH) is set.
     if (char const* cs = std::getenv("ECS_CURSOR")) {
         float cx = 0.0f, cy = 0.0f;
         if (std::sscanf(cs, "%f,%f", &cx, &cy) == 2) {
@@ -227,9 +215,11 @@ int main() {
                 ticks.fetch_add(1, std::memory_order_relaxed);
                 if (stats_on) {
                     tick_stats.sample(
-                        std::chrono::duration<double, std::micro>(clock::now() - a).count());
+                        std::chrono::duration<double, std::micro>(clock::now() - a)
+                            .count());
                     if (auto const s = tick_stats.due()) {
-                        std::printf("%s\n", diag::TickStats::format(*s, "sim tick").c_str());
+                        std::printf("%s\n",
+                                    diag::TickStats::format(*s, "sim tick").c_str());
                         std::fflush(stdout);
                     }
                 }
@@ -291,19 +281,19 @@ int main() {
         // On-screen readout (a tiny bitmap-font overlay), drawn dark so it stays
         // legible over the white page. Optional: the demo runs without it.
         glutil::TextOverlay overlay;
-        bool const has_overlay = overlay.init(MIST_SHADER_DIR "/text.vert",
-                                              MIST_SHADER_DIR "/text.frag");
+        bool const has_overlay =
+            overlay.init(MIST_SHADER_DIR "/text.vert", MIST_SHADER_DIR "/text.frag");
         if (!has_overlay)
             std::fprintf(stderr, "HUD overlay disabled (text shaders missing)\n");
         CGLUnlockContext(cgl);
 
-        GLsizei count_pts       = 0;     // particles currently in the VBO
+        GLsizei count_pts       = 0; // particles currently in the VBO
         long frames             = 0;
         std::uint64_t last_size = ~0ull; // force a glViewport on the first frame
-        double fps        = 0.0;
-        long fps_frames   = 0;
-        auto fps_t0       = std::chrono::steady_clock::now();
-        char fps_text[24] = "FPS 0.0"; // valid glyphs until the first 0.4s sample
+        double fps              = 0.0;
+        long fps_frames         = 0;
+        auto fps_t0             = std::chrono::steady_clock::now();
+        char fps_text[24]       = "FPS 0.0"; // valid glyphs until the first 0.4s sample
         // Sim tick rate, measured over the same window from the shared counter
         // (holds at kSimHz while the schedule keeps up; dips if it overruns).
         char sim_text[24] = "SIM 0.0";
@@ -317,7 +307,7 @@ int main() {
         if (char const* a = std::getenv("ECS_CAPTURE_AT"))
             if (double v = std::atof(a); v > 0.0)
                 cap_at = v;
-        bool captured     = false;
+        bool captured      = false;
         auto const loop_t0 = std::chrono::steady_clock::now();
         // ECS_CURSOR_PATH=circle|step|sweep drives the cursor over time (headless
         // follow tests). ECS_FILMSTRIP=<dir> grabs ECS_FILMSTRIP_N frames every
@@ -345,7 +335,8 @@ int main() {
             }
 
             double const elapsed =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_t0).count();
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_t0)
+                    .count();
             if (cursorPath) { // drive the scripted cursor (overrides live input)
                 float px, py;
                 scripted_cursor(cursorPath, elapsed, px, py);
@@ -394,7 +385,9 @@ int main() {
                 fps_frames = 0;
                 std::snprintf(fps_text, sizeof(fps_text), "FPS %.1f", fps);
                 long const sim_now = ticks.load(std::memory_order_relaxed);
-                std::snprintf(sim_text, sizeof(sim_text), "SIM %.1f",
+                std::snprintf(sim_text,
+                              sizeof(sim_text),
+                              "SIM %.1f",
                               double(sim_now - sim_last) / fps_el);
                 sim_last = sim_now;
                 fps_t0   = fnow;
@@ -402,7 +395,10 @@ int main() {
             if (has_overlay) {
                 float const s = std::max(2.0f, fbh / 320.0f); // glyph cell, px
                 char count_text[28], time_text[24];
-                std::snprintf(count_text, sizeof(count_text), "PARTICLES %d", int(count_pts));
+                std::snprintf(count_text,
+                              sizeof(count_text),
+                              "PARTICLES %d",
+                              int(count_pts));
                 // Elapsed sim time (ticks x dt) -- matches ECS_CAPTURE_AT and the
                 // goal's phase, so behaviour can be read against a timestamp.
                 double const sim_time =
@@ -410,9 +406,19 @@ int main() {
                 std::snprintf(time_text, sizeof(time_text), "TIME %.1f", sim_time);
                 // FPS = render frames/s, SIM = schedule ticks/s, TIME = sim secs.
                 overlay.draw(fps_text, 2.0f * s, 2.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
-                overlay.draw(sim_text, 2.0f * s, 11.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
-                overlay.draw(time_text, 2.0f * s, 20.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
-                overlay.draw(count_text, 2.0f * s, 29.0f * s, s, fbw, fbh, 0.35f, 0.35f, 0.4f);
+                overlay
+                    .draw(sim_text, 2.0f * s, 11.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
+                overlay
+                    .draw(time_text, 2.0f * s, 20.0f * s, s, fbw, fbh, 0.1f, 0.1f, 0.1f);
+                overlay.draw(count_text,
+                             2.0f * s,
+                             29.0f * s,
+                             s,
+                             fbw,
+                             fbh,
+                             0.35f,
+                             0.35f,
+                             0.4f);
             }
 
             // Grab one frame after the cloud has had cap_at seconds to organize.
@@ -462,8 +468,22 @@ int main() {
     });
 
     // --- main event loop ---------------------------------------------------
-    while (!glfwWindowShouldClose(window) && !stop.load(std::memory_order_acquire))
-        glfwWaitEvents();
+    // Track cursor-in-window as a *level* (poll GLFW_HOVERED each frame) rather
+    // than from enter/leave events: a level read can't get stuck the way the event
+    // bit could (a missed leave, or a stray move re-setting it after the cursor had
+    // gone). glfwGetWindowAttrib + event processing are main-thread only, hence
+    // here; the timed wait gives a steady ~60 Hz poll even when no events arrive.
+    // Skipped when a scripted/static cursor (ECS_CURSOR*) is forcing the flag.
+    bool const live_cursor = !std::getenv("ECS_CURSOR") && !std::getenv("ECS_CURSOR_PATH");
+    while (!glfwWindowShouldClose(window) && !stop.load(std::memory_order_acquire)) {
+        glfwWaitEventsTimeout(1.0 / 60.0);
+        if (live_cursor) {
+            if (glfwGetWindowAttrib(window, GLFW_HOVERED))
+                wstate.flags.fetch_or(1u, std::memory_order_relaxed);
+            else
+                wstate.flags.fetch_and(~1u, std::memory_order_relaxed);
+        }
+    }
     stop.store(true, std::memory_order_release);
 
     render.join(); // releases the GL context before we terminate GLFW

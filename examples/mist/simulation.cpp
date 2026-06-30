@@ -38,8 +38,8 @@ namespace {
 // Add `w` units of the unit vector along (dx,dy,dz) into the accumulator. A
 // zero-length input contributes nothing. This is the Reynolds "steer toward a
 // direction" primitive each rule uses.
-inline void add_dir(float& ax, float& ay, float& az,
-                    float dx, float dy, float dz, float w) {
+inline void add_dir(
+    float& ax, float& ay, float& az, float dx, float dy, float dz, float w) {
     float const l2 = dx * dx + dy * dy + dz * dz;
     if (l2 > 1e-12f) {
         float const s = w / std::sqrt(l2);
@@ -108,9 +108,10 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         std::uint64_t const c = in.cursor->load(std::memory_order_relaxed);
         std::uint32_t const f = in.flags->load(std::memory_order_relaxed);
         std::uint64_t const s = in.fb_size->load(std::memory_order_relaxed);
-        cur->x      = cursor_x(c);
-        cur->y      = cursor_y(c);
-        cur->active = (f & 1u) != 0;
+        cur->x                = cursor_x(c);
+        cur->y                = cursor_y(c);
+        cur->active           = (f & 1u) != 0;
+        // std::printf("active: %d, (x: %f, y: %f)\n", cur->active, cur->x, cur->y);
         int const w = int(s >> 32), h = int(s & 0xffffffffu);
         cur->aspect = h ? float(w) / float(h) : 1.0f;
     });
@@ -135,7 +136,8 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
             sy = cur->y;
         } else {
             sx = cfg::kRoamX * std::sin(0.062f * t) * std::cos(0.035f * t + 0.5f);
-            sy = cfg::kRoamY * std::sin(0.051f * t); // phase 0: starts centred, not at the top edge
+            sy = cfg::kRoamY *
+                 std::sin(0.051f * t); // phase 0: starts centred, not at the top edge
         }
         // Depth: the gentle autonomous swing, plus a periodic fly-over dive --
         // a sharp pulse toward the camera (pow() is ~0 most of the cycle, then a
@@ -143,31 +145,37 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         // projection stays valid (d>0) while the flock's leading edge streams past.
         // Only hands-off: while you steer, the dive is suppressed so the follow
         // stays smooth (a surprise surge cameraward would fight your control).
-        float const dive = cur->active
-            ? 0.0f
-            : T.dive * std::pow(std::max(0.0f, std::sin(cfg::kDiveFreq * t)), 8.0f);
-        float gz = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f) + dive;
-        gz = std::min(gz, 1.35f);
+        float const dive =
+            cur->active
+                ? 0.0f
+                : T.dive * std::pow(std::max(0.0f, std::sin(cfg::kDiveFreq * t)), 8.0f);
+        float gz      = cfg::kRoamZc + cfg::kRoamZ * std::sin(0.043f * t + 0.4f) + dive;
+        gz            = std::min(gz, 1.35f);
         float const d = cfg::kCamZ - gz;
-        go->x = sx * d / cfg::kFocal;
-        go->y = sy * d / cfg::kFocal;
-        go->z = gz;
+        go->x         = sx * d / cfg::kFocal;
+        go->y         = sy * d / cfg::kFocal;
+        go->z         = gz;
     });
 
     // grid: reduce every bird into the spatial grid (per-cell count + position
     // and velocity sums). Reads Position + Velocity, writes the FlockGrid
     // resource. Serial reduction (`each`). wave 0.
-    schedule.add("grid", [](Query<Position const, Velocity const> q, ResMut<FlockGrid> g) {
-        g->clear();
-        q.each([&](Entity, Position const& p, Velocity const& v) {
-            int const c = FlockGrid::index(FlockGrid::axis(p.x),
-                                           FlockGrid::axis(p.y),
-                                           FlockGrid::axis(p.z));
-            g->count[c] += 1;
-            g->sx[c] += p.x; g->sy[c] += p.y; g->sz[c] += p.z;
-            g->vx[c] += v.x; g->vy[c] += v.y; g->vz[c] += v.z;
-        });
-    });
+    schedule.add("grid",
+                 [](Query<Position const, Velocity const> q, ResMut<FlockGrid> g) {
+                     g->clear();
+                     q.each([&](Entity, Position const& p, Velocity const& v) {
+                         int const c = FlockGrid::index(FlockGrid::axis(p.x),
+                                                        FlockGrid::axis(p.y),
+                                                        FlockGrid::axis(p.z));
+                         g->count[c] += 1;
+                         g->sx[c] += p.x;
+                         g->sy[c] += p.y;
+                         g->sz[c] += p.z;
+                         g->vx[c] += v.x;
+                         g->vy[c] += v.y;
+                         g->vz[c] += v.z;
+                     });
+                 });
 
     // steer: turn each bird. Accumulate the boids rules + goal into a steering
     // acceleration, apply it, then pull speed back to the cruise. (The cursor
@@ -178,102 +186,152 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                      Res<Goal> goal,
                      Res<Cursor> cur,
                      Res<Clock> clk) {
-        Goal const G       = *goal;
-        // Strong pull only while steering; gentle while wandering (else it rings).
-        float const goalw  = cur->active ? T.goalFollow : T.goalSeek;
-        float const t      = clk->t;
-        FlockGrid const& g = *grid;
-        q.for_each_chunk([G, goalw, t, &g, T](std::span<Entity>,
-                                    chunk<Position const> pos,
-                                    chunk<Velocity> vel) {
-            auto const px = pos.column<0>();
-            auto const py = pos.column<1>();
-            auto const pz = pos.column<2>();
-            auto vx       = vel.column<0>();
-            auto vy       = vel.column<1>();
-            auto vz       = vel.column<2>();
-            for (std::size_t i = 0; i < px.size(); ++i) {
-                float const x = px[i], y = py[i], z = pz[i];
-                float ax = 0, ay = 0, az = 0; // steering acceleration
+                     Goal const G = *goal;
+                     // Strong pull only while steering; gentle while wandering (else it
+                     // rings).
+                     float const goalw  = cur->active ? T.goalFollow : T.goalSeek;
+                     float const t      = clk->t;
+                     FlockGrid const& g = *grid;
+                     q.for_each_chunk([G, goalw, t, &g, T](std::span<Entity>,
+                                                           chunk<Position const> pos,
+                                                           chunk<Velocity> vel) {
+                         auto const px = pos.column<0>();
+                         auto const py = pos.column<1>();
+                         auto const pz = pos.column<2>();
+                         auto vx       = vel.column<0>();
+                         auto vy       = vel.column<1>();
+                         auto vz       = vel.column<2>();
+                         for (std::size_t i = 0; i < px.size(); ++i) {
+                             float const x = px[i], y = py[i], z = pz[i];
+                             float ax = 0, ay = 0, az = 0; // steering acceleration
 
-                // Local neighbourhood: cell + 6 face neighbours.
-                int const ix = FlockGrid::axis(x);
-                int const iy = FlockGrid::axis(y);
-                int const iz = FlockGrid::axis(z);
-                int const c  = FlockGrid::index(ix, iy, iz);
-                int nn = 0;
-                float spx = 0, spy = 0, spz = 0, svx = 0, svy = 0, svz = 0;
-                int const nb[7] = {c,
-                                   g.widx(ix - 1, iy, iz), g.widx(ix + 1, iy, iz),
-                                   g.widx(ix, iy - 1, iz), g.widx(ix, iy + 1, iz),
-                                   g.widx(ix, iy, iz - 1), g.widx(ix, iy, iz + 1)};
-                for (int k : nb) {
-                    nn += g.count[k];
-                    spx += g.sx[k]; spy += g.sy[k]; spz += g.sz[k];
-                    svx += g.vx[k]; svy += g.vy[k]; svz += g.vz[k];
-                }
-                float const invn = 1.0f / float(nn); // nn >= 1 (self counted)
+                             // Local neighbourhood: cell + 6 face neighbours.
+                             int const ix = FlockGrid::axis(x);
+                             int const iy = FlockGrid::axis(y);
+                             int const iz = FlockGrid::axis(z);
+                             int const c  = FlockGrid::index(ix, iy, iz);
+                             int nn       = 0;
+                             float spx = 0, spy = 0, spz = 0, svx = 0, svy = 0, svz = 0;
+                             int const nb[7] = {c,
+                                                g.widx(ix - 1, iy, iz),
+                                                g.widx(ix + 1, iy, iz),
+                                                g.widx(ix, iy - 1, iz),
+                                                g.widx(ix, iy + 1, iz),
+                                                g.widx(ix, iy, iz - 1),
+                                                g.widx(ix, iy, iz + 1)};
+                             for (int k : nb) {
+                                 nn += g.count[k];
+                                 spx += g.sx[k];
+                                 spy += g.sy[k];
+                                 spz += g.sz[k];
+                                 svx += g.vx[k];
+                                 svy += g.vy[k];
+                                 svz += g.vz[k];
+                             }
+                             float const invn =
+                                 1.0f / float(nn); // nn >= 1 (self counted)
 
-                // Cohesion: toward the local centre of mass.
-                add_dir(ax, ay, az, spx * invn - x, spy * invn - y, spz * invn - z,
-                        T.cohesion);
-                // Alignment: toward the local mean heading.
-                add_dir(ax, ay, az, svx, svy, svz, T.alignment);
+                             // Cohesion: toward the local centre of mass.
+                             add_dir(ax,
+                                     ay,
+                                     az,
+                                     spx * invn - x,
+                                     spy * invn - y,
+                                     spz * invn - z,
+                                     T.cohesion);
+                             // Alignment: toward the local mean heading.
+                             add_dir(ax, ay, az, svx, svy, svz, T.alignment);
 
-                // Separation: only crowded cells push down the density gradient.
-                if (float(g.count[c]) > T.softCap) {
-                    float const sgx = float(g.count_at(ix - 1, iy, iz) - g.count_at(ix + 1, iy, iz));
-                    float const sgy = float(g.count_at(ix, iy - 1, iz) - g.count_at(ix, iy + 1, iz));
-                    float const sgz = float(g.count_at(ix, iy, iz - 1) - g.count_at(ix, iy, iz + 1));
-                    add_dir(ax, ay, az, sgx, sgy, sgz, T.separation);
-                }
+                             // Separation: only crowded cells push down the density
+                             // gradient.
+                             if (float(g.count[c]) > T.softCap) {
+                                 float const sgx = float(g.count_at(ix - 1, iy, iz) -
+                                                         g.count_at(ix + 1, iy, iz));
+                                 float const sgy = float(g.count_at(ix, iy - 1, iz) -
+                                                         g.count_at(ix, iy + 1, iz));
+                                 float const sgz = float(g.count_at(ix, iy, iz - 1) -
+                                                         g.count_at(ix, iy, iz + 1));
+                                 add_dir(ax, ay, az, sgx, sgy, sgz, T.separation);
+                             }
 
-                // Goal seek: the flock flies toward the goal -- the wandering
-                // roost, or the cursor when you are steering (set in `goal`). The
-                // weight (goalw) is stronger while steering so it tracks closely
-                // without ringing up the hands-off wander.
-                add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, goalw);
+                             // Goal seek: the flock flies toward the goal -- the
+                             // wandering roost, or the cursor when you are steering (set
+                             // in `goal`). The weight (goalw) is stronger while steering
+                             // so it tracks closely without ringing up the hands-off
+                             // wander.
+                             add_dir(ax, ay, az, G.x - x, G.y - y, G.z - z, goalw);
 
-                // Wander: per-bird 3D turbulence -- neighbours diverge a little,
-                // which breaks thin lines/sheets into volume and adds a living
-                // shimmer.
-                float const k = cfg::kWanderFreq;
-                add_dir(ax, ay, az,
-                        std::sin(k * y + 0.7f * t) + std::sin(1.7f * k * z - 0.5f * t),
-                        std::sin(k * z + 0.6f * t) + std::sin(1.7f * k * x + 0.4f * t),
-                        std::sin(k * x - 0.8f * t) + std::sin(1.7f * k * y + 0.5f * t),
-                        T.wander);
+                             // Wander: per-bird 3D turbulence -- neighbours diverge a
+                             // little, which breaks thin lines/sheets into volume and
+                             // adds a living shimmer.
+                             float const k = cfg::kWanderFreq;
+                             add_dir(ax,
+                                     ay,
+                                     az,
+                                     std::sin(k * y + 0.7f * t) +
+                                         std::sin(1.7f * k * z - 0.5f * t),
+                                     std::sin(k * z + 0.6f * t) +
+                                         std::sin(1.7f * k * x + 0.4f * t),
+                                     std::sin(k * x - 0.8f * t) +
+                                         std::sin(1.7f * k * y + 0.5f * t),
+                                     T.wander);
 
-                // Soft boundary in the view plane (xy): steer back past the wall.
-                float const r2 = x * x + y * y;
-                if (r2 > cfg::kBound * cfg::kBound) {
-                    float const r = std::sqrt(r2);
-                    add_dir(ax, ay, az, -x, -y, 0.0f, cfg::kBoundForce * (r - cfg::kBound));
-                }
-                // Depth band: hold the flock at a readable size -- not receding
-                // into the far haze (kZBack), nor drifting forward of kZFront...
-                // except the front cap follows a forward goal dive (G.z), so the
-                // flock can chase the goal toward the camera during a fly-over.
-                if (z < cfg::kZBack)
-                    add_dir(ax, ay, az, 0.0f, 0.0f, 1.0f, cfg::kBoundForce * (cfg::kZBack - z));
-                float const zfront = std::max(cfg::kZFront, G.z + 0.25f);
-                if (z > zfront)
-                    add_dir(ax, ay, az, 0.0f, 0.0f, -1.0f, cfg::kBoundForce * (z - zfront));
+                             // Soft boundary in the view plane (xy): steer back past the
+                             // wall.
+                             float const r2 = x * x + y * y;
+                             if (r2 > cfg::kBound * cfg::kBound) {
+                                 float const r = std::sqrt(r2);
+                                 add_dir(ax,
+                                         ay,
+                                         az,
+                                         -x,
+                                         -y,
+                                         0.0f,
+                                         cfg::kBoundForce * (r - cfg::kBound));
+                             }
+                             // Depth band: hold the flock at a readable size -- not
+                             // receding into the far haze (kZBack), nor drifting forward
+                             // of kZFront... except the front cap follows a forward goal
+                             // dive (G.z), so the flock can chase the goal toward the
+                             // camera during a fly-over.
+                             if (z < cfg::kZBack)
+                                 add_dir(ax,
+                                         ay,
+                                         az,
+                                         0.0f,
+                                         0.0f,
+                                         1.0f,
+                                         cfg::kBoundForce * (cfg::kZBack - z));
+                             float const zfront = std::max(cfg::kZFront, G.z + 0.25f);
+                             if (z > zfront)
+                                 add_dir(ax,
+                                         ay,
+                                         az,
+                                         0.0f,
+                                         0.0f,
+                                         -1.0f,
+                                         cfg::kBoundForce * (z - zfront));
 
-                // Apply the steering, then pull speed back to the cruise so the
-                // birds always fly (turning, not speeding up or stopping).
-                float nvx = vx[i] + ax * cfg::kDt;
-                float nvy = vy[i] + ay * cfg::kDt;
-                float nvz = vz[i] + az * cfg::kDt;
-                float const sp = std::sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
-                if (sp > 1e-5f) {
-                    float const f = T.cruise / sp;
-                    nvx *= f; nvy *= f; nvz *= f;
-                }
-                vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
-            }
-        });
-    });
+                             // Apply the steering, then pull speed back to the cruise so
+                             // the birds always fly (turning, not speeding up or
+                             // stopping).
+                             float nvx = vx[i] + ax * cfg::kDt;
+                             float nvy = vy[i] + ay * cfg::kDt;
+                             float nvz = vz[i] + az * cfg::kDt;
+                             float const sp =
+                                 std::sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
+                             if (sp > 1e-5f) {
+                                 float const f = T.cruise / sp;
+                                 nvx *= f;
+                                 nvy *= f;
+                                 nvz *= f;
+                             }
+                             vx[i] = nvx;
+                             vy[i] = nvy;
+                             vz[i] = nvz;
+                         }
+                     });
+                 });
 
     // integrate: advance Position by Velocity. No wrap -- the flock flies free,
     // held in the roaming region by steer's soft boundary. wave 2.
@@ -321,36 +379,49 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         auto out = std::make_shared<std::ofstream>(mpath);
         *out << "t,com_sx,com_sy,com_z,goal_sx,goal_sy,follow_err,spread,coherence\n";
         schedule.add("metrics",
-                     [out](Query<Position const, Velocity const> q, Res<Goal> goal,
+                     [out](Query<Position const, Velocity const> q,
+                           Res<Goal> goal,
                            Res<Clock> clk) {
-            float cx = 0, cy = 0, cz = 0, vx = 0, vy = 0, vz = 0, spd = 0;
-            int n = 0;
-            q.each([&](Entity, Position const& p, Velocity const& v) {
-                cx += p.x; cy += p.y; cz += p.z;
-                vx += v.x; vy += v.y; vz += v.z;
-                spd += std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-                ++n;
-            });
-            if (n == 0) return;
-            float const inv = 1.0f / float(n);
-            float const mcx = cx * inv, mcy = cy * inv, mcz = cz * inv;
-            float const mspd = spd * inv;
-            float svar = 0;
-            q.each([&](Entity, Position const& p, Velocity const&) {
-                float const dx = p.x - mcx, dy = p.y - mcy, dz = p.z - mcz;
-                svar += dx * dx + dy * dy + dz * dz;
-            });
-            float const spread = std::sqrt(svar * inv);
-            float const ci = cfg::kFocal / (cfg::kCamZ - mcz);     // CoM -> screen
-            float const gi = cfg::kFocal / (cfg::kCamZ - goal->z); // goal -> screen
-            float const csx = mcx * ci, csy = mcy * ci;
-            float const gsx = goal->x * gi, gsy = goal->y * gi;
-            float const ferr = std::sqrt((csx - gsx) * (csx - gsx) + (csy - gsy) * (csy - gsy));
-            float const coh =
-                mspd > 1e-5f ? std::sqrt(vx * vx + vy * vy + vz * vz) * inv / mspd : 0.0f;
-            *out << clk->t << ',' << csx << ',' << csy << ',' << mcz << ',' << gsx << ','
-                 << gsy << ',' << ferr << ',' << spread << ',' << coh << '\n';
-            out->flush(); // headless runs are killed by timeout; don't lose buffered rows
-        });
+                         float cx = 0, cy = 0, cz = 0, vx = 0, vy = 0, vz = 0, spd = 0;
+                         int n = 0;
+                         q.each([&](Entity, Position const& p, Velocity const& v) {
+                             cx += p.x;
+                             cy += p.y;
+                             cz += p.z;
+                             vx += v.x;
+                             vy += v.y;
+                             vz += v.z;
+                             spd += std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                             ++n;
+                         });
+                         if (n == 0)
+                             return;
+                         float const inv = 1.0f / float(n);
+                         float const mcx = cx * inv, mcy = cy * inv, mcz = cz * inv;
+                         float const mspd = spd * inv;
+                         float svar       = 0;
+                         q.each([&](Entity, Position const& p, Velocity const&) {
+                             float const dx = p.x - mcx, dy = p.y - mcy, dz = p.z - mcz;
+                             svar += dx * dx + dy * dy + dz * dz;
+                         });
+                         float const spread = std::sqrt(svar * inv);
+                         float const ci =
+                             cfg::kFocal / (cfg::kCamZ - mcz); // CoM -> screen
+                         float const gi =
+                             cfg::kFocal / (cfg::kCamZ - goal->z); // goal -> screen
+                         float const csx = mcx * ci, csy = mcy * ci;
+                         float const gsx = goal->x * gi, gsy = goal->y * gi;
+                         float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +
+                                                      (csy - gsy) * (csy - gsy));
+                         float const coh =
+                             mspd > 1e-5f
+                                 ? std::sqrt(vx * vx + vy * vy + vz * vz) * inv / mspd
+                                 : 0.0f;
+                         *out << clk->t << ',' << csx << ',' << csy << ',' << mcz << ','
+                              << gsx << ',' << gsy << ',' << ferr << ',' << spread << ','
+                              << coh << '\n';
+                         out->flush(); // headless runs are killed by timeout; don't lose
+                                       // buffered rows
+                     });
     }
 }
