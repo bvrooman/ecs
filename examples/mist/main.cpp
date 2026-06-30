@@ -137,7 +137,8 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE); // required on macOS
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    glfwWindowHint(GLFW_SAMPLES, 2); // 2x MSAA: softens the point-sprite edges at
+                                     // a fraction of 4x's per-sample fill cost
 
     GLFWwindow* window = glfwCreateWindow(900, 900, "ecs mist", nullptr, nullptr);
     if (!window) {
@@ -325,6 +326,20 @@ int main() {
         if (char const* a = std::getenv("ECS_FILMSTRIP_N"))
             if (int v = std::atoi(a); v > 0)
                 film_n = v;
+        // ECS_FPS=<n> caps the render rate (default 60; 0 = uncapped, vsync only).
+        // The sim is 60 Hz with no render-side interpolation, so drawing faster
+        // just re-presents identical frames -- the cap roughly halves GPU on a
+        // high-refresh display at no visual cost. Vsync stays on underneath, so
+        // the effective rate is min(display, ECS_FPS).
+        double fps_cap = 60.0;
+        if (char const* a = std::getenv("ECS_FPS"))
+            fps_cap = std::atof(a);
+        auto const frame_interval =
+            fps_cap > 0.0
+                ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                      std::chrono::duration<double>(1.0 / fps_cap))
+                : std::chrono::steady_clock::duration::zero();
+        auto next_frame = std::chrono::steady_clock::now();
 
         while (!stop.load(std::memory_order_acquire)) {
             CGLLockContext(cgl); // serialize this frame against a resize/move update
@@ -456,6 +471,18 @@ int main() {
             glfwSwapBuffers(window);
             CGLUnlockContext(cgl);
             ++frames;
+            // FPS cap: hold at least frame_interval between presents (outside the
+            // GL lock so a resize never waits on it). Reset when a frame runs long
+            // (e.g. a fly-over) so it resumes at the target rate instead of
+            // bursting to catch up.
+            if (frame_interval > std::chrono::steady_clock::duration::zero()) {
+                next_frame += frame_interval;
+                auto const now = std::chrono::steady_clock::now();
+                if (now < next_frame)
+                    std::this_thread::sleep_until(next_frame);
+                else
+                    next_frame = now;
+            }
         }
         rendered.store(frames, std::memory_order_relaxed);
 

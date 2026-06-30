@@ -55,7 +55,7 @@ using RenderSnapshot = std::vector<GpuParticle>;
 namespace cfg {
 // 60 Hz fixed step. The motion animates in wall time (Clock advances kDt/tick),
 // so the look is independent of this rate.
-inline constexpr int kSimHz = 60;
+inline constexpr int kSimHz = 30;
 inline constexpr float kDt  = 1.0f / kSimHz;
 inline constexpr int kCount = 85000; // birds (ECS_PARTICLES overrides)
 
@@ -147,8 +147,8 @@ struct FlockGrid {
     static constexpr int dim   = cfg::kGridDim;
     static constexpr int cells = dim * dim * dim;
 
-    std::vector<std::uint32_t> count; // uint32: a dense cell can exceed 65535 at high ECS_PARTICLES
-    std::vector<float> sx, sy, sz;    // sum of positions per cell
+    std::vector<std::uint32_t> count;
+    std::vector<float> sx, sy, sz; // sum of positions per cell
     std::vector<float> vx, vy, vz; // sum of velocities per cell
 
     FlockGrid()
@@ -177,13 +177,13 @@ struct FlockGrid {
     }
 
     void clear() {
-        std::fill(count.begin(), count.end(), std::uint32_t(0));
-        std::fill(sx.begin(), sx.end(), 0.0f);
-        std::fill(sy.begin(), sy.end(), 0.0f);
-        std::fill(sz.begin(), sz.end(), 0.0f);
-        std::fill(vx.begin(), vx.end(), 0.0f);
-        std::fill(vy.begin(), vy.end(), 0.0f);
-        std::fill(vz.begin(), vz.end(), 0.0f);
+        std::ranges::fill(count, 0);
+        std::ranges::fill(sx, 0.0f);
+        std::ranges::fill(sy, 0.0f);
+        std::ranges::fill(sz, 0.0f);
+        std::ranges::fill(vx, 0.0f);
+        std::ranges::fill(vy, 0.0f);
+        std::ranges::fill(vz, 0.0f);
     }
 };
 
