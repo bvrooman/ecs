@@ -53,8 +53,10 @@ using RenderSnapshot = std::vector<GpuParticle>;
 
 // --- simulation tuning ------------------------------------------------------
 namespace cfg {
-// 60 Hz fixed step. The motion animates in wall time (Clock advances kDt/tick),
-// so the look is independent of this rate.
+// 30 Hz fixed step. The motion animates in wall time (Clock advances kDt/tick),
+// so the flock's *speed* is independent of this rate -- lower is cheaper (fewer
+// ticks, and fewer draws since the render cap defaults to it) at the cost of
+// coarser, less smooth steering.
 inline constexpr int kSimHz = 30;
 inline constexpr float kDt  = 1.0f / kSimHz;
 inline constexpr int kCount = 85000; // birds (ECS_PARTICLES overrides)

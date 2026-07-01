@@ -113,9 +113,7 @@ int main() {
     WindowState wstate;
 
     Schedule schedule;
-    build_mist_schedule(schedule,
-                        MistInput {&wstate.cursor, &wstate.flags},
-                        count);
+    build_mist_schedule(schedule, MistInput {&wstate.cursor, &wstate.flags}, count);
     std::printf("mist: %d particles; schedule %zu systems across %zu levels\n",
                 count,
                 schedule.size(),
@@ -326,12 +324,12 @@ int main() {
         if (char const* a = std::getenv("ECS_FILMSTRIP_N"))
             if (int v = std::atoi(a); v > 0)
                 film_n = v;
-        // ECS_FPS=<n> caps the render rate (default 60; 0 = uncapped, vsync only).
-        // The sim is 60 Hz with no render-side interpolation, so drawing faster
-        // just re-presents identical frames -- the cap roughly halves GPU on a
-        // high-refresh display at no visual cost. Vsync stays on underneath, so
+        // ECS_FPS=<n> caps the render rate (default: the sim rate kSimHz; 0 =
+        // uncapped, vsync only). The renderer has no interpolation, so drawing
+        // faster than the sim just re-presents identical frames -- matching the
+        // cap to kSimHz is the lossless minimum. Vsync stays on underneath, so
         // the effective rate is min(display, ECS_FPS).
-        double fps_cap = 60.0;
+        double fps_cap = double(cfg::kSimHz);
         if (char const* a = std::getenv("ECS_FPS"))
             fps_cap = std::atof(a);
         auto const frame_interval =
@@ -504,7 +502,8 @@ int main() {
     // gone). glfwGetWindowAttrib + event processing are main-thread only, hence
     // here; the timed wait gives a steady ~60 Hz poll even when no events arrive.
     // Skipped when a scripted/static cursor (ECS_CURSOR*) is forcing the flag.
-    bool const live_cursor = !std::getenv("ECS_CURSOR") && !std::getenv("ECS_CURSOR_PATH");
+    bool const live_cursor =
+        !std::getenv("ECS_CURSOR") && !std::getenv("ECS_CURSOR_PATH");
     while (!glfwWindowShouldClose(window) && !stop.load(std::memory_order_acquire)) {
         glfwWaitEventsTimeout(1.0 / 60.0);
         if (live_cursor) {
