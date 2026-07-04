@@ -76,7 +76,7 @@ inline constexpr float kFarFade  = 3.40f; // depth where birds haze fully out
 // that is what makes it read as flight, not floating). Per-tick steering is the
 // weighted sum of boids rules + the goal, applied as an acceleration, after
 // which speed is pulled back to the cruise. Weights are dimensionless.
-inline constexpr float kCruise = 0.65f; // clip units / s
+inline constexpr float kCruise = 0.80f; // clip units / s
 // Pull toward the goal. Two strengths because they want opposite things (a fact
 // the metric sweep surfaced): the slow hands-off WANDER wants a gentle pull, or
 // the constant-speed flock collapses into a tight orbiting ring; the CURSOR (a
@@ -88,12 +88,12 @@ inline constexpr float kGoalFollow = 2.00f; // pull toward the cursor (while ste
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding
-inline constexpr float kSoftCap    = 30.0f; // per-cell density before separation bites
+inline constexpr float kSoftCap    = 20.0f; // per-cell density before separation bites
 // Per-bird turbulence: a 3D noise "wander" so neighbours diverge a little -- it
 // breaks the flock out of thin lines/sheets and gives it 3D volume and a
 // living shimmer. Gentle, so it adds body without dispersing the mass.
-inline constexpr float kWander     = 0.30f;
-inline constexpr float kWanderFreq = 1.9f;
+inline constexpr float kWander     = 0.50f;
+inline constexpr float kWanderFreq = 2.5f;
 
 // The cursor *steers the whole murmuration's direction* -- it is not a local
 // attractor (that only ever made a swarm point). While the cursor is in the
@@ -135,7 +135,7 @@ inline constexpr float kDiveFreq = 0.18f; // ~one fly-over every 2*pi/kDiveFreq 
 // large grid, so most cells are empty; indices are clamped at the edges (the
 // flock stays interior, kept in by the soft boundary).
 inline constexpr float kGridHalf = 3.0f;
-inline constexpr int kGridDim    = 50;
+inline constexpr int kGridDim    = 60;
 inline constexpr float kGridCell = 2.0f * kGridHalf / kGridDim;
 inline constexpr float kGridMin  = -kGridHalf;
 } // namespace cfg

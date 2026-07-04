@@ -107,9 +107,9 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
     schedule.add("input", [in](ResMut<Cursor> cur) {
         std::uint64_t const c = in.cursor->load(std::memory_order_relaxed);
         std::uint32_t const f = in.flags->load(std::memory_order_relaxed);
-        cur->x      = cursor_x(c);
-        cur->y      = cursor_y(c);
-        cur->active = (f & 1u) != 0;
+        cur->x                = cursor_x(c);
+        cur->y                = cursor_y(c);
+        cur->active           = (f & 1u) != 0;
     });
 
     // clock: advance sim time (drives the goal's wander). wave 0.
@@ -241,12 +241,12 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                              // Separation: only crowded cells push down the density
                              // gradient.
                              if (float(g.count[c]) > T.softCap) {
-                                 float const sgx = float(g.count_at(ix - 1, iy, iz) -
-                                                         g.count_at(ix + 1, iy, iz));
-                                 float const sgy = float(g.count_at(ix, iy - 1, iz) -
-                                                         g.count_at(ix, iy + 1, iz));
-                                 float const sgz = float(g.count_at(ix, iy, iz - 1) -
-                                                         g.count_at(ix, iy, iz + 1));
+                                 auto const sgx = float(g.count_at(ix - 1, iy, iz) -
+                                                        g.count_at(ix + 1, iy, iz));
+                                 auto const sgy = float(g.count_at(ix, iy - 1, iz) -
+                                                        g.count_at(ix, iy + 1, iz));
+                                 auto const sgz = float(g.count_at(ix, iy, iz - 1) -
+                                                        g.count_at(ix, iy, iz + 1));
                                  add_dir(ax, ay, az, sgx, sgy, sgz, T.separation);
                              }
 
