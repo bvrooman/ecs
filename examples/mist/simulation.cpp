@@ -58,11 +58,11 @@ inline void add_dir(
 inline float fast_sin(float x) {
     constexpr float kInvTwoPi = 0.15915494f; // 1/(2*pi)
     constexpr float kTwoPi    = 6.2831853f;
-    x -= kTwoPi * std::nearbyint(x * kInvTwoPi); // -> [-pi, pi]
-    constexpr float B = 1.2732395f;              // 4/pi
-    constexpr float C = -0.4052847f;             // -4/pi^2
-    float const y = B * x + C * x * std::fabs(x); // parabola (~6% error)
-    return 0.225f * (y * std::fabs(y) - y) + y;   // refine -> ~0.1% error
+    x -= kTwoPi * std::nearbyint(x * kInvTwoPi);      // -> [-pi, pi]
+    constexpr float B = 1.2732395f;                   // 4/pi
+    constexpr float C = -0.4052847f;                  // -4/pi^2
+    float const y     = B * x + C * x * std::fabs(x); // parabola (~6% error)
+    return 0.225f * (y * std::fabs(y) - y) + y;       // refine -> ~0.1% error
 }
 
 // Runtime-overridable steering weights, so the flight can be swept/tuned without
@@ -179,14 +179,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                          int const c = FlockGrid::index(FlockGrid::axis(p.x),
                                                         FlockGrid::axis(p.y),
                                                         FlockGrid::axis(p.z));
-                         Cell& cc = g->cell[c];
-                         cc.count += 1;
-                         cc.sx += p.x;
-                         cc.sy += p.y;
-                         cc.sz += p.z;
-                         cc.vx += v.x;
-                         cc.vy += v.y;
-                         cc.vz += v.z;
+                         auto& [count, sx, sy, sz, vx, vy, vz] = g->cell[c];
+                         count += 1;
+                         sx += p.x;
+                         sy += p.y;
+                         sz += p.z;
+                         vx += v.x;
+                         vy += v.y;
+                         vz += v.z;
                      });
                  });
 
@@ -233,14 +233,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                                                 g.widx(ix, iy, iz - 1),
                                                 g.widx(ix, iy, iz + 1)};
                              for (int k : nb) {
-                                 Cell const& cc = g.cell[k];
-                                 nn += cc.count;
-                                 spx += cc.sx;
-                                 spy += cc.sy;
-                                 spz += cc.sz;
-                                 svx += cc.vx;
-                                 svy += cc.vy;
-                                 svz += cc.vz;
+                                 auto const& [count, sx, sy, sz, vx, vy, vz] = g.cell[k];
+                                 nn += count;
+                                 spx += sx;
+                                 spy += sy;
+                                 spz += sz;
+                                 svx += vx;
+                                 svy += vy;
+                                 svz += vz;
                              }
                              float const invn =
                                  1.0f / float(nn); // nn >= 1 (self counted)

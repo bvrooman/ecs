@@ -88,7 +88,7 @@ inline constexpr float kGoalFollow = 2.00f; // pull toward the cursor (while ste
 inline constexpr float kCohesion   = 0.95f; // toward the local centre of mass
 inline constexpr float kAlignment  = 0.55f; // toward the local mean heading
 inline constexpr float kSeparation = 0.65f; // away from local crowding
-inline constexpr float kSoftCap    = 20.0f; // per-cell density before separation bites
+inline constexpr float kSoftCap    = 30.0f; // per-cell density before separation bites
 // Per-bird turbulence: a 3D noise "wander" so neighbours diverge a little -- it
 // breaks the flock out of thin lines/sheets and gives it 3D volume and a
 // living shimmer. Gentle, so it adds body without dispersing the mass.
@@ -135,7 +135,7 @@ inline constexpr float kDiveFreq = 0.18f; // ~one fly-over every 2*pi/kDiveFreq 
 // large grid, so most cells are empty; indices are clamped at the edges (the
 // flock stays interior, kept in by the soft boundary).
 inline constexpr float kGridHalf = 3.0f;
-inline constexpr int kGridDim    = 60;
+inline constexpr int kGridDim    = 40;
 inline constexpr float kGridCell = 2.0f * kGridHalf / kGridDim;
 inline constexpr float kGridMin  = -kGridHalf;
 } // namespace cfg
@@ -162,7 +162,8 @@ struct FlockGrid {
 
     std::vector<Cell> cell; // one Cell per grid cell (AoS)
 
-    FlockGrid() : cell(cells) {}
+    FlockGrid()
+        : cell(cells) {}
 
     static int clampi(int i) { return i < 0 ? 0 : (i >= dim ? dim - 1 : i); }
     static int axis(float c) { return clampi(int((c - cfg::kGridMin) / cfg::kGridCell)); }
