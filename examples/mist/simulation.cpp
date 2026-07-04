@@ -49,6 +49,22 @@ inline void add_dir(
     }
 }
 
+// Fast sine for the per-bird wander turbulence (6 calls/bird -- the tick's hot
+// spot; ~half of steer). The wander is aesthetic noise, not precision-critical,
+// so a range-reduced parabola approximation (Nick's parabola + the standard
+// refinement, ~0.1% max error) is visually indistinguishable from std::sin and
+// ~2x cheaper. NOT used for the goal's Lissajous (per-tick, few calls, wants the
+// real thing). Range-reduce to [-pi, pi] first since the phase (c*t) grows.
+inline float fast_sin(float x) {
+    constexpr float kInvTwoPi = 0.15915494f; // 1/(2*pi)
+    constexpr float kTwoPi    = 6.2831853f;
+    x -= kTwoPi * std::nearbyint(x * kInvTwoPi); // -> [-pi, pi]
+    constexpr float B = 1.2732395f;              // 4/pi
+    constexpr float C = -0.4052847f;             // -4/pi^2
+    float const y = B * x + C * x * std::fabs(x); // parabola (~6% error)
+    return 0.225f * (y * std::fabs(y) - y) + y;   // refine -> ~0.1% error
+}
+
 // Runtime-overridable steering weights, so the flight can be swept/tuned without
 // recompiling (e.g. ECS_GOALSEEK=1.6 ECS_SOFTCAP=60 ./mist). Defaults are the
 // cfg values; the grid and camera stay compile-time.
@@ -266,12 +282,12 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                              add_dir(ax,
                                      ay,
                                      az,
-                                     std::sin(k * y + 0.7f * t) +
-                                         std::sin(1.7f * k * z - 0.5f * t),
-                                     std::sin(k * z + 0.6f * t) +
-                                         std::sin(1.7f * k * x + 0.4f * t),
-                                     std::sin(k * x - 0.8f * t) +
-                                         std::sin(1.7f * k * y + 0.5f * t),
+                                     fast_sin(k * y + 0.7f * t) +
+                                         fast_sin(1.7f * k * z - 0.5f * t),
+                                     fast_sin(k * z + 0.6f * t) +
+                                         fast_sin(1.7f * k * x + 0.4f * t),
+                                     fast_sin(k * x - 0.8f * t) +
+                                         fast_sin(1.7f * k * y + 0.5f * t),
                                      T.wander);
 
                              // Soft boundary in the view plane (xy): steer back past the
