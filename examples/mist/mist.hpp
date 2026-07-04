@@ -140,27 +140,29 @@ inline constexpr float kGridCell = 2.0f * kGridHalf / kGridDim;
 inline constexpr float kGridMin  = -kGridHalf;
 } // namespace cfg
 
-// FlockGrid: a uniform 3D grid of per-cell aggregates rebuilt every tick -- per
-// cell, the bird count and the sums of position and velocity. `steer` reads a
-// bird's cell + 6 face neighbours to get a local centre of mass (cohesion),
-// mean heading (alignment) and density gradient (separation) in O(1). Installed
-// as a resource; `grid` fills it.
+// One grid cell's aggregate: the bird count plus the summed position and velocity
+// of the birds in it. Stored AoS (this whole struct per cell, not seven parallel
+// arrays) because `steer` reads *all* of a cell's fields together for a few
+// *scattered* cells (its cell + 6 neighbours) -- co-locating them puts a cell in
+// one cache line instead of seven. (The opposite of the per-bird components,
+// which stream one field over every bird -> SoA. Layout follows access pattern.)
+struct Cell {
+    std::uint32_t count = 0;
+    float sx = 0, sy = 0, sz = 0; // sum of positions
+    float vx = 0, vy = 0, vz = 0; // sum of velocities
+};
+
+// FlockGrid: a uniform 3D grid of per-cell aggregates rebuilt every tick. `steer`
+// reads a bird's cell + 6 face neighbours to get a local centre of mass
+// (cohesion), mean heading (alignment) and density gradient (separation) in O(1).
+// Installed as a resource; `grid` fills it.
 struct FlockGrid {
     static constexpr int dim   = cfg::kGridDim;
     static constexpr int cells = dim * dim * dim;
 
-    std::vector<std::uint32_t> count;
-    std::vector<float> sx, sy, sz; // sum of positions per cell
-    std::vector<float> vx, vy, vz; // sum of velocities per cell
+    std::vector<Cell> cell; // one Cell per grid cell (AoS)
 
-    FlockGrid()
-        : count(cells, 0)
-        , sx(cells, 0)
-        , sy(cells, 0)
-        , sz(cells, 0)
-        , vx(cells, 0)
-        , vy(cells, 0)
-        , vz(cells, 0) {}
+    FlockGrid() : cell(cells) {}
 
     static int clampi(int i) { return i < 0 ? 0 : (i >= dim ? dim - 1 : i); }
     static int axis(float c) { return clampi(int((c - cfg::kGridMin) / cfg::kGridCell)); }
@@ -174,19 +176,13 @@ struct FlockGrid {
         return index(clampi(ix), clampi(iy), clampi(iz));
     }
     [[nodiscard]]
+    // Returns int (not uint32) on purpose: callers take a signed *difference* of
+    // two counts (the separation gradient), which must be able to go negative.
     int count_at(int ix, int iy, int iz) const {
-        return count[widx(ix, iy, iz)];
+        return int(cell[widx(ix, iy, iz)].count);
     }
 
-    void clear() {
-        std::ranges::fill(count, 0);
-        std::ranges::fill(sx, 0.0f);
-        std::ranges::fill(sy, 0.0f);
-        std::ranges::fill(sz, 0.0f);
-        std::ranges::fill(vx, 0.0f);
-        std::ranges::fill(vy, 0.0f);
-        std::ranges::fill(vz, 0.0f);
-    }
+    void clear() { std::ranges::fill(cell, Cell {}); }
 };
 
 // --- main -> worker-thread handoff (lock-free, no GL types) ------------------

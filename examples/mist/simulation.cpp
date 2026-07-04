@@ -163,13 +163,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                          int const c = FlockGrid::index(FlockGrid::axis(p.x),
                                                         FlockGrid::axis(p.y),
                                                         FlockGrid::axis(p.z));
-                         g->count[c] += 1;
-                         g->sx[c] += p.x;
-                         g->sy[c] += p.y;
-                         g->sz[c] += p.z;
-                         g->vx[c] += v.x;
-                         g->vy[c] += v.y;
-                         g->vz[c] += v.z;
+                         Cell& cc = g->cell[c];
+                         cc.count += 1;
+                         cc.sx += p.x;
+                         cc.sy += p.y;
+                         cc.sz += p.z;
+                         cc.vx += v.x;
+                         cc.vy += v.y;
+                         cc.vz += v.z;
                      });
                  });
 
@@ -216,13 +217,14 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                                                 g.widx(ix, iy, iz - 1),
                                                 g.widx(ix, iy, iz + 1)};
                              for (int k : nb) {
-                                 nn += g.count[k];
-                                 spx += g.sx[k];
-                                 spy += g.sy[k];
-                                 spz += g.sz[k];
-                                 svx += g.vx[k];
-                                 svy += g.vy[k];
-                                 svz += g.vz[k];
+                                 Cell const& cc = g.cell[k];
+                                 nn += cc.count;
+                                 spx += cc.sx;
+                                 spy += cc.sy;
+                                 spz += cc.sz;
+                                 svx += cc.vx;
+                                 svy += cc.vy;
+                                 svz += cc.vz;
                              }
                              float const invn =
                                  1.0f / float(nn); // nn >= 1 (self counted)
@@ -240,7 +242,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
 
                              // Separation: only crowded cells push down the density
                              // gradient.
-                             if (float(g.count[c]) > T.softCap) {
+                             if (float(g.cell[c].count) > T.softCap) {
                                  auto const sgx = float(g.count_at(ix - 1, iy, iz) -
                                                         g.count_at(ix + 1, iy, iz));
                                  auto const sgy = float(g.count_at(ix, iy - 1, iz) -
