@@ -30,6 +30,7 @@
 #pragma once
 
 #include "parallel/worker_pool.hpp"
+#include "reflection/field_view.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <span>
@@ -41,26 +42,48 @@ namespace ecs {
 
 // chunk<C>: a lane's view of component C over the row range the executor handed
 // it. for_each_chunk gives each lane one chunk per component, already scoped to
-// that lane's rows, so column<I>() returns the field's std::span for *this* lane
-// only -- span<const F> when C is const, matching a read-only query component.
-// The kernel iterates with `for (auto& x : pos.column<0>())` (or column<I>()[i],
-// 0-based within the chunk) and never handles a begin/end; because a chunk
-// exposes only its own slice, writing through a mutable one cannot touch another
-// lane's rows, which is what keeps the deterministic split race-free. Trivially
-// copyable (a storage pointer + the range), so it is passed by value like a span.
+// that lane's rows. Access this lane's slice of a field either by name -- pos.x,
+// pos.y (from the reflected member names, span<const F> when C is const) -- or by
+// index, column<I>(); both denote the same std::span. The kernel iterates with
+// `for (auto& v : pos.x)` (or column<I>()[i], 0-based within the chunk) and never
+// handles a begin/end; because a chunk exposes only its own slice, writing through
+// a mutable one cannot touch another lane's rows, which is what keeps the
+// deterministic split race-free. Trivially copyable (a storage pointer + the
+// range + the field spans), so it is passed by value like a span.
+//
+// The named accessors are the field spans of a generated field_view<C> base and
+// exist only on the P2996 reflection backend (it alone recovers member names); on
+// the portable backend chunk carries no base and column<I>() is the only path.
 template <class C>
-class chunk {
+class chunk
+#if ECS_USE_P2996
+    : public field_view<C> // named field spans: pos.x, pos.y, ... (populated below)
+#endif
+{
     using bare    = std::remove_const_t<C>;
-    using base    = soa_storage<bare>;
-    using storage = std::conditional_t<std::is_const_v<C>, base const, base>;
+    using store_t = soa_storage<bare>;
+    using storage = std::conditional_t<std::is_const_v<C>, store_t const, store_t>;
+
+#if ECS_USE_P2996
+    static constexpr std::size_t field_count = reflect::field_count_v<bare>;
+    static_assert(
+        !detail::field_name_collides_with_chunk<bare>(),
+        "ecs::chunk: a component field is named size/empty/column, which shadows "
+        "chunk's own members; rename the field or read it via column<I>().");
+#endif
 
 public:
     chunk(storage& store, std::size_t begin, std::size_t end) noexcept
+#if ECS_USE_P2996
+        : chunk(store, begin, end, std::make_index_sequence<field_count> {}) {}
+#else
         : store_(store)
         , begin_(begin)
         , end_(end) {}
+#endif
 
-    // This lane's contiguous slice of field I (span<const F> if C is const).
+    // This lane's contiguous slice of field I (span<const F> if C is const). Same
+    // span the named accessor denotes; the portable, always-available form.
     template <std::size_t I>
     [[nodiscard]]
     auto column() const noexcept {
@@ -77,6 +100,20 @@ public:
     }
 
 private:
+#if ECS_USE_P2996
+    // Populate the field_view<C> base: each named span is this lane's [begin, end)
+    // slice of the matching field column, so pos.x aliases column<0>() and so on.
+    template <std::size_t... I>
+    chunk(storage& store,
+          std::size_t begin,
+          std::size_t end,
+          std::index_sequence<I...>) noexcept
+        : field_view<C> {store.template column<I>().subspan(begin, end - begin)...}
+        , store_(store)
+        , begin_(begin)
+        , end_(end) {}
+#endif
+
     storage& store_;
     std::size_t begin_, end_;
 };

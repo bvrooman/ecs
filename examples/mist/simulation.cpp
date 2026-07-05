@@ -72,20 +72,22 @@ struct Tuning {
     float cruise, goalSeek, goalFollow, cohesion, alignment, separation, softCap, wander;
     float dive; // fly-over dive depth
 };
-inline float env_f(char const* key, float dflt) {
+
+template <typename T>
+inline T env(char const* key, T dflt) {
     char const* v = std::getenv(key);
-    return (v && *v) ? float(std::atof(v)) : dflt;
+    return (v && *v) ? static_cast<T>(std::atof(v)) : dflt;
 }
 inline Tuning read_tuning() {
-    return Tuning {env_f("ECS_CRUISE", cfg::kCruise),
-                   env_f("ECS_GOALSEEK", cfg::kGoalSeek),
-                   env_f("ECS_GOALFOLLOW", cfg::kGoalFollow),
-                   env_f("ECS_COHESION", cfg::kCohesion),
-                   env_f("ECS_ALIGN", cfg::kAlignment),
-                   env_f("ECS_SEPARATION", cfg::kSeparation),
-                   env_f("ECS_SOFTCAP", cfg::kSoftCap),
-                   env_f("ECS_WANDER", cfg::kWander),
-                   env_f("ECS_DIVE", cfg::kDiveAmp)};
+    return Tuning {env("ECS_CRUISE", cfg::kCruise),
+                   env("ECS_GOALSEEK", cfg::kGoalSeek),
+                   env("ECS_GOALFOLLOW", cfg::kGoalFollow),
+                   env("ECS_COHESION", cfg::kCohesion),
+                   env("ECS_ALIGN", cfg::kAlignment),
+                   env("ECS_SEPARATION", cfg::kSeparation),
+                   env("ECS_SOFTCAP", cfg::kSoftCap),
+                   env("ECS_WANDER", cfg::kWander),
+                   env("ECS_DIVE", cfg::kDiveAmp)};
 }
 
 } // namespace
@@ -208,14 +210,8 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                      q.for_each_chunk([G, goalw, t, &g, T](std::span<Entity>,
                                                            chunk<Position const> pos,
                                                            chunk<Velocity> vel) {
-                         auto const px = pos.column<0>();
-                         auto const py = pos.column<1>();
-                         auto const pz = pos.column<2>();
-                         auto vx       = vel.column<0>();
-                         auto vy       = vel.column<1>();
-                         auto vz       = vel.column<2>();
-                         for (std::size_t i = 0; i < px.size(); ++i) {
-                             float const x = px[i], y = py[i], z = pz[i];
+                         for (std::size_t i = 0; i < pos.x.size(); ++i) {
+                             float const x = pos.x[i], y = pos.y[i], z = pos.z[i];
                              float ax = 0, ay = 0, az = 0; // steering acceleration
 
                              // Local neighbourhood: cell + 6 face neighbours.
@@ -279,16 +275,13 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                              // little, which breaks thin lines/sheets into volume and
                              // adds a living shimmer.
                              float const k = cfg::kWanderFreq;
-                             add_dir(ax,
-                                     ay,
-                                     az,
-                                     fast_sin(k * y + 0.7f * t) +
-                                         fast_sin(1.7f * k * z - 0.5f * t),
-                                     fast_sin(k * z + 0.6f * t) +
-                                         fast_sin(1.7f * k * x + 0.4f * t),
-                                     fast_sin(k * x - 0.8f * t) +
-                                         fast_sin(1.7f * k * y + 0.5f * t),
-                                     T.wander);
+                             auto const dx = fast_sin(k * y + 0.7f * t) +
+                                             fast_sin(1.7f * k * z - 0.5f * t);
+                             auto const dy = fast_sin(k * z + 0.6f * t) +
+                                             fast_sin(1.7f * k * x + 0.4f * t);
+                             auto const dz = fast_sin(k * x - 0.8f * t) +
+                                             fast_sin(1.7f * k * y + 0.5f * t);
+                             add_dir(ax, ay, az, dx, dy, dz, T.wander);
 
                              // Soft boundary in the view plane (xy): steer back past the
                              // wall.
@@ -329,9 +322,9 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                              // Apply the steering, then pull speed back to the cruise so
                              // the birds always fly (turning, not speeding up or
                              // stopping).
-                             float nvx = vx[i] + ax * cfg::kDt;
-                             float nvy = vy[i] + ay * cfg::kDt;
-                             float nvz = vz[i] + az * cfg::kDt;
+                             float nvx = vel.x[i] + ax * cfg::kDt;
+                             float nvy = vel.y[i] + ay * cfg::kDt;
+                             float nvz = vel.z[i] + az * cfg::kDt;
                              float const sp =
                                  std::sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
                              if (sp > 1e-5f) {
@@ -340,9 +333,9 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
                                  nvy *= f;
                                  nvz *= f;
                              }
-                             vx[i] = nvx;
-                             vy[i] = nvy;
-                             vz[i] = nvz;
+                             vel.x[i] = nvx;
+                             vel.y[i] = nvy;
+                             vel.z[i] = nvz;
                          }
                      });
                  });
@@ -353,16 +346,10 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
-            auto px       = pos.column<0>();
-            auto py       = pos.column<1>();
-            auto pz       = pos.column<2>();
-            auto const vx = vel.column<0>();
-            auto const vy = vel.column<1>();
-            auto const vz = vel.column<2>();
-            for (std::size_t i = 0; i < px.size(); ++i) {
-                px[i] += vx[i] * cfg::kDt;
-                py[i] += vy[i] * cfg::kDt;
-                pz[i] += vz[i] * cfg::kDt;
+            for (std::size_t i = 0; i < pos.x.size(); ++i) {
+                pos.x[i] += vel.x[i] * cfg::kDt;
+                pos.y[i] += vel.y[i] * cfg::kDt;
+                pos.z[i] += vel.z[i] * cfg::kDt;
             }
         });
     });
