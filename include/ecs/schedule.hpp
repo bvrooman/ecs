@@ -109,26 +109,26 @@ namespace detail {
     template <class... Cs>
     struct system_param<Query<Cs...>> {
         static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-        static Query<Cs...> bind(World& w, Commands&, WorkerPool* pool) {
-            return Query<Cs...>(w, *pool);
+        static Query<Cs...> bind(World& w, Commands&, WorkerPool& pool) {
+            return Query<Cs...>(w, pool);
         }
     };
     template <class T>
     struct system_param<Res<T>> {
         static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-        static Res<T> bind(World& w, Commands&, WorkerPool*) { return Res<T>(w); }
+        static Res<T> bind(World& w, Commands&, WorkerPool&) { return Res<T>(w); }
     };
     template <class T>
     struct system_param<ResMut<T>> {
         static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-        static ResMut<T> bind(World& w, Commands&, WorkerPool*) { return ResMut<T>(w); }
+        static ResMut<T> bind(World& w, Commands&, WorkerPool&) { return ResMut<T>(w); }
     };
     template <>
     struct system_param<Commands&> {
         // A side channel: no tracked component/resource access. We still flag it
         // so tooling can surface that the system records commands.
         static void declare(SystemAccess& a) { a.commands = true; }
-        static Commands& bind(World&, Commands& c, WorkerPool*) { return c; }
+        static Commands& bind(World&, Commands& c, WorkerPool&) { return c; }
     };
     // Read-only ad-hoc access: WorldView reads everything but writes nothing,
     // so it runs in parallel with other readers and is serialized only against
@@ -136,7 +136,7 @@ namespace detail {
     template <>
     struct system_param<WorldView> {
         static void declare(SystemAccess& a) { a.reads_all = true; }
-        static WorldView bind(World& w, Commands&, WorkerPool*) { return WorldView(w); }
+        static WorldView bind(World& w, Commands&, WorkerPool&) { return WorldView(w); }
     };
     // Full escape hatch: a raw World& can also mutate component values through
     // a non-const query, so its access cannot be analyzed -- the system is
@@ -145,7 +145,7 @@ namespace detail {
     template <>
     struct system_param<World&> {
         static void declare(SystemAccess& a) { a.exclusive = true; }
-        static World& bind(World& w, Commands&, WorkerPool*) { return w; }
+        static World& bind(World& w, Commands&, WorkerPool&) { return w; }
     };
 
 } // namespace detail
@@ -157,9 +157,8 @@ public:
         std::string name;
         SystemAccess access;
         // move_only_function (not function) so a system may capture a move-only
-        // value (e.g. a unique_ptr or a move_only_function of its own). The
-        // WorkerPool* is always valid -- run(World&) installs a transient 1-lane pool.
-        ecs::detail::move_only_function<void(World&, Commands&, WorkerPool*)> run;
+        // value (e.g. a unique_ptr or a move_only_function of its own).
+        ecs::detail::move_only_function<void(World&, Commands&, WorkerPool&)> run;
         int phase         = 0;
         std::size_t level = 0;
         bool once         = false;
@@ -187,7 +186,7 @@ public:
     // Register a system whose access is *declared* (a runtime SystemAccess)
     // rather than derived from C++ parameter types -- the entry point for a
     // JS-defined system. `run` is the type-erased body (typically a runtime query
-    // that dispatches per chunk) with the usual (World&, Commands&, WorkerPool*)
+    // that dispatches per chunk) with the usual (World&, Commands&, WorkerPool&)
     // signature. It conflicts and levels against every other system by `access`
     // exactly like a native one, so JS and C++ systems share one wave plan.
     template <class Run>
@@ -269,7 +268,7 @@ public:
         auto cmds = Commands {world};
         for (auto const& wave : waves_) {
             for (auto const idx : wave)
-                systems_[idx].run(world, cmds, &pool);
+                systems_[idx].run(world, cmds, pool);
             world.apply_commands();
         }
         prune_once();
@@ -287,7 +286,7 @@ private:
     }
     template <class Args, class Fn, std::size_t... I>
     static void invoke(
-        Fn& fn, World& w, Commands& c, WorkerPool* pool, std::index_sequence<I...>) {
+        Fn& fn, World& w, Commands& c, WorkerPool& pool, std::index_sequence<I...>) {
         fn(detail::system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
     }
 
@@ -302,7 +301,7 @@ private:
         sys.once  = once;
         declare_into<Args>(sys.access, std::make_index_sequence<N> {});
         sys.run =
-            [fn = std::forward<Fn>(fn)](World& w, Commands& c, WorkerPool* pool) mutable {
+            [fn = std::forward<Fn>(fn)](World& w, Commands& c, WorkerPool& pool) mutable {
                 invoke<Args>(fn, w, c, pool, std::make_index_sequence<N> {});
             };
         auto const id = sys.id;
