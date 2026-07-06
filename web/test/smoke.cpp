@@ -19,7 +19,6 @@
 
 #include "ecs/ecs.hpp"
 #include "ecs/reflection/reflect.hpp"
-
 #include <cstdio>
 #include <vector>
 
@@ -87,7 +86,7 @@ int main() {
     // gravity: read Mass + the Gravity resource, write Velocity.
     schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.each([a](Entity, Velocity& v, Mass const&) { v.y += a * kDt; });
+        q.for_each_serial([a](auto& v, auto&) { v.y += a * kDt; });
     });
 
     // emitter: spawn short-lived tracer particles via the command buffer.
@@ -103,7 +102,7 @@ int main() {
 
     // reaper: age every Lifetime, destroy the expired ones (deferred).
     schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-        q.each([&](Entity e, Lifetime& l) {
+        q.for_each_serial([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
         });
@@ -111,7 +110,7 @@ int main() {
 
     // integrate: read Velocity (written by gravity -> later level), write Position.
     schedule.add("integrate", [](Query<Position, Velocity const> q) {
-        q.each([](Entity, Position& p, Velocity const& v) {
+        q.for_each_serial([](auto& p, auto& v) {
             p.x += v.x * kDt;
             p.y += v.y * kDt;
             p.z += v.z * kDt;
@@ -124,8 +123,8 @@ int main() {
                     ResMut<SnapshotChannel<Snapshot>> ch) {
                      Snapshot& out = ch->back();
                      out.clear();
-                     q.each([&](Entity, Position const& p, Tracer const&) {
-                         out.push_back(p);
+                     q.for_each_serial([&](auto& p, auto&) {
+                         out.push_back({p.x, p.y, p.z});
                      });
                      ch->publish();
                  });

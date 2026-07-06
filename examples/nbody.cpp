@@ -102,7 +102,7 @@ int main() {
 
     // reaper: age every Lifetime and destroy the expired ones (deferred).
     schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-        q.each([&](Entity e, Lifetime& l) {
+        q.for_each_serial([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
         });
@@ -135,8 +135,8 @@ int main() {
                     ResMut<SnapshotChannel<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.each([&](Entity, Position const& p, Tracer const&) {
-                         out.push_back(p);
+                     q.for_each_serial([&](auto& p, auto&) {
+                         out.push_back({p.x, p.y, p.z});
                      });
                      ch->publish();
                  });

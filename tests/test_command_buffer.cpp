@@ -42,9 +42,9 @@ static void destroy_during_iteration_is_safe() {
     });
 
     setup(w, [&](WorldView view, Commands& cmd) {
-        view.query<Position, Doomed>().each([&](Entity e,
-                                                Position const&,
-                                                Doomed const&) { cmd.destroy(e); });
+        view.query<Position, Doomed>().for_each_serial([&](Entity e, auto&, auto&) {
+            cmd.destroy(e);
+        });
         CHECK(view.size() == 10); // nothing applied yet (still recording)
     });
 
@@ -164,9 +164,7 @@ static void bulk_spawn_loop() {
     CHECK(w.get<Position>(es[500]).x == 500.f);
 
     double sum_x = 0;
-    query<Position, Velocity>(w).each([&](Entity, Position& p, Velocity&) {
-        sum_x += p.x;
-    });
+    query<Position, Velocity>(w).for_each_serial([&](auto& p, auto&) { sum_x += p.x; });
     CHECK(sum_x == double(999) * 1000 / 2); // 0+1+...+999
 }
 

@@ -14,7 +14,7 @@
 // The per-entity systems iterate with `for_each_chunk`: the executor splits each
 // system's row range across the pool's lanes (data parallelism within a system).
 // The few structural/gather systems (clock, emitter, reaper, extract) use the
-// serial `each`. Commands flush at each wave barrier.
+// serial `for_each_serial`. Commands flush at each wave barrier.
 #include "simulation.hpp"
 
 #include "ecs/ecs.hpp"
@@ -124,7 +124,7 @@ void build_particle_schedule(Schedule& schedule) {
 
     // reaper: destroy particles past their lifespan (deferred). Serial. wave 1.
     schedule.add("reaper", [](Query<Age const> q, Commands& cmd) {
-        q.each([&](Entity e, Age const& a) {
+        q.for_each_serial([&](Entity e, auto& a) {
             if (a.t >= a.max)
                 cmd.destroy(e);
         });
@@ -177,7 +177,7 @@ void build_particle_schedule(Schedule& schedule) {
                     ResMut<TripleBuffer<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.each([&](Entity, Position const& p, Color const& c, Age const& a) {
+                     q.for_each_serial([&](auto& p, auto& c, auto& a) {
                          float alpha = 1.0f - a.t / a.max; // linear fade-out
                          if (alpha < 0.0f)
                              alpha = 0.0f;

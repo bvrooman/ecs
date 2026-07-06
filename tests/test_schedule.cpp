@@ -53,14 +53,14 @@ static void run_on_thread_pool_executes_all_systems() {
     Schedule sched;
     // writes Position, reads Velocity
     sched.add("physics", [](Query<Position, Velocity const> q) {
-        q.each([](Entity, Position& p, Velocity const& v) {
+        q.for_each_serial([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
     });
     // writes Health
     sched.add("damage",
-              [](Query<Health> q) { q.each([](Entity, Health& h) { h.hp -= 1; }); });
+              [](Query<Health> q) { q.for_each_serial([](auto& h) { h.hp -= 1; }); });
     // no ECS access -- just a side effect
     sched.add("render", [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 

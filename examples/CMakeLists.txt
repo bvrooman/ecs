@@ -27,7 +27,29 @@ if(APPLE AND glfw3_FOUND)
     target_link_libraries(particles PRIVATE ecs::schedule_viz)
     target_compile_definitions(particles PRIVATE PARTICLES_DEV_TOOLING=1)
   endif()
+
+  # -------------------------------------------------------------------------
+  # mist: a second OpenGL demo -- a 3D starling murmuration. Tiny black "birds"
+  # fly by Reynolds boids (cohesion + alignment + separation + wander over a
+  # spatial grid) at a constant cruise, led around by a wandering goal that
+  # sweeps the flock over the close perspective camera, with a local cursor lure
+  # that draws nearby birds toward the pointer. Reuses the particle example's
+  # gl_util.cpp (GL/text helpers, identical) via its include dir; own shaders.
+  # -------------------------------------------------------------------------
+  add_executable(mist
+    mist/main.cpp
+    mist/simulation.cpp
+    particles/gl_util.cpp)
+  target_include_directories(mist PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/mist
+    ${CMAKE_CURRENT_SOURCE_DIR}/particles)
+  target_link_libraries(mist PRIVATE ecs::ecs ecs::diag glfw OpenGL::GL)
+  target_compile_definitions(mist PRIVATE
+    MIST_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/mist/shaders")
+  # -O3 (vs the -O2 the other demos use): lets the SoA per-bird kernels
+  # (integrate, and any elementwise chunk loop) auto-vectorize to NEON.
+  target_compile_options(mist PRIVATE $<$<CONFIG:Release>:-O3>)
 else()
-  message(STATUS "examples: skipping 'particles' (needs APPLE + GLFW; "
+  message(STATUS "examples: skipping 'particles'/'mist' (needs APPLE + GLFW; "
                  "install with `brew install glfw`)")
 endif()

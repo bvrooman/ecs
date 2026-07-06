@@ -53,7 +53,7 @@ static void build_steady(Schedule& s) {
              ResMut<TripleBuffer<RenderSnapshot>> ch) {
               RenderSnapshot& out = ch->back();
               out.clear();
-              q.each([&](Entity, Position const& p, Color const& c, Age const&) {
+              q.for_each_serial([&](auto& p, auto& c, auto&) {
                   out.push_back(GpuParticle {p.x, p.y, c.r, c.g, c.b, 1.0f});
               });
               ch->publish();

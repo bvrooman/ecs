@@ -1,5 +1,12 @@
 add_executable(soa_bench soa_bench.cpp)
 target_link_libraries(soa_bench PRIVATE ecs::ecs)
+
+# gather_bench: how for_each_parallel's per-row gather/scatter scales with component
+# complexity (wide/sparse, non-trivial fields) vs for_each_chunk. Most illustrative
+# on the portable backend (-DECS_USE_P2996=OFF) -- see the file header.
+add_executable(gather_bench gather_bench.cpp)
+target_link_libraries(gather_bench PRIVATE ecs::ecs)
+target_compile_options(gather_bench PRIVATE -O3 -DNDEBUG -march=native)
 # Benchmarks are only meaningful optimized; -march=native lets the SoA columns
 # vectorize. Applied unconditionally so `soa_bench` reflects real layout costs
 # regardless of CMAKE_BUILD_TYPE.
