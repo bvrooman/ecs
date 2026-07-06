@@ -34,94 +34,16 @@
 
 #pragma once
 
+#include "chunk.hpp"
+#include "detail/for_each_row.hpp"
 #include "parallel/worker_pool.hpp"
-#include "reflection/field_view.hpp"
 #include "world.hpp"
 #include <algorithm>
+#include <cstddef>
 #include <span>
-#include <tuple>
 #include <type_traits>
-#include <utility>
 
 namespace ecs {
-
-// chunk<C>: a lane's view of component C over the row range the executor handed
-// it. for_each_chunk gives each lane one chunk per component, already scoped to
-// that lane's rows. Access this lane's slice of a field either by name -- pos.x,
-// pos.y (from the reflected member names, span<const F> when C is const) -- or by
-// index, column<I>(); both denote the same std::span. The kernel iterates with
-// `for (auto& v : pos.x)` (or column<I>()[i], 0-based within the chunk) and never
-// handles a begin/end; because a chunk exposes only its own slice, writing through
-// a mutable one cannot touch another lane's rows, which is what keeps the
-// deterministic split race-free. Trivially copyable (a storage pointer + the
-// range + the field spans), so it is passed by value like a span.
-//
-// The named accessors are the field spans of a generated field_view<C> base and
-// exist only on the P2996 reflection backend (it alone recovers member names); on
-// the portable backend chunk carries no base and column<I>() is the only path.
-template <class C>
-class chunk
-#if ECS_USE_P2996
-    : public field_view<C> // named field spans: pos.x, pos.y, ... (populated below)
-#endif
-{
-    using bare    = std::remove_const_t<C>;
-    using store_t = soa_storage<bare>;
-    using storage = std::conditional_t<std::is_const_v<C>, store_t const, store_t>;
-
-#if ECS_USE_P2996
-    static constexpr std::size_t field_count = reflect::field_count_v<bare>;
-    static_assert(
-        !detail::field_name_collides_with_chunk<bare>(),
-        "ecs::chunk: a component field is named size/empty/column, which shadows "
-        "chunk's own members; rename the field or read it via column<I>().");
-#endif
-
-public:
-    chunk(storage& store, std::size_t begin, std::size_t end) noexcept
-#if ECS_USE_P2996
-        : chunk(store, begin, end, std::make_index_sequence<field_count> {}) {}
-#else
-        : store_(store)
-        , begin_(begin)
-        , end_(end) {
-    }
-#endif
-
-        // This lane's contiguous slice of field I (span<const F> if C is const). Same
-        // span the named accessor denotes; the portable, always-available form.
-        template <std::size_t I>
-        [[nodiscard]] auto column() const noexcept {
-        return store_.template column<I>().subspan(begin_, end_ - begin_);
-    }
-
-    [[nodiscard]]
-    std::size_t size() const noexcept {
-        return end_ - begin_;
-    }
-    [[nodiscard]]
-    bool empty() const noexcept {
-        return begin_ == end_;
-    }
-
-private:
-#if ECS_USE_P2996
-    // Populate the field_view<C> base: each named span is this lane's [begin, end)
-    // slice of the matching field column, so pos.x aliases column<0>() and so on.
-    template <std::size_t... I>
-    chunk(storage& store,
-          std::size_t begin,
-          std::size_t end,
-          std::index_sequence<I...>) noexcept
-        : field_view<C> {store.template column<I>().subspan(begin, end - begin)...}
-        , store_(store)
-        , begin_(begin)
-        , end_(end) {}
-#endif
-
-    storage& store_;
-    std::size_t begin_, end_;
-};
 
 template <class... Cs>
 class Query {
@@ -160,16 +82,12 @@ public:
     //   q.for_each_serial([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
     void for_each_serial(F&& fn) {
-#if ECS_USE_P2996
         auto const& archs = world_.archetypes();
         for (auto const ai : world_.matching_archetypes(required())) {
             auto& arch      = *archs[ai];
             auto const ents = std::span(arch.entities);
-            run_rows(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
+            detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
         }
-#else
-        run_gather<Gather::serial>(fn);
-#endif
     }
 
     // for_each_parallel: PARALLEL per-element iteration -- built on for_each_chunk,
@@ -194,13 +112,9 @@ public:
     // portable backend, prefer for_each_chunk. Quantified by benchmarks/gather_bench.
     template <class F>
     void for_each_parallel(F&& fn) {
-#if ECS_USE_P2996
         for_each_chunk([&fn](std::span<Entity> ents, chunk<Cs>... cs) {
-            run_rows(fn, ents, cs...);
+            detail::for_each_row(fn, ents, cs...);
         });
-#else
-        run_gather<Gather::parallel>(fn);
-#endif
     }
 
     // The SoA fast path. Splits each matching archetype's rows across the bound
@@ -245,89 +159,6 @@ private:
     static chunk<C> chunk_arg(Archetype& arch, std::size_t b, std::size_t e) {
         return chunk<C>(arch.column<bare<C>>().store, b, e);
     }
-
-#if ECS_USE_P2996
-    // Build a row<C> proxy referencing row i of chunk c's columns (p.x = col<0>[i],
-    // ...). Each reference binds to the SoA storage (span[i], not the temporary
-    // span), so writing through the proxy writes the column in place.
-    template <class C>
-    static row<C> row_at(chunk<C> c, std::size_t i) {
-        static constexpr auto field_count = reflect::field_count_v<bare<C>>;
-        return [&]<std::size_t... I>(std::index_sequence<I...>) {
-            return row<C> {c.template column<I>()[i]...};
-        }(std::make_index_sequence<field_count> {});
-    }
-
-    // Invoke fn once per row of [ents): build a row<C> proxy per component from the
-    // chunks and pass them as lvalues (bindable as auto& p), plus the entity if the
-    // kernel declares one. Shared by for_each_serial (driven over a whole archetype)
-    // and for_each_parallel (driven per lane by for_each_chunk).
-    template <class F>
-    static void run_rows(F& fn, std::span<Entity> ents, chunk<Cs>... cs) {
-        for (std::size_t i = 0; i < ents.size(); ++i) {
-            std::tuple<row<Cs>...> rows {row_at<Cs>(cs, i)...};
-            std::apply(
-                [&](row<Cs>&... r) {
-                    if constexpr (std::is_invocable_v<F&, Entity, row<Cs>&...>)
-                        fn(ents[i], r...); // kernel opted in to the entity
-                    else
-                        fn(r...);
-                },
-                rows);
-        }
-    }
-#else
-    // The per-element execution mode for run_gather (portable backend). Named so the
-    // call sites read run_gather<Gather::serial|parallel> rather than <false|true> --
-    // and so those are the only two values the switch accepts.
-    enum class Gather { serial, parallel };
-
-    // Portable per-element driver (no reflected field names): gather each row's
-    // components into locals, pass them by reference (bindable as auto& p) plus the
-    // entity if the kernel declares one, then scatter the mutable ones back. Shared by
-    // both per-element methods; Gather::parallel splits an archetype's rows across the
-    // WorkerPool lanes -- each lane owns a disjoint row range, so the per-row
-    // gather/scatter into that range is race-free -- while Gather::serial runs on the
-    // calling thread.
-    template <Gather Mode, class F>
-    void run_gather(F& fn) {
-        auto const& archs = world_.archetypes();
-        for (auto const ai : world_.matching_archetypes(required())) {
-            auto& arch   = *archs[ai];
-            auto stores  = std::tie(arch.column<bare<Cs>>().store...);
-            auto const n = arch.size();
-            auto run     = [&](std::size_t b, std::size_t e) {
-                for (std::size_t r = b; r < e; ++r)
-                    invoke_row(fn,
-                               arch.entities[r],
-                               r,
-                               stores,
-                               std::index_sequence_for<Cs...> {});
-            };
-            if constexpr (Mode == Gather::parallel)
-                pool_.parallel_for(n, run); // a 1-lane pool runs [0, n) inline
-            else
-                run(0, n);
-        }
-    }
-
-    template <class F, class Stores, std::size_t... I>
-    static void invoke_row(
-        F& fn, Entity e, std::size_t row, Stores& stores, std::index_sequence<I...>) {
-        auto locals = std::tuple<bare<Cs>...> {std::get<I>(stores).gather(row)...};
-        if constexpr (std::is_invocable_v<F&, Entity, Cs&...>)
-            fn(e, static_cast<Cs&>(std::get<I>(locals))...);
-        else
-            fn(static_cast<Cs&>(std::get<I>(locals))...);
-        (write_back<Cs>(std::get<I>(stores), row, std::get<I>(locals)), ...);
-    }
-
-    template <class C, class Store, class Local>
-    static void write_back(Store& store, std::size_t row, Local const& local) {
-        if constexpr (!std::is_const_v<C>)
-            store.set(row, local);
-    }
-#endif
 
     World& world_;
     WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
