@@ -130,18 +130,24 @@ Structural edits use swap-and-pop to keep every column dense, patching the
 relocated entity's row record in O(1). Archetype objects are heap-allocated so
 their addresses stay stable as new archetypes appear.
 
-Queries offer both styles. Mark a component `const` in the query type to read it
-without writing it back -- `each` then passes it by `const&` and skips its
-scatter (and `for_each_chunk` hands a `const` chunk), which avoids both the
-cost and the *undeclared write* of touching a component you only read:
+Queries offer three iteration styles. Mark a component `const` in the query type
+to read it without writing it back -- a read-only component is passed by
+`const&` and skipped by the write-back (and `for_each_chunk` hands a `const`
+chunk), which avoids both the cost and the *undeclared write* of touching a
+component you only read:
 
 ```cpp
-// ergonomic: gather -> mutate refs -> scatter back the non-const ones
-query<Position, const Velocity>(w).each([](Entity, Position& p, const Velocity& v){
+// per-element, SERIAL -- for reductions / shared state / command recording
+query<Position, const Velocity>(w).for_each_serial([](auto& p, auto& v){
   p.x += v.x;   // Velocity is read-only: not written back
 });
 
-// fast path: each lane gets a `chunk` per component, already scoped to its rows
+// per-element, PARALLEL -- splits rows across the pool; INDEPENDENT work only
+query<Position, const Velocity>(w).for_each_parallel([](auto& p, auto& v){
+  p.x += v.x;
+});
+
+// per-chunk, PARALLEL -- each lane gets a `chunk` per component (raw column spans)
 query<Position, const Velocity>(w).for_each_chunk(
   [](std::span<Entity>, chunk<Position> pos, chunk<const Velocity> vel){
     auto px = pos.column<0>(); auto vx = vel.column<0>(); // vx is span<const>
@@ -149,10 +155,16 @@ query<Position, const Velocity>(w).for_each_chunk(
   });
 ```
 
-`each` is the convenience path (per-row gather/scatter + a tuple, always serial);
-`for_each_chunk` is the hot path -- the executor splits an archetype's rows
-across the worker pool's lanes and calls the kernel once per lane with a `chunk`
-per component, each scoped to that lane's slice of rows. `chunk::column<I>()`
+`for_each_serial` and `for_each_parallel` share ergonomics -- each entity's
+components are handed to the kernel accessed as `p.x` (a write-through proxy
+referencing the SoA column in place under P2996; a gathered local on the portable
+backend), with an optional leading `Entity`. They differ only in execution:
+`for_each_serial` never uses the pool, so it is the correct path for a kernel that
+touches **shared state** (a reduction into a resource, an ordered snapshot gather,
+command recording); `for_each_parallel` splits an archetype's rows across the
+worker pool's lanes and so is for **independent** per-entity work only.
+`for_each_chunk` is the raw hot path -- the executor splits rows across lanes and
+calls the kernel once per lane with a `chunk` per component. `chunk::column<I>()`
 returns the field's contiguous span for *this lane only*, so a lane physically
 cannot reach another's rows: the split is data-parallel and race-free, and the
 kernel carries no `begin`/`end` (you iterate `column<I>()` directly).
@@ -252,7 +264,8 @@ remaining caveats:
   recorded *inside* a `for_each_chunk` kernel land in per-lane shards whose
   cross-lane order is unspecified, and `reserve()`'s id handout then depends on
   timing. Record structural edits from a system's serial part instead (the common
-  case — an emitter that loops and `cmd.spawn()`s, a reaper using `each`), or use
+  case — an emitter that loops and `cmd.spawn()`s, a reaper using
+  `for_each_serial`), or use
   a 1-lane pool, when you need reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
@@ -296,7 +309,7 @@ pointer/reference can escape, which is a pointer-to-local bug C++ cannot prevent
 ```cpp
 // a system: a Query param (here read-only Emitter) + Commands for mutation
 sched.add("spawn_particles", [](Query<const Emitter> q, Commands& cmd) {
-  q.each([&](Entity, const Emitter& em) {
+  q.for_each_serial([&](auto& em) {
     if (em.fire) {
       Entity p = cmd.spawn(Position{...}, Velocity{...}); // recorded
       cmd.add<Lifetime>(p, {...});                        // edit the handle now
@@ -461,9 +474,10 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
 
 * Portable reflection treats a component as a flat aggregate of ≤32 scalar-ish
   fields; nested aggregates count as one field (P2996 handles these natively).
-* `each` gathers/scatters per entity for ergonomic mutation; the column API is
-  the zero-copy path. A reflection-generated reference proxy (named field
-  accessors under P2996) is a natural follow-up.
+* `for_each_serial`/`for_each_parallel` hand each entity a reflection-generated
+  reference proxy -- named field accessors (`p.x`) that write through to the SoA
+  column in place under P2996, with a gather/scatter fallback on the portable
+  backend; `for_each_chunk`'s column API is the raw zero-copy path.
 * The scheduler uses wavefront leveling (simple, correct, parallel). A full
   per-edge sender DAG would extract a little more overlap across levels.
 * All structural mutation is deferred to a flush point, so it is always safe

@@ -11,10 +11,15 @@
 // the scheduler derives that system's read/write access directly from these
 // const/non-const marks, so the declared access cannot drift from actual use.
 //
-//   q.each([](Entity e, const Position& p, Velocity& v){ ... });
-//       Ergonomic, per-entity. Components are gathered from their per-field
-//       columns into locals, passed by reference, and the mutable (non-const)
-//       ones scattered back. Convenience path; prefer for_each_chunk when hot.
+//   q.for_each_serial([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
+//       SERIAL per-entity: never uses the pool. Each component is passed by
+//       reference (a write-through proxy under P2996, a gathered local on the
+//       portable backend), accessed as p.x. The path for kernels that touch shared
+//       state (reductions, ordered gathers, command recording).
+//
+//   q.for_each_parallel([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
+//       PARALLEL per-entity: same as for_each_serial but splits the rows across the
+//       WorkerPool lanes -- for INDEPENDENT per-entity work only.
 //
 //   q.for_each_chunk([](std::span<Entity> ents,
 //                       chunk<Position> pos, chunk<Velocity const> vel){ ... });
@@ -79,14 +84,14 @@ public:
 #else
         : store_(store)
         , begin_(begin)
-        , end_(end) {}
+        , end_(end) {
+    }
 #endif
 
-    // This lane's contiguous slice of field I (span<const F> if C is const). Same
-    // span the named accessor denotes; the portable, always-available form.
-    template <std::size_t I>
-    [[nodiscard]]
-    auto column() const noexcept {
+        // This lane's contiguous slice of field I (span<const F> if C is const). Same
+        // span the named accessor denotes; the portable, always-available form.
+        template <std::size_t I>
+        [[nodiscard]] auto column() const noexcept {
         return store_.template column<I>().subspan(begin_, end_ - begin_);
     }
 
@@ -136,26 +141,66 @@ class Query {
     }
 
 public:
-    // `pool` is the data-parallel WorkerPool the executor binds (null for ad-hoc
-    // queries, which then iterate serially).
-    explicit Query(World& world, WorkerPool* pool = nullptr)
+    // `pool` is the data-parallel WorkerPool the executor binds. Ad-hoc queries
+    // (query()/WorldView, outside a schedule) reference a shared 1-lane serial pool,
+    // so pool_ is always valid -- no null check on the iteration path.
+    explicit Query(World& world, WorkerPool& pool)
         : world_(world)
         , pool_(pool) {}
 
+    // for_each_serial: SERIAL per-element iteration -- never uses the pool. Hands
+    // the kernel each entity's components with the same ergonomics as
+    // for_each_parallel (a write-through proxy per component under P2996, gathered
+    // references on the portable backend, accessed as p.x; plus an optional leading
+    // Entity if the kernel declares one). This is the path for a kernel that touches
+    // SHARED state -- a reduction into a resource, an ordered gather into a snapshot,
+    // command recording -- since for_each_parallel/for_each_chunk may split the rows
+    // across WorkerPool lanes.
+    //
+    //   q.for_each_serial([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
-    void each(F&& fn) {
+    void for_each_serial(F&& fn) {
+#if ECS_USE_P2996
         auto const& archs = world_.archetypes();
         for (auto const ai : world_.matching_archetypes(required())) {
-            auto& arch   = *archs[ai];
-            auto stores  = std::tie(arch.column<bare<Cs>>().store...);
-            auto const n = arch.size();
-            for (auto row = 0; row < n; ++row)
-                invoke_row(fn,
-                           arch.entities[row],
-                           row,
-                           stores,
-                           std::index_sequence_for<Cs...> {});
+            auto& arch      = *archs[ai];
+            auto const ents = std::span(arch.entities);
+            run_rows(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
         }
+#else
+        run_gather<Gather::serial>(fn);
+#endif
+    }
+
+    // for_each_parallel: PARALLEL per-element iteration -- built on for_each_chunk,
+    // so it splits an archetype's rows across the WorkerPool lanes. Use it for
+    // INDEPENDENT per-entity work (each row touches only its own components); for a
+    // kernel that writes shared state use for_each_serial instead. Same ergonomics
+    // as for_each_serial: under P2996 a write-through row<C> proxy per component
+    // (named fields p.x reference this entity's SoA slot in place, so it vectorizes
+    // like a hand index loop), with an optional leading Entity if declared:
+    //
+    //   q.for_each_parallel([](auto& p, auto& v){ p.x += v.x * dt; });      // rows
+    //   q.for_each_parallel([](Entity e, auto& p, auto& v){ ...use e... }); // +entity
+    //
+    // Both backends split rows across the pool's lanes (lanes own disjoint rows, so
+    // it is race-free). Under P2996 each row is a zero-copy proxy -- it touches only
+    // the fields the kernel uses, so it costs the same as for_each_chunk. The
+    // portable backend (no field names) instead gathers the WHOLE component into a
+    // local and scatters the mutable fields back, regardless of what the kernel
+    // touches: cheap for a small component the kernel mostly uses, but it scales with
+    // the field count and is severe for a WIDE component read/written sparsely or one
+    // with a non-trivially-copyable field (e.g. std::string) -- there, on the
+    // portable backend, prefer for_each_chunk. Quantified by benchmarks/gather_bench.
+    template <class F>
+    void for_each_parallel(F&& fn) {
+#if ECS_USE_P2996
+        for_each_chunk([&fn](std::span<Entity> ents, chunk<Cs>... cs) {
+            run_rows(fn, ents, cs...);
+        });
+#else
+        run_gather<Gather::parallel>(fn);
+#endif
     }
 
     // The SoA fast path. Splits each matching archetype's rows across the bound
@@ -181,10 +226,7 @@ public:
             auto run        = [&](std::size_t b, std::size_t e) {
                 fn(ents.subspan(b, e - b), chunk_arg<Cs>(arch, b, e)...);
             };
-            if (pool_)
-                pool_->parallel_for(n, run);
-            else
-                run(0, n);
+            pool_.parallel_for(n, run); // a 1-lane pool runs [0, n) inline
         }
     }
 
@@ -204,14 +246,79 @@ private:
         return chunk<C>(arch.column<bare<C>>().store, b, e);
     }
 
-    // Gather each component into a local, call fn with references whose
-    // constness matches the query type, then scatter back only the mutable
-    // components.
+#if ECS_USE_P2996
+    // Build a row<C> proxy referencing row i of chunk c's columns (p.x = col<0>[i],
+    // ...). Each reference binds to the SoA storage (span[i], not the temporary
+    // span), so writing through the proxy writes the column in place.
+    template <class C>
+    static row<C> row_at(chunk<C> c, std::size_t i) {
+        static constexpr auto field_count = reflect::field_count_v<bare<C>>;
+        return [&]<std::size_t... I>(std::index_sequence<I...>) {
+            return row<C> {c.template column<I>()[i]...};
+        }(std::make_index_sequence<field_count> {});
+    }
+
+    // Invoke fn once per row of [ents): build a row<C> proxy per component from the
+    // chunks and pass them as lvalues (bindable as auto& p), plus the entity if the
+    // kernel declares one. Shared by for_each_serial (driven over a whole archetype)
+    // and for_each_parallel (driven per lane by for_each_chunk).
+    template <class F>
+    static void run_rows(F& fn, std::span<Entity> ents, chunk<Cs>... cs) {
+        for (std::size_t i = 0; i < ents.size(); ++i) {
+            std::tuple<row<Cs>...> rows {row_at<Cs>(cs, i)...};
+            std::apply(
+                [&](row<Cs>&... r) {
+                    if constexpr (std::is_invocable_v<F&, Entity, row<Cs>&...>)
+                        fn(ents[i], r...); // kernel opted in to the entity
+                    else
+                        fn(r...);
+                },
+                rows);
+        }
+    }
+#else
+    // The per-element execution mode for run_gather (portable backend). Named so the
+    // call sites read run_gather<Gather::serial|parallel> rather than <false|true> --
+    // and so those are the only two values the switch accepts.
+    enum class Gather { serial, parallel };
+
+    // Portable per-element driver (no reflected field names): gather each row's
+    // components into locals, pass them by reference (bindable as auto& p) plus the
+    // entity if the kernel declares one, then scatter the mutable ones back. Shared by
+    // both per-element methods; Gather::parallel splits an archetype's rows across the
+    // WorkerPool lanes -- each lane owns a disjoint row range, so the per-row
+    // gather/scatter into that range is race-free -- while Gather::serial runs on the
+    // calling thread.
+    template <Gather Mode, class F>
+    void run_gather(F& fn) {
+        auto const& archs = world_.archetypes();
+        for (auto const ai : world_.matching_archetypes(required())) {
+            auto& arch   = *archs[ai];
+            auto stores  = std::tie(arch.column<bare<Cs>>().store...);
+            auto const n = arch.size();
+            auto run     = [&](std::size_t b, std::size_t e) {
+                for (std::size_t r = b; r < e; ++r)
+                    invoke_row(fn,
+                               arch.entities[r],
+                               r,
+                               stores,
+                               std::index_sequence_for<Cs...> {});
+            };
+            if constexpr (Mode == Gather::parallel)
+                pool_.parallel_for(n, run); // a 1-lane pool runs [0, n) inline
+            else
+                run(0, n);
+        }
+    }
+
     template <class F, class Stores, std::size_t... I>
     static void invoke_row(
         F& fn, Entity e, std::size_t row, Stores& stores, std::index_sequence<I...>) {
         auto locals = std::tuple<bare<Cs>...> {std::get<I>(stores).gather(row)...};
-        fn(e, static_cast<Cs&>(std::get<I>(locals))...);
+        if constexpr (std::is_invocable_v<F&, Entity, Cs&...>)
+            fn(e, static_cast<Cs&>(std::get<I>(locals))...);
+        else
+            fn(static_cast<Cs&>(std::get<I>(locals))...);
         (write_back<Cs>(std::get<I>(stores), row, std::get<I>(locals)), ...);
     }
 
@@ -220,14 +327,26 @@ private:
         if constexpr (!std::is_const_v<C>)
             store.set(row, local);
     }
+#endif
 
     World& world_;
-    WorkerPool* pool_ = nullptr; // data-parallel lanes for for_each_chunk
+    WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
 };
+
+namespace detail {
+    // A process-wide 1-lane WorkerPool for ad-hoc queries (query()/WorldView) that
+    // run outside a schedule. One lane spawns no threads and its parallel_for just
+    // calls the kernel on the calling thread, so it is free and safe to share across
+    // threads -- at 1 lane there is no per-dispatch state.
+    inline WorkerPool& serial_pool() {
+        static WorkerPool pool {1};
+        return pool;
+    }
+} // namespace detail
 
 template <class... Cs>
 Query<Cs...> query(World& world) {
-    return Query<Cs...>(world);
+    return Query<Cs...>(world, detail::serial_pool());
 }
 
 // A read-only view of the world for systems that need ad-hoc reads (size, get,
@@ -261,7 +380,7 @@ public:
     // Read-only query: every component is iterated by const reference.
     template <class... Cs>
     auto query() const {
-        return Query<std::remove_const_t<Cs> const...>(*world_);
+        return Query<std::remove_const_t<Cs> const...>(*world_, detail::serial_pool());
     }
 
 private:

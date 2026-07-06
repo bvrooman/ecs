@@ -46,7 +46,9 @@ if(APPLE AND glfw3_FOUND)
   target_link_libraries(mist PRIVATE ecs::ecs ecs::diag glfw OpenGL::GL)
   target_compile_definitions(mist PRIVATE
     MIST_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/mist/shaders")
-  target_compile_options(mist PRIVATE $<$<CONFIG:Release>:-O2>)
+  # -O3 (vs the -O2 the other demos use): lets the SoA per-bird kernels
+  # (integrate, and any elementwise chunk loop) auto-vectorize to NEON.
+  target_compile_options(mist PRIVATE $<$<CONFIG:Release>:-O3>)
 else()
   message(STATUS "examples: skipping 'particles'/'mist' (needs APPLE + GLFW; "
                  "install with `brew install glfw`)")

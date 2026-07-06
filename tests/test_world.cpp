@@ -27,7 +27,7 @@ static void create_and_query() {
     CHECK((query<Position, Velocity>(w).count() == 2));
 
     // Value mutation through a query is not a structural change -- needs no Commands.
-    query<Position, Velocity>(w).each([](Entity, Position& p, Velocity& v) {
+    query<Position, Velocity>(w).for_each_serial([](auto& p, auto& v) {
         p.x += v.dx;
         p.y += v.dy;
     });
@@ -85,19 +85,56 @@ static void soa_fast_path() {
     });
     // every Position.x was bumped by 100 via a contiguous column loop
     std::size_t seen = 0;
-    query<Position>(w).each([&](Entity, Position& p) {
+    query<Position>(w).for_each_serial([&](auto& p) {
         CHECK(p.x >= 100.f);
         ++seen;
     });
     CHECK(seen == 4);
 }
 
+#if ECS_USE_P2996
+// Per-element SoA iteration via row proxies (P2996-only: needs field names).
+static void for_each_rows() {
+    World w;
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 4; ++i)
+            cmd.spawn(Position {float(i), 0.f}, Velocity {1.f, 2.f});
+    });
+    // for_each_parallel: named proxy fields write through, no manual loop.
+    query<Position, Velocity const>(w).for_each_parallel([](auto& p, auto& v) {
+        p.x += v.dx; // +1
+        p.y += v.dy; // +2
+    });
+    // for_each_serial: same ergonomics, serial path (read here).
+    std::size_t seen = 0;
+    query<Position const>(w).for_each_serial([&](auto& p) {
+        CHECK(p.y == 2.f); // 0 + dy
+        ++seen;
+    });
+    CHECK(seen == 4);
+    // entity form: a leading Entity parameter is detected and passed, both methods.
+    std::size_t es = 0, ep = 0;
+    query<Position const>(w).for_each_serial([&](Entity e, auto& p) {
+        CHECK(w.alive(e));
+        (void)p;
+        ++es;
+    });
+    query<Position const>(w).for_each_parallel([&](Entity e, auto& p) {
+        CHECK(w.alive(e));
+        (void)p;
+        ++ep;
+    });
+    CHECK(es == 4);
+    CHECK(ep == 4);
+}
+#endif
+
 static void const_query_marks_read_only() {
     World w;
     Entity e;
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
     // Velocity read-only (const), Position mutable: only Position is written back.
-    query<Velocity const, Position>(w).each([](Entity, Velocity const& v, Position& p) {
+    query<Velocity const, Position>(w).for_each_serial([](auto& v, auto& p) {
         p.x += v.dx;
     });
     CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
@@ -148,6 +185,9 @@ int main() {
     RUN_SUITE(add_remove_moves_archetype_preserving_data);
     RUN_SUITE(destroy_and_generation_reuse);
     RUN_SUITE(soa_fast_path);
+#if ECS_USE_P2996
+    RUN_SUITE(for_each_rows);
+#endif
     RUN_SUITE(const_query_marks_read_only);
     RUN_SUITE(spawn_goes_directly_to_final_archetype);
     RUN_SUITE(query_cache_sees_archetypes_created_after_first_query);

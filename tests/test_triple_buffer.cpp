@@ -115,7 +115,7 @@ static void world_extraction_handoff() {
               [](Query<Position const> q, ResMut<TripleBuffer<PositionSnapshot>> tb) {
                   PositionSnapshot& out = tb->back();
                   out.clear();
-                  q.each([&](Entity, Position const& p) { out.push_back(p); });
+                  q.for_each_serial([&](auto& p) { out.push_back({p.x, p.y}); });
                   tb->publish();
               });
 

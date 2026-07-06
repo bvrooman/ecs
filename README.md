@@ -76,7 +76,7 @@ ctest --test-dir build --output-on-failure
 ### Benchmarks
 
 `benchmarks/soa_bench` measures the structure-of-arrays storage against a plain
-array-of-structures baseline and the two query paths (`each` vs
+array-of-structures baseline and the two query paths (`for_each_serial` vs
 `for_each_chunk`) across representative workloads — integrate, multi
 read+write, single-field read, compute-bound, and the write-back cost of an
 unmarked read. It is always built `-O3 -march=native`. Override the workload

@@ -99,7 +99,7 @@ void apply_inputs(App& a) {
     if (a.reset_req.exchange(false, std::memory_order_acq_rel)) {
         Schedule clear;
         clear.add_once("reset", [](Query<Position const> q, Commands& cmd) {
-            q.each([&](Entity en, Position const&) { cmd.destroy(en); });
+            q.for_each_serial([&](Entity en, auto&) { cmd.destroy(en); });
         });
         clear.run(a.world);
     }

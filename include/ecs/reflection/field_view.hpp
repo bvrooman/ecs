@@ -58,6 +58,30 @@ struct field_view_holder {
     consteval { std::meta::define_aggregate(^^type, field_span_specs<C>()); }
 };
 
+// One *reference* member per data member of C, carrying the member's name --
+// const-reference when C is const. This is the per-element analogue of
+// field_span_specs: where field_view<C> holds a span per field, row<C> holds a
+// reference to one element per field, so p.x aliases a single entity's slot in
+// the column and writing p.x writes it in place (no gather/scatter).
+template <class C>
+consteval std::vector<std::meta::info> field_ref_specs() {
+    using namespace std::meta;
+    using Bare = std::remove_const_t<C>;
+    std::vector<info> out;
+    for (info const m : nonstatic_data_members_of(^^Bare, access_context::current())) {
+        info const elem = std::is_const_v<C> ? add_const(type_of(m)) : type_of(m);
+        out.push_back(
+            data_member_spec(add_lvalue_reference(elem), {.name = identifier_of(m)}));
+    }
+    return out;
+}
+
+template <class C>
+struct row_holder {
+    struct type;
+    consteval { std::meta::define_aggregate(^^type, field_ref_specs<C>()); }
+};
+
 // A field whose name matches one of chunk's own members would be shadowed by it
 // (chunk inherits the view, and the derived name wins), silently defeating the
 // named accessor. chunk static_asserts on this so the collision is a hard error.
@@ -79,6 +103,13 @@ namespace ecs {
 // Generated view: one named std::span per field of C (see file header).
 template <class C>
 using field_view = typename detail::field_view_holder<C>::type;
+
+// Generated per-element proxy: one named reference per field of C (const when C
+// is const). row<Position> = { float& x, y, z; }; row<Position const> = { const
+// float& x, y, z; }. Used by Query::for_each_serial / for_each_parallel to hand a
+// kernel one entity's row with write-through fields (p.x = ...), no gather/scatter.
+template <class C>
+using row = typename detail::row_holder<C>::type;
 
 } // namespace ecs
 

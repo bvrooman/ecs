@@ -103,13 +103,14 @@ namespace detail {
             a.writes.push_back(component_id<C>);
     }
 
-    // bind() also receives the active WorkerPool* (null for an ad-hoc serial
-    // run); the Query carries it so for_each_chunk splits rows across the lanes.
+    // bind() receives the active WorkerPool the run installed -- run(World&) uses a
+    // transient 1-lane pool, so it is never null here; the Query carries it so
+    // for_each_chunk/for_each_parallel split their rows across the lanes.
     template <class... Cs>
     struct system_param<Query<Cs...>> {
         static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
         static Query<Cs...> bind(World& w, Commands&, WorkerPool* pool) {
-            return Query<Cs...>(w, pool);
+            return Query<Cs...>(w, *pool);
         }
     };
     template <class T>
@@ -157,7 +158,7 @@ public:
         SystemAccess access;
         // move_only_function (not function) so a system may capture a move-only
         // value (e.g. a unique_ptr or a move_only_function of its own). The
-        // WorkerPool* is null except under run(World&, WorkerPool&).
+        // WorkerPool* is always valid -- run(World&) installs a transient 1-lane pool.
         ecs::detail::move_only_function<void(World&, Commands&, WorkerPool*)> run;
         int phase         = 0;
         std::size_t level = 0;
