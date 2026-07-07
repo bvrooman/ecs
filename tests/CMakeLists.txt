@@ -16,3 +16,5 @@ ecs_add_test(test_snapshot_channel)
 ecs_add_test(test_dynamic)
 ecs_add_test(test_stats)
 target_link_libraries(test_stats PRIVATE ecs::diag)
+ecs_add_test(test_profiler)
+target_link_libraries(test_profiler PRIVATE ecs::profiler) # schedule timing observers

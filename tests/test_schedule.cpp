@@ -4,6 +4,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 using namespace ecs;
 
@@ -145,6 +146,67 @@ static void system_exception_propagates() {
     CHECK(caught);
 }
 
+// The observer hook is a general, always-available core feature. Counts the
+// boundaries it is notified of and, for system_begin, appends its tag to a shared
+// log so notification order across observers is observable.
+struct TallyObserver : ecs::ScheduleObserver {
+    char tag;
+    std::vector<char>* log;
+    int ticks = 0, waves = 0, systems = 0;
+    std::size_t last_n_waves = 0;
+    TallyObserver(char t, std::vector<char>* l)
+        : tag(t)
+        , log(l) {}
+    void tick_begin(std::size_t n) override {
+        ++ticks;
+        last_n_waves = n;
+    }
+    void wave_begin(std::size_t, std::size_t) override { ++waves; }
+    void system_begin(SystemId, std::string_view) override {
+        ++systems;
+        if (log)
+            log->push_back(tag);
+    }
+};
+
+// A Schedule can drive several observers; each is notified of every boundary, in
+// registration order, and remove_observer() detaches just one.
+static void multiple_observers_notified_in_order() {
+    World w;
+    setup(w, [](Commands& c) {
+        for (int i = 0; i < 8; ++i)
+            c.spawn(Position {});
+    });
+    Schedule sched;
+    sched.add("physics", [](Query<Position> q) { q.for_each_serial([](auto&) {}); });
+    sched.add("render", [](Query<Position const>) {}); // reads Position -> wave 1
+
+    std::vector<char> order;
+    TallyObserver a {'A', &order}, b {'B', &order};
+    sched.add_observer(&a);
+    sched.add_observer(&b);
+    CHECK(sched.observer_count() == 2);
+
+    WorkerPool pool {1};
+    sched.run(w, pool);
+
+    // Both observers saw the whole tick: 1 tick, 2 waves, 2 systems.
+    CHECK((a.ticks == 1 && b.ticks == 1));
+    CHECK((a.waves == 2 && b.waves == 2));
+    CHECK((a.systems == 2 && b.systems == 2));
+    CHECK((a.last_n_waves == 2 && b.last_n_waves == 2));
+    // For each system_begin, A (registered first) is notified before B.
+    CHECK((order == std::vector<char> {'A', 'B', 'A', 'B'}));
+
+    // Removing one observer stops only its notifications.
+    CHECK(sched.remove_observer(&a) == 1);
+    CHECK(sched.observer_count() == 1);
+    order.clear();
+    sched.run(w, pool);
+    CHECK((a.ticks == 1 && b.ticks == 2)); // A frozen, B advanced
+    CHECK((order == std::vector<char> {'B', 'B'}));
+}
+
 int main() {
     RUN_SUITE(leveling_respects_conflicts);
     RUN_SUITE(parallel_systems_are_independent_levels);
@@ -152,5 +214,6 @@ int main() {
     RUN_SUITE(worldview_reads_all_parallel_but_after_writers);
     RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
     RUN_SUITE(system_exception_propagates);
+    RUN_SUITE(multiple_observers_notified_in_order);
     return REPORT();
 }

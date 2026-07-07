@@ -14,7 +14,7 @@ option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
 option(ECS_BUILD_TOOLS "Build the tools" ON)
 option(ECS_REFLECT_NAMES "Register component/resource type names via reflection (tooling/diagnostics)" OFF)
-option(ECS_DEV_TOOLING "Development profile: reflected names + dump example schedules to SVG" OFF)
+option(ECS_DEV_TOOLING "Development profile" OFF)
 
 # Emscripten's Clang has no P2996 static reflection (-freflection / <meta>), so
 # force the portable structured-bindings backend there regardless of the cached
@@ -51,7 +51,11 @@ endif ()
 # so tooling/diagnostics can resolve a numeric id to a readable name. Off by
 # default -- zero cost (no registry, no string storage) when unused. The dev
 # tooling profile turns it on automatically.
-if (ECS_REFLECT_NAMES OR ECS_DEV_TOOLING)
+if (ECS_REFLECT_NAMES)
+    target_compile_definitions(ecs INTERFACE ECS_REFLECT_NAMES=1)
+endif ()
+
+if (ECS_DEV_TOOLING)
     target_compile_definitions(ecs INTERFACE ECS_REFLECT_NAMES=1)
 endif ()
 
@@ -74,6 +78,21 @@ target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 add_library(diag INTERFACE)
 add_library(ecs::diag ALIAS diag)
 target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+
+# ---------------------------------------------------------------------------
+# Header-only schedule profiler: two ScheduleObserver timing tools in tools/ --
+# ecs::diag::ScheduleReport (schedule_report.hpp, rolling per-system/wave/tick
+# distributions) and ecs::diag::ScheduleTrace (schedule_trace.hpp, per-tick CSV
+# trace), both feeding a configurable ecs::diag::Sink (sink.hpp). They build on
+# the core observer hook (Schedule::add_observer), which is always available;
+# the tools carry no compile gate of their own -- an app links this target and
+# decides when to construct/attach them at runtime (e.g. the mist demo does so on
+# the ECS_STATS / ECS_TRACE env vars). Like the visualizer they live in tools/.
+# ---------------------------------------------------------------------------
+add_library(profiler INTERFACE)
+add_library(ecs::profiler ALIAS profiler)
+target_include_directories(profiler INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(profiler INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
 # Threads -- the WorkerPool (include/ecs/parallel/worker_pool.hpp) runs the schedule on

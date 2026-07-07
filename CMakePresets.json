@@ -34,7 +34,7 @@
     {
       "name": "wasm-config",
       "displayName": "WASM (Emscripten)",
-      "description": "WebAssembly build via a host Emscripten SDK checked out alongside this repo (../emsdk). Configure with web/build-wasm.sh or directly in CLion -- selecting this profile gives the IDE accurate code intelligence for the web targets. Uses the portable reflection backend. Override the SDK location by editing toolchainFile.",
+      "description": "WebAssembly build via a host Emscripten SDK",
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build-wasm",
       "toolchainFile": "${sourceDir}/../emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",

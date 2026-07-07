@@ -76,13 +76,13 @@ inline SystemId add_js_system(Schedule& schedule,
         access.commands = true;
         return schedule.add_dynamic(std::move(name),
                                     std::move(access),
-                                    [kernel](World&, Commands&, WorkerPool*) {
+                                    [kernel](World&, Commands&, WorkerPool&) {
                                         kernel();
                                     });
     }
 
     // Query system: kernel(count, views, entities) once per matching archetype.
-    auto run = [kernel, query](World& w, Commands&, WorkerPool*) {
+    auto run = [kernel, query](World& w, Commands&, WorkerPool&) {
         Signature const required(query.begin(), query.end());
         for (auto const ai : w.matching_archetypes(required)) {
             auto& arch       = *w.archetypes()[ai];

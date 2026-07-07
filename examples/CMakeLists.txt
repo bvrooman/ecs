@@ -43,7 +43,10 @@ if(APPLE AND glfw3_FOUND)
   target_include_directories(mist PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/mist
     ${CMAKE_CURRENT_SOURCE_DIR}/particles)
-  target_link_libraries(mist PRIVATE ecs::ecs ecs::diag glfw OpenGL::GL)
+  # Links ecs::profiler for the ScheduleReport/ScheduleTrace observer headers;
+  # they always compile, so main.cpp gates them purely at runtime (ECS_STATS /
+  # ECS_TRACE) with no build flag.
+  target_link_libraries(mist PRIVATE ecs::ecs ecs::diag ecs::profiler glfw OpenGL::GL)
   target_compile_definitions(mist PRIVATE
     MIST_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/mist/shaders")
   # -O3 (vs the -O2 the other demos use): lets the SoA per-bird kernels

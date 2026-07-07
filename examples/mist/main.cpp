@@ -24,7 +24,6 @@
 #include "gl_util.hpp" // reused from examples/particles (identical GL/text helpers)
 #include "mist.hpp"
 #include "simulation.hpp"
-#include "stats.hpp" // ecs::diag::TickStats -- per-tick timing distribution
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -36,6 +35,16 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+// Schedule profiling observers: the sim thread attaches these instead of timing
+// ticks by hand. They are opt-in purely at runtime via env vars (ECS_STATS /
+// ECS_TRACE) -- no build flag, since the observer tools always compile.
+#include "schedule_report.hpp"
+#include "schedule_trace.hpp"
+#include "sink.hpp"
+#include <fstream>
+#include <iostream>
+#include <optional>
 
 #if defined(__APPLE__)
 #include <pthread.h> // pthread_set_qos_class_self_np
@@ -192,11 +201,12 @@ int main() {
     // (the `steer` boids kernel is the part that scales -- measured ~2-3x: 85k
     // birds 5.4ms inline -> 2.4ms at 4 lanes). On an 8P+2E M1 Max the sweet spot
     // is ~4 -- it must leave P-cores for the render and main threads (8 lanes
-    // oversubscribes and stutters). ECS_STATS=1 prints per-tick timing every ~2s.
+    // oversubscribes and stutters). ECS_STATS=1 prints a per-tick timing
+    // distribution ~every 2s and ECS_TRACE=<file> writes a per-tick CSV -- both
+    // via schedule observers attached below.
     int pool_n = 0; // 0 = serial (1 lane)
     if (char const* p = std::getenv("ECS_POOL"))
         pool_n = std::atoi(p);
-    bool const stats_on = diag::env_enabled("ECS_STATS");
     if (pool_n <= 0)
         std::printf("sim execution: inline\n");
     else
@@ -207,29 +217,33 @@ int main() {
         using clock       = std::chrono::steady_clock;
         auto const period = std::chrono::duration_cast<clock::duration>(
             std::chrono::duration<double>(cfg::kDt));
+        std::optional<diag::ScheduleReport> report;
+        std::optional<diag::ScheduleTrace> trace;
+        if (std::getenv("ECS_STATS")) {
+            report.emplace(diag::to_stream(std::cout));
+            schedule.add_observer(&*report);
+        }
+        if (char const* path = std::getenv("ECS_TRACE")) {
+            std::ofstream trace_file;
+            trace_file.open(path);
+            trace.emplace(diag::to_stream(trace_file));
+            schedule.add_observer(&*trace);
+        }
         auto loop = [&](auto&& run_tick) {
-            diag::TickStats tick_stats; // reports the distribution ~every 2s
             auto next = clock::now();
             while (!stop.load(std::memory_order_acquire)) {
-                auto const a = clock::now();
                 run_tick();
                 ticks.fetch_add(1, std::memory_order_relaxed);
-                if (stats_on) {
-                    tick_stats.sample(
-                        std::chrono::duration<double, std::micro>(clock::now() - a)
-                            .count());
-                    if (auto const s = tick_stats.due()) {
-                        std::printf("%s\n",
-                                    diag::TickStats::format(*s, "sim tick").c_str());
-                        std::fflush(stdout);
-                    }
-                }
                 next += period;
                 std::this_thread::sleep_until(next); // pace to kSimHz
             }
         };
         WorkerPool pool {unsigned(std::max(1, pool_n))}; // 1 lane = serial
         loop([&] { schedule.run(world, pool); });
+        if (report)
+            report->flush(); // final partial-window report
+        if (trace)
+            trace->flush();
     });
 
     // --- render thread: owns the GL context and the draw loop --------------
