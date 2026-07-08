@@ -2,8 +2,10 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
+#include <functional>
 #include <stdexcept>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 using namespace ecs;
@@ -146,10 +148,11 @@ static void system_exception_propagates() {
     CHECK(caught);
 }
 
-// The observer hook is a general, always-available core feature. Counts the
-// boundaries it is notified of and, for system_begin, appends its tag to a shared
-// log so notification order across observers is observable.
-struct TallyObserver : ecs::ScheduleObserver {
+// The observer hook is a general, always-available core feature -- an observer is
+// any callable void(ScheduleEvent const&). This one counts the boundaries it is
+// notified of and, on SystemBegin, appends its tag to a shared log so notification
+// order across observers is observable.
+struct TallyObserver {
     char tag;
     std::vector<char>* log;
     int ticks = 0, waves = 0, systems = 0;
@@ -157,20 +160,27 @@ struct TallyObserver : ecs::ScheduleObserver {
     TallyObserver(char t, std::vector<char>* l)
         : tag(t)
         , log(l) {}
-    void tick_begin(std::size_t n) override {
-        ++ticks;
-        last_n_waves = n;
-    }
-    void wave_begin(std::size_t, std::size_t) override { ++waves; }
-    void system_begin(SystemId, std::string_view) override {
-        ++systems;
-        if (log)
-            log->push_back(tag);
+    void operator()(ScheduleEvent const& e) {
+        using namespace sched_event;
+        std::visit(event::overloaded {
+                       [this](TickBegin const& ev) {
+                           ++ticks;
+                           last_n_waves = ev.n_waves;
+                       },
+                       [this](WaveBegin const&) { ++waves; },
+                       [this](SystemBegin const&) {
+                           ++systems;
+                           if (log)
+                               log->push_back(tag);
+                       },
+                       [](auto const&) {}, // TickEnd / WaveEnd / SystemEnd ignored
+                   },
+                   e);
     }
 };
 
 // A Schedule can drive several observers; each is notified of every boundary, in
-// registration order, and remove_observer() detaches just one.
+// registration order, and remove() detaches just one.
 static void multiple_observers_notified_in_order() {
     World w;
     setup(w, [](Commands& c) {
@@ -183,9 +193,9 @@ static void multiple_observers_notified_in_order() {
 
     std::vector<char> order;
     TallyObserver a {'A', &order}, b {'B', &order};
-    sched.add_observer(&a);
-    sched.add_observer(&b);
-    CHECK(sched.observer_count() == 2);
+    auto const ta = sched.events().add(std::ref(a));
+    sched.events().add(std::ref(b));
+    CHECK(sched.events().observer_count() == 2);
 
     WorkerPool pool {1};
     sched.run(w, pool);
@@ -195,12 +205,12 @@ static void multiple_observers_notified_in_order() {
     CHECK((a.waves == 2 && b.waves == 2));
     CHECK((a.systems == 2 && b.systems == 2));
     CHECK((a.last_n_waves == 2 && b.last_n_waves == 2));
-    // For each system_begin, A (registered first) is notified before B.
+    // For each SystemBegin, A (registered first) is notified before B.
     CHECK((order == std::vector<char> {'A', 'B', 'A', 'B'}));
 
     // Removing one observer stops only its notifications.
-    CHECK(sched.remove_observer(&a) == 1);
-    CHECK(sched.observer_count() == 1);
+    CHECK(sched.events().remove(ta));
+    CHECK(sched.events().observer_count() == 1);
     order.clear();
     sched.run(w, pool);
     CHECK((a.ticks == 1 && b.ticks == 2)); // A frozen, B advanced

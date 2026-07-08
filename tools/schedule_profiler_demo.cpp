@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <functional> // std::ref
 #include <iostream>
 
 struct Position {
@@ -72,12 +73,14 @@ int main() {
     // Reads everything -> runs after the writers, in its own final wave.
     sched.add("render", [](WorldView) {});
 
-    // Two observers on one schedule: a distribution report and a CSV trace.
+    // Two observers on one schedule: a distribution report and a CSV trace. Each
+    // is a stateful visitor, registered on the schedule's event emitter by
+    // reference (std::ref); they are notified in registration order.
     std::ofstream csv("profiler_trace.csv");
     diag::ScheduleReport report(diag::to_stream(std::cout));
     diag::ScheduleTrace trace(diag::to_stream(csv));
-    sched.add_observer(&report);
-    sched.add_observer(&trace);
+    sched.events().add(std::ref(report));
+    sched.events().add(std::ref(trace));
 
     WorkerPool pool {1}; // serial: profiling measures per-system wall time
     constexpr int kTicks = 4000;
@@ -91,5 +94,5 @@ int main() {
     std::printf("\nran %d ticks with %zu observers; wrote per-tick trace to "
                 "profiler_trace.csv\n",
                 kTicks,
-                sched.observer_count());
+                sched.events().observer_count());
 }

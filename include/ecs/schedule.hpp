@@ -30,6 +30,7 @@
 #pragma once
 
 #include "detail/move_only_function.hpp"
+#include "event/emitter.hpp"
 #include "query.hpp"
 #include "world.hpp"
 #include <algorithm>
@@ -41,6 +42,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ecs {
@@ -151,30 +153,40 @@ namespace detail {
 
 } // namespace detail
 
-// A boundary observer the executor notifies as it runs. This is a general,
-// always-available extension point -- not tied to profiling: register one (or
-// several) with Schedule::add_observer() and run() notifies each at the begin
-// and end of the tick, every wave, and every system. Policy-free: the core just
-// announces boundaries; an observer decides what to do with them (time, log,
-// count, ...). The profiler in tools/ is one such observer, but observers exist
-// independently of it. Every callback defaults to a no-op, so an observer
-// overrides only the boundaries it cares about. `level` is the 0-based wave
-// index in execution order.
-struct ScheduleObserver {
-    virtual ~ScheduleObserver() = default;
-    virtual void tick_begin(std::size_t n_waves) { (void)n_waves; }
-    virtual void tick_end() {}
-    virtual void wave_begin(std::size_t level, std::size_t n_systems) {
-        (void)level;
-        (void)n_systems;
-    }
-    virtual void wave_end(std::size_t level) { (void)level; }
-    virtual void system_begin(SystemId id, std::string_view name) {
-        (void)id;
-        (void)name;
-    }
-    virtual void system_end(SystemId id) { (void)id; }
-};
+// The events Schedule::run emits as it executes, as one std::variant -- each
+// alternative carries the data for that boundary (`level` is the 0-based wave
+// index in execution order). Observe them via Schedule::events(); an observer is
+// any callable void(ScheduleEvent const&), typically one that std::visits (see
+// emitter.hpp). This is the successor to the old virtual ScheduleObserver: the
+// core announces boundaries as values and observers decide what to do with them
+// (time, log, count, ...). The profiler in tools/ is one such observer.
+namespace sched_event {
+    struct TickBegin {
+        std::size_t n_waves;
+    };
+    struct TickEnd {};
+    struct WaveBegin {
+        std::size_t level;
+        std::size_t n_systems;
+    };
+    struct WaveEnd {
+        std::size_t level;
+    };
+    struct SystemBegin {
+        SystemId id;
+        std::string_view name;
+    };
+    struct SystemEnd {
+        SystemId id;
+    };
+} // namespace sched_event
+
+using ScheduleEvent = std::variant<sched_event::TickBegin,
+                                   sched_event::TickEnd,
+                                   sched_event::WaveBegin,
+                                   sched_event::WaveEnd,
+                                   sched_event::SystemBegin,
+                                   sched_event::SystemEnd>;
 
 class Schedule {
 public:
@@ -291,71 +303,32 @@ public:
     // flushed, as on any failed run.
     void run(World& world, WorkerPool& pool) {
         rebuild();
-        ev_tick_begin(waves_.size());
+        using namespace sched_event;
+        events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
         std::size_t lvl = 0;
         for (auto const& wave : waves_) {
-            ev_wave_begin(lvl, wave.size());
+            events_.emit(WaveBegin {lvl, wave.size()});
             for (auto const idx : wave) {
-                ev_sys_begin(systems_[idx]);
+                events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
                 systems_[idx].run(world, cmds, pool);
-                ev_sys_end(systems_[idx]);
+                events_.emit(SystemEnd {systems_[idx].id});
             }
             world.apply_commands();
-            ev_wave_end(lvl);
+            events_.emit(WaveEnd {lvl});
             ++lvl;
         }
-        ev_tick_end();
+        events_.emit(TickEnd {});
         prune_once();
     }
 
-    // Register an observer that run() notifies at each tick/wave/system boundary.
-    // Multiple observers may be registered; they are notified in registration
-    // order. The Schedule does not own the observer -- it must outlive the
-    // Schedule or be removed first. A null pointer is ignored; the same pointer
-    // may be registered more than once (it is then notified once per
-    // registration). See ScheduleObserver and, in tools/, the profiler observers.
-    void add_observer(ScheduleObserver* obs) {
-        if (obs)
-            observers_.push_back(obs);
-    }
-    // Unregister every registration of `obs`. Returns the number removed.
-    std::size_t remove_observer(ScheduleObserver* obs) {
-        return std::erase(observers_, obs);
-    }
     [[nodiscard]]
-    std::size_t observer_count() const noexcept {
-        return observers_.size();
+    auto& events(this auto& self) noexcept {
+        return self.events_;
     }
 
 private:
-
-
-    std::vector<ScheduleObserver*> observers_;
-    void ev_tick_begin(std::size_t n) {
-        for (auto* o : observers_)
-            o->tick_begin(n);
-    }
-    void ev_tick_end() {
-        for (auto* o : observers_)
-            o->tick_end();
-    }
-    void ev_wave_begin(std::size_t l, std::size_t n) {
-        for (auto* o : observers_)
-            o->wave_begin(l, n);
-    }
-    void ev_wave_end(std::size_t l) {
-        for (auto* o : observers_)
-            o->wave_end(l);
-    }
-    void ev_sys_begin(System const& s) {
-        for (auto* o : observers_)
-            o->system_begin(s.id, s.name);
-    }
-    void ev_sys_end(System const& s) {
-        for (auto* o : observers_)
-            o->system_end(s.id);
-    }
+    event::Emitter<ScheduleEvent> events_;
 
     void prune_once() {
         if (std::erase_if(systems_, [](System const& s) { return s.once; }))

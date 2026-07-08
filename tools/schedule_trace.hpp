@@ -1,28 +1,29 @@
 // tools/schedule_trace.hpp
 //
-// A ScheduleObserver that writes a per-tick timing trace: one CSV row per system
+// A schedule observer that writes a per-tick timing trace: one CSV row per system
 // per tick ("tick,wave,system,us"), buffered and flushed to a Sink. Feed it to a
-// file for offline flame/timeline analysis. Attach with Schedule::add_observer():
+// file for offline flame/timeline analysis. It is a plain callable observer
+// (operator()(ScheduleEvent const&) that std::visits), registered on the
+// schedule's event emitter:
 //
 //   std::ofstream csv("trace.csv");
 //   ecs::diag::ScheduleTrace trace(ecs::diag::to_stream(csv));
-//   sched.add_observer(&trace);
+//   sched.events().add(std::ref(trace));   // or: subscribe(std::ref(trace))
 //   for (;;) sched.run(world, pool);
-//   trace.flush();                     // drain the tail at shutdown
+//   trace.flush();                          // drain the tail at shutdown
 //
 // It is one of the two timing observers the profiler was split into (the other
 // is ScheduleReport, which aggregates instead of tracing); register either,
 // both, or neither. Unlike the report it keeps no distribution -- just raw rows
 // -- so it has no TickStats dependency.
 //
-// Not gated by any macro -- like the core observer mechanism it builds on, this
-// tool is always available; whether to attach it is the application's choice.
+// Not gated by any macro -- always available; whether to attach it is the
+// application's choice.
 
 #pragma once
 
-#include "ecs/schedule.hpp" // ecs::ScheduleObserver, ecs::SystemId
+#include "ecs/schedule.hpp" // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
 #include "sink.hpp"         // ecs::diag::Sink
-
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -30,14 +31,17 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ecs::diag {
 
 // Not thread-safe: attach to one Schedule driven from one thread. Self-timing,
 // so it composes with other observers (e.g. ScheduleReport) independently. The
-// CSV header row is emitted to the sink on construction.
-class ScheduleTrace : public ecs::ScheduleObserver {
+// CSV header row is emitted to the sink on construction. It reacts to only the
+// events it needs (a partial visitor: the trailing catch-all ignores TickBegin
+// and WaveEnd, and any event kind added later).
+class ScheduleTrace {
 public:
     explicit ScheduleTrace(Sink sink, double flush_every_s = 2.0)
         : sink_(std::move(sink))
@@ -47,25 +51,34 @@ public:
         sink_("tick,wave,system,us");
     }
 
-    void wave_begin(std::size_t level, std::size_t) override { cur_wave_ = level; }
-    void system_begin(SystemId id, std::string_view name) override {
-        cur_id_    = id;
-        auto& name_slot = names_[id];
-        if (name_slot.empty())
-            name_slot.assign(name);
-        t_sys_ = clock::now();
-    }
-    void system_end(SystemId) override {
-        double const us =
-            std::chrono::duration<double, std::micro>(clock::now() - t_sys_).count();
-        pending_.push_back(Row {tick_no_, cur_wave_, cur_id_, us});
-    }
-    void tick_end() override {
-        ++tick_no_;
-        if (clock::now() - last_flush_ >= period_) {
-            flush();
-            last_flush_ = clock::now();
-        }
+    void operator()(ScheduleEvent const& e) {
+        using namespace sched_event;
+        std::visit(event::overloaded {
+                       [this](WaveBegin const& ev) { cur_wave_ = ev.level; },
+                       [this](SystemBegin const& ev) {
+                           cur_id_         = ev.id;
+                           auto& name_slot = names_[ev.id];
+                           if (name_slot.empty())
+                               name_slot.assign(ev.name);
+                           t_sys_ = clock::now();
+                       },
+                       [this](SystemEnd const&) {
+                           double const us =
+                               std::chrono::duration<double, std::micro>(clock::now() -
+                                                                         t_sys_)
+                                   .count();
+                           pending_.push_back(Row {tick_no_, cur_wave_, cur_id_, us});
+                       },
+                       [this](TickEnd const&) {
+                           ++tick_no_;
+                           if (clock::now() - last_flush_ >= period_) {
+                               flush();
+                               last_flush_ = clock::now();
+                           }
+                       },
+                       [](auto const&) {}, // TickBegin / WaveEnd: unused by the trace
+                   },
+                   e);
     }
 
     // Format and emit every buffered row now (e.g. at shutdown). No-op if empty.
@@ -91,9 +104,9 @@ private:
 
     struct Row {
         std::uint64_t tick;
-        std::size_t   wave;
-        SystemId      id;
-        double        us;
+        std::size_t wave;
+        SystemId id;
+        double us;
     };
 
     Sink sink_;
@@ -109,4 +122,3 @@ private:
 };
 
 } // namespace ecs::diag
-

@@ -1,7 +1,7 @@
 // tests/test_profiler.cpp -- the two schedule timing observers in tools/
 // (ScheduleReport, ScheduleTrace). These observer tools always compile (no build
 // flag); this TU links ecs::profiler for their headers. The core observer
-// *mechanism* (add_observer / notification order / multiplicity) is tested
+// *mechanism* (events().add / notification order / multiplicity) is tested
 // separately in test_schedule.cpp.
 
 #include "check.hpp"
@@ -10,6 +10,7 @@
 #include "setup.hpp"
 #include "sink.hpp"
 
+#include <functional> // std::ref
 #include <string>
 #include <string_view>
 #include <vector>
@@ -52,7 +53,7 @@ static void report_summarizes_systems() {
 
     std::vector<std::string> out;
     diag::ScheduleReport report([&](std::string_view s) { out.emplace_back(s); });
-    sched.add_observer(&report);
+    sched.events().add(std::ref(report));
 
     WorkerPool pool {1};
     for (int t = 0; t < 5; ++t)
@@ -86,7 +87,7 @@ static void trace_writes_one_row_per_system_per_tick() {
 
     std::vector<std::string> rows;
     diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
-    sched.add_observer(&trace);
+    sched.events().add(std::ref(trace));
 
     WorkerPool pool {1};
     constexpr int kTicks = 5;
@@ -110,9 +111,9 @@ static void report_and_trace_compose() {
     std::vector<std::string> report_out, trace_out;
     diag::ScheduleReport report([&](std::string_view s) { report_out.emplace_back(s); });
     diag::ScheduleTrace trace([&](std::string_view s) { trace_out.emplace_back(s); });
-    sched.add_observer(&report);
-    sched.add_observer(&trace);
-    CHECK(sched.observer_count() == 2);
+    sched.events().add(std::ref(report));
+    sched.events().add(std::ref(trace));
+    CHECK(sched.events().observer_count() == 2);
 
     WorkerPool pool {1};
     for (int t = 0; t < 3; ++t)

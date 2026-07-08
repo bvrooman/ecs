@@ -6,6 +6,7 @@ function(ecs_add_test name)
 endfunction()
 
 ecs_add_test(test_soa)
+ecs_add_test(test_emitter)
 ecs_add_test(test_world)
 ecs_add_test(test_worker_pool)
 ecs_add_test(test_schedule)

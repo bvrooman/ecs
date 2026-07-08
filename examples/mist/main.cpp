@@ -43,6 +43,7 @@
 #include "schedule_trace.hpp"
 #include "sink.hpp"
 #include <fstream>
+#include <functional> // std::ref
 #include <iostream>
 #include <optional>
 
@@ -219,15 +220,19 @@ int main() {
             std::chrono::duration<double>(cfg::kDt));
         std::optional<diag::ScheduleReport> report;
         std::optional<diag::ScheduleTrace> trace;
+        std::ofstream trace_file; // outlives `trace`, whose sink references it
+        // RAII handles: each removes its observer when this scope exits. Declared
+        // after the observers so they unsubscribe *before* the observers they
+        // reference are destroyed.
+        std::vector<event::Emitter<ScheduleEvent>::Subscription> subs;
         if (std::getenv("ECS_STATS")) {
             report.emplace(diag::to_stream(std::cout));
-            schedule.add_observer(&*report);
+            subs.push_back(schedule.events().subscribe(std::ref(*report)));
         }
         if (char const* path = std::getenv("ECS_TRACE")) {
-            std::ofstream trace_file;
             trace_file.open(path);
             trace.emplace(diag::to_stream(trace_file));
-            schedule.add_observer(&*trace);
+            subs.push_back(schedule.events().subscribe(std::ref(*trace)));
         }
         auto loop = [&](auto&& run_tick) {
             auto next = clock::now();
