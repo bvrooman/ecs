@@ -291,7 +291,7 @@ public:
                 std::vector<std::uint32_t> bases; // field bases, in query order
                 for (auto const cid : query) {
                     auto const& d = registry().desc(cid);
-                    auto& col     = *arch.columns.at(cid);
+                    auto& col     = arch.column_at(cid);
                     for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
                         bases.push_back(static_cast<std::uint32_t>(
                             reinterpret_cast<std::uintptr_t>(col.field_base(fi))));

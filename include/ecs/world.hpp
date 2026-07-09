@@ -11,6 +11,7 @@
 #include "entity.hpp"
 #include "resource.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -68,26 +69,33 @@ public:
     // passes to each system -- so mutation is reachable only inside a system,
     // enforced at compile time rather than by a runtime check.
     bool alive(Entity const e) const {
-        return e.index < records_.size() && records_[e.index].alive &&
+        return e.index < records_.size() && records_[e.index].alive() &&
                records_[e.index].generation == e.generation;
     }
 
     std::size_t size() const noexcept { return alive_count_; }
 
+    // Capacity hint: pre-size the entity record table for n entities. Purely an
+    // allocation optimization for bulk setup (per-archetype component storage
+    // is pre-grown separately via Archetype::reserve).
+    void reserve_entities(std::size_t n) { records_.reserve(n); }
+
     // --- reads ------------------------------------------------------------
     template <class C>
     bool has(Entity const e) const {
-        return alive(e) && archetypes_[records_[e.index].archetype]->has(component_id<C>);
+        return alive(e) &&
+               archetypes_[records_[e.index].archetype()]->has(component_id<C>);
     }
 
     // Read a component by value (gathered from its per-field columns).
     // Precondition: has<C>(e). In debug this is asserted; otherwise the missing
-    // column lookup throws std::out_of_range.
+    // column lookup is caught by column_at's assert / yields UB in release like
+    // any other precondition violation.
     template <class C>
     C get(Entity const e) const {
         assert(has<C>(e) && "World::get<C>(e): entity has no component C");
         auto const& rec = records_[e.index];
-        return archetypes_[rec.archetype]->column<C>().store.gather(rec.row);
+        return archetypes_[rec.archetype()]->column<C>().store.gather(rec.row);
     }
 
     // --- resources (singletons not owned by any entity) -------------------
@@ -154,14 +162,39 @@ private:
     auto& archetypes() { return archetypes_; }
 
     struct Record {
-        std::uint32_t archetype  = 0;
+        // 12 bytes, not 16: `alive` lives in the top bit of the archetype index
+        // (2^31 archetypes is unreachable), so a cache line holds a third more
+        // records for the alive() check every read performs.
+        static constexpr std::uint32_t kAliveBit = 0x8000'0000u;
+
+        std::uint32_t arch_bits  = 0;
         std::uint32_t row        = 0;
         std::uint32_t generation = 0;
-        bool alive               = false;
+
+        [[nodiscard]]
+        bool alive() const noexcept {
+            return (arch_bits & kAliveBit) != 0;
+        }
+        [[nodiscard]]
+        std::uint32_t archetype() const noexcept {
+            return arch_bits & ~kAliveBit;
+        }
+        void set_alive(bool const v) noexcept {
+            arch_bits = v ? (arch_bits | kAliveBit) : (arch_bits & ~kAliveBit);
+        }
+        void set_archetype(std::uint32_t const a) noexcept {
+            arch_bits = (arch_bits & kAliveBit) | a;
+        }
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    void apply_commands() { commands_.apply(*this); }
+    // Compacts the free list first: entries above the cursor were claimed by
+    // reserve() during the wave (see reserve()); dropping them before commands
+    // push new frees restores the "cursor == free_.size()" rest-state invariant.
+    void apply_commands() {
+        free_.resize(free_cursor_.load(std::memory_order_acquire));
+        commands_.apply(*this);
+    }
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.
@@ -172,12 +205,12 @@ private:
     void destroy_now(Entity const e) {
         if (!alive(e))
             return;
-        auto& [archetype, row, generation, alive] = records_[e.index];
-        remove_row(*archetypes_[archetype], row);
-        alive = false;
-        ++generation;
+        auto& rec = records_[e.index];
+        remove_row(*archetypes_[rec.archetype()], rec.row);
+        rec.set_alive(false);
+        ++rec.generation;
         free_.push_back(e.index);
-        free_count_.store(free_.size(), std::memory_order_release);
+        free_cursor_.store(free_.size(), std::memory_order_release);
         --alive_count_;
     }
 
@@ -186,65 +219,85 @@ private:
         assert(alive(e));
         auto& rec      = records_[e.index];
         auto const cid = component_id<C>;
-        if (archetypes_[rec.archetype]->has(cid)) {
-            archetypes_[rec.archetype]->column<C>().store.set(rec.row, value);
+        auto& a        = *archetypes_[rec.archetype()]; // heap-stable across growth
+        if (a.has(cid)) {
+            a.column<C>().store.set(rec.row, std::move(value));
             return;
         }
-        auto sig = archetypes_[rec.archetype]->signature;
-        sig.insert(std::ranges::upper_bound(sig, cid), cid);
-
-        auto const from = rec.archetype;
-        auto const to   = get_or_create_archetype(sig, [&](Archetype& b) {
-            for (auto& [id, col] : archetypes_[from]->columns)
-                b.columns.emplace(id, col->clone_empty());
-            b.columns.emplace(cid, std::make_unique<Column<C>>());
+        // Steady state: the destination is cached on the archetype's add edge,
+        // so the transition costs one hash hit -- no signature vector build, no
+        // allocation, no global index lookup.
+        std::uint32_t to;
+        if (auto const it = a.add_edge.find(cid); it != a.add_edge.end()) {
+            to = it->second;
+        } else {
+            auto sig = a.signature;
+            sig.insert(std::ranges::upper_bound(sig, cid), cid);
+            auto const from = rec.archetype();
+            to = get_or_create_archetype(sig, [&](Archetype& b) {
+                auto& src = *archetypes_[from];
+                b.columns.reserve(b.signature.size());
+                for (auto const id : b.signature)
+                    b.columns.push_back(id == cid ? std::make_unique<Column<C>>()
+                                                  : src.column_at(id).clone_empty());
+            });
+            a.add_edge.emplace(cid, to);
+        }
+        relocate(e, to, [&](Archetype& b) {
+            b.column<C>().store.push_back(std::move(value));
         });
-
-        relocate(e, to, [&](Archetype& b) { b.column<C>().store.push_back(value); });
     }
 
     template <class C>
     void remove_now(Entity e) {
         assert(alive(e));
-        auto const& rec = records_[e.index];
-        auto const cid  = component_id<C>;
-        if (!archetypes_[rec.archetype]->has(cid))
+        auto& rec      = records_[e.index];
+        auto const cid = component_id<C>;
+        auto& a        = *archetypes_[rec.archetype()];
+        if (!a.has(cid))
             return;
 
-        auto sig = Signature {};
-        sig.reserve(archetypes_[rec.archetype]->signature.size() - 1);
-        for (auto id : archetypes_[rec.archetype]->signature)
-            if (id != cid)
-                sig.push_back(id);
-
-        auto const from = rec.archetype;
-        auto const to   = get_or_create_archetype(sig, [&](Archetype& b) {
-            for (auto& [id, col] : archetypes_[from]->columns)
+        std::uint32_t to;
+        if (auto const it = a.remove_edge.find(cid); it != a.remove_edge.end()) {
+            to = it->second;
+        } else {
+            auto sig = Signature {};
+            sig.reserve(a.signature.size() - 1);
+            for (auto id : a.signature)
                 if (id != cid)
-                    b.columns.emplace(id, col->clone_empty());
-        });
-
+                    sig.push_back(id);
+            auto const from = rec.archetype();
+            to = get_or_create_archetype(sig, [&](Archetype& b) {
+                auto& src = *archetypes_[from];
+                b.columns.reserve(b.signature.size());
+                for (auto const id : b.signature)
+                    b.columns.push_back(src.column_at(id).clone_empty());
+            });
+            a.remove_edge.emplace(cid, to);
+        }
         relocate(e, to, [](Archetype&) {});
     }
 
     template <class C>
-    void set_now(Entity const e, C const& value) {
+    void set_now(Entity const e, C value) {
         auto const& rec = records_[e.index];
-        archetypes_[rec.archetype]->column<C>().store.set(rec.row, value);
+        archetypes_[rec.archetype()]->column<C>().store.set(rec.row, std::move(value));
     }
 
     // Hand out a fresh entity handle without creating storage. Thread-safe and
-    // lock-free on the common (growth) path: a brand-new index is a single
-    // atomic fetch_add, so many systems can reserve concurrently while
-    // recording spawn commands. Recycling a freed slot takes a short lock;
-    // reused indices carry the slot's already-bumped generation.
+    // lock-free on BOTH paths: a brand-new index is one atomic fetch_add, and
+    // recycling claims a slot with one CAS on a cursor into free_ -- the vector
+    // itself is frozen while systems run (only destroy_now at flush mutates
+    // it), so claimed entries are compacted away at the next apply_commands.
+    // Reused indices carry the slot's already-bumped generation.
     Entity reserve() {
-        if (free_count_.load(std::memory_order_acquire) > 0) {
-            auto lock = std::lock_guard(reserve_mutex_);
-            if (!free_.empty()) {
-                auto const idx = free_.back();
-                free_.pop_back();
-                free_count_.store(free_.size(), std::memory_order_release);
+        auto n = free_cursor_.load(std::memory_order_acquire);
+        while (n > 0) {
+            if (free_cursor_.compare_exchange_weak(n,
+                                                   n - 1,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+                auto const idx = free_[n - 1];
                 return Entity {idx, records_[idx].generation};
             }
         }
@@ -270,7 +323,14 @@ private:
             return s;
         }();
         auto const to = get_or_create_archetype(sig, [](Archetype& b) {
-            (b.columns.emplace(component_id<Cs>, std::make_unique<Column<Cs>>()), ...);
+            // One column per component, ordered to match the sorted signature.
+            std::array<std::pair<ComponentId, std::unique_ptr<IColumn>>, sizeof...(Cs)>
+                cols {std::pair<ComponentId, std::unique_ptr<IColumn>> {
+                    component_id<Cs>, std::make_unique<Column<Cs>>()}...};
+            std::ranges::sort(cols, {}, [](auto const& p) { return p.first; });
+            b.columns.reserve(cols.size());
+            for (auto& [id, col] : cols)
+                b.columns.push_back(std::move(col));
         });
 
         if (e.index >= records_.size())
@@ -283,18 +343,18 @@ private:
         auto& a            = *archetypes_[to];
         auto const new_row = static_cast<std::uint32_t>(a.entities.size());
         try {
-            (a.template column<Cs>().store.push_back(comps), ...);
+            (a.template column<Cs>().store.push_back(std::move(comps)), ...);
             a.entities.push_back(e);
         } catch (...) {
             rollback_overlong_columns(a);
             throw;
         }
 
-        auto& [archetype, row, generation, alive] = records_[e.index];
-        alive                                     = true;
-        generation                                = e.generation;
-        archetype                                 = to;
-        row                                       = new_row;
+        auto& rec = records_[e.index];
+        rec.set_archetype(to);
+        rec.set_alive(true);
+        rec.generation = e.generation;
+        rec.row        = new_row;
         ++alive_count_;
     }
 
@@ -339,7 +399,7 @@ private:
     // references stay valid across archetypes_ growth.
     void remove_row(Archetype& a, std::uint32_t const row) {
         auto const last = static_cast<std::uint32_t>(a.entities.size() - 1);
-        for (auto const& col : a.columns | std::views::values)
+        for (auto const& col : a.columns)
             col->swap_remove(row);
         if (row != last) {
             a.entities[row]                     = a.entities[last];
@@ -356,14 +416,20 @@ private:
     template <class AddExtra>
     void relocate(Entity const e, auto const to, AddExtra&& addExtra) {
         auto& rec       = records_[e.index];
-        auto const from = rec.archetype;
+        auto const from = rec.archetype();
         auto& a         = *archetypes_[from];
         auto& b         = *archetypes_[to];
 
         try {
-            for (auto& [id, col] : a.columns) {
-                if (auto const it = b.columns.find(id); it != b.columns.end())
-                    col->move_row_to(*it->second, rec.row);
+            // Both signatures are sorted: shared columns via two-pointer merge.
+            for (std::size_t ia = 0, ib = 0;
+                 ia < a.signature.size() && ib < b.signature.size();) {
+                if (a.signature[ia] < b.signature[ib])
+                    ++ia;
+                else if (b.signature[ib] < a.signature[ia])
+                    ++ib;
+                else
+                    a.columns[ia++]->move_row_to(*b.columns[ib++], rec.row);
             }
             addExtra(b);
             b.entities.push_back(e);
@@ -374,15 +440,15 @@ private:
         auto const new_row = static_cast<std::uint32_t>(b.entities.size() - 1);
 
         remove_row(a, rec.row);
-        rec.archetype = to;
-        rec.row       = new_row;
+        rec.set_archetype(to);
+        rec.row = new_row;
     }
 
     // Pop any column row appended beyond `entities.size()` -- the unwind path
     // of spawn_now/relocate, restoring the "every column as long as entities"
     // invariant after a partial append.
     static void rollback_overlong_columns(Archetype& a) noexcept {
-        for (auto const& col : a.columns | std::views::values)
+        for (auto const& col : a.columns)
             while (col->size() > a.entities.size())
                 col->swap_remove(col->size() - 1);
     }
@@ -400,12 +466,14 @@ private:
     std::uint32_t empty_archetype_ = 0;
     std::size_t alive_count_       = 0;
 
-    std::mutex reserve_mutex_; // guards free-list recycling in reserve()
     std::atomic<std::uint32_t> reserve_high_ {0}; // next brand-new index; ==
                                                   // records_.size() when no
                                                   // reservations are outstanding
-    std::atomic<std::size_t> free_count_ {0};     // free_.size(), for a lock-free
-                                                  // "anything to recycle?" check
+    // Number of free_ entries still claimable. reserve() claims by CAS-
+    // decrementing; free_ itself only mutates at flush (single-threaded), which
+    // first compacts away the claimed tail (see apply_commands). Padded away
+    // from reserve_high_: both are hammered by concurrent reservers.
+    alignas(128) std::atomic<std::size_t> free_cursor_ {0};
 };
 
 // ===========================================================================
@@ -423,12 +491,15 @@ public:
 
     // spawn returns a usable handle immediately (alive after the next flush).
     // At flush the entity is placed directly into its final archetype.
+    // Perfect-forwarded: an rvalue component moves into the capture and again
+    // into storage at flush -- no copies for heap-owning fields.
     template <class... Cs>
-    Entity spawn(Cs... comps) {
+    Entity spawn(Cs&&... comps) {
         Entity const e = world_.reserve();
-        world_.commands_.record([e, ... comps = std::move(comps)](World& w) mutable {
-            w.spawn_now<Cs...>(e, std::move(comps)...);
-        });
+        world_.commands_.record(
+            [e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
+                w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
+            });
         return e;
     }
 
@@ -440,10 +511,10 @@ public:
     // the entity already has C, its value is overwritten in place. No-ops if
     // dead.
     template <class C>
-    void add(Entity e, C value) {
-        world_.commands_.record([e, value = std::move(value)](World& w) mutable {
+    void add(Entity e, C&& value) {
+        world_.commands_.record([e, value = std::forward<C>(value)](World& w) mutable {
             if (w.alive(e))
-                w.add_now<C>(e, std::move(value));
+                w.add_now<std::decay_t<C>>(e, std::move(value));
         });
     }
 
@@ -458,10 +529,11 @@ public:
     // Overwrite component C on an entity. No-ops if the entity is dead or does
     // not currently have C (so a stale target never throws at flush time).
     template <class C>
-    void set(Entity e, C value) {
-        world_.commands_.record([e, value = std::move(value)](World& w) mutable {
-            if (w.alive(e) && w.has<C>(e))
-                w.set_now<C>(e, std::move(value));
+    void set(Entity e, C&& value) {
+        world_.commands_.record([e, value = std::forward<C>(value)](World& w) mutable {
+            using D = std::decay_t<C>;
+            if (w.alive(e) && w.has<D>(e))
+                w.set_now<D>(e, std::move(value));
         });
     }
 

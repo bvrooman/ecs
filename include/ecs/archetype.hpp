@@ -18,6 +18,7 @@
 
 #include "entity.hpp"
 #include "soa.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,8 @@ namespace ecs {
 // Type-erased component column.
 struct IColumn {
     virtual ~IColumn() = default;
+    // Pre-grow the column's per-field buffers to hold n elements.
+    virtual void reserve(std::size_t n) = 0;
     // Append a default-constructed element; return its row.
     virtual std::size_t emplace_default() = 0;
     // swap-remove a row; return the row that was relocated into it.
@@ -54,6 +57,7 @@ template <class T>
 struct Column final : IColumn {
     soa_storage<T> store;
 
+    void reserve(std::size_t n) override { store.reserve(n); }
     std::size_t emplace_default() override { return store.emplace_default(); }
     std::size_t swap_remove(std::size_t row) override { return store.swap_remove(row); }
     void move_row_to(IColumn& dst, std::size_t row) override {
@@ -62,7 +66,9 @@ struct Column final : IColumn {
         assert(dynamic_cast<Column*>(&dst) &&
                "Column::move_row_to: destination column has a different type");
         auto& d = static_cast<Column&>(dst);
-        d.store.push_back(store.gather(row));
+        // Move, not copy: the source row is swap-removed right after a
+        // relocation, so heap-owning fields need not pay a copy per transition.
+        d.store.push_back(store.take(row));
     }
     [[nodiscard]]
     std::unique_ptr<IColumn> clone_empty() const override {
@@ -94,18 +100,69 @@ inline std::size_t hash_signature(Signature const& s) noexcept {
 }
 
 struct Archetype {
+    static constexpr std::size_t npos = ~std::size_t {0};
+
     Signature signature;
     std::vector<Entity> entities; // row -> entity
-    std::unordered_map<ComponentId, std::unique_ptr<IColumn>> columns;
+    // One column per signature entry, in signature (sorted-id) order. A flat
+    // parallel vector instead of a hash map: lookup is a binary search over a
+    // contiguous uint32 array, iteration during relocation is a linear walk,
+    // and there are no per-node heap allocations.
+    std::vector<std::unique_ptr<IColumn>> columns;
 
-    bool has(ComponentId const id) const { return columns.contains(id); }
+    // Lazily-populated archetype-graph edges: which archetype an entity lands
+    // in when component `cid` is added to / removed from this one. Makes the
+    // steady-state add/remove transition a single map hit instead of a
+    // signature build + hash + global index lookup (World maintains these).
+    std::unordered_map<ComponentId, std::uint32_t> add_edge, remove_edge;
+
+    // Index of `id` within signature/columns, or npos.
+    [[nodiscard]]
+    std::size_t find(ComponentId const id) const noexcept {
+        auto const it = std::ranges::lower_bound(signature, id);
+        return (it != signature.end() && *it == id)
+                   ? static_cast<std::size_t>(it - signature.begin())
+                   : npos;
+    }
+
+    [[nodiscard]]
+    bool has(ComponentId const id) const noexcept {
+        return find(id) != npos;
+    }
+
+    // Type-erased column for `id`; nullptr when absent.
+    [[nodiscard]]
+    IColumn* column_for(ComponentId const id) noexcept {
+        auto const i = find(id);
+        return i == npos ? nullptr : columns[i].get();
+    }
+
+    // Type-erased column for `id`. Precondition: has(id). Constness follows
+    // `self` (unique_ptr's operator* would otherwise leak a mutable reference
+    // out of a const archetype).
+    template <class Self>
+    auto& column_at(this Self&& self, ComponentId const id) {
+        auto const i = self.find(id);
+        assert(i != Archetype::npos && "Archetype::column_at: component not present");
+        using Col = std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>,
+                                       IColumn const,
+                                       IColumn>;
+        return static_cast<Col&>(*self.columns[i]);
+    }
 
     template <class T, class Self>
     auto& column(this Self&& self) {
         using Col = std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>,
                                        Column<T> const,
                                        Column<T>>;
-        return static_cast<Col&>(*self.columns.at(component_id<T>));
+        return static_cast<Col&>(self.column_at(component_id<T>));
+    }
+
+    // Pre-grow every column (and the row->entity table) for n rows.
+    void reserve(std::size_t const n) {
+        entities.reserve(n);
+        for (auto const& col : columns)
+            col->reserve(n);
     }
 
     auto size() const { return entities.size(); }

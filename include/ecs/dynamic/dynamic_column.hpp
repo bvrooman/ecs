@@ -11,6 +11,7 @@
 
 #include "../archetype.hpp" // ecs::IColumn
 #include "component_desc.hpp"
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -25,6 +26,11 @@ public:
         , fields_(desc.fields.size()) {}
 
     // --- IColumn ----------------------------------------------------------
+    void reserve(std::size_t n) override {
+        for (std::size_t i = 0; i < fields_.size(); ++i)
+            fields_[i].reserve(n * desc_->fields[i].size);
+    }
+
     std::size_t emplace_default() override {
         for (std::size_t i = 0; i < fields_.size(); ++i)
             fields_[i].resize(fields_[i].size() + desc_->fields[i].size, std::byte {0});
@@ -32,6 +38,7 @@ public:
     }
 
     std::size_t swap_remove(std::size_t row) override {
+        assert(count_ > 0 && row < count_ && "DynamicColumn::swap_remove: bad row");
         auto const last = count_ - 1;
         for (std::size_t i = 0; i < fields_.size(); ++i) {
             auto const sz = desc_->fields[i].size;

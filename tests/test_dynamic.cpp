@@ -41,7 +41,7 @@ static auto each_chunk(Signature query, Kernel kernel) {
 
 static float* base(Archetype& a, ComponentId id, std::size_t field) {
     return static_cast<float*>(
-        static_cast<DynamicColumn&>(*a.columns.at(id)).field_base(field));
+        static_cast<DynamicColumn&>(a.column_at(id)).field_base(field));
 }
 
 static ComponentId define2(char const* name) {
@@ -260,7 +260,7 @@ static void native_component_runtime_access() {
                           // Field 0 of a *native* column, reached through the runtime
                           // IColumn vtable.
                           auto* xs = static_cast<float*>(
-                              a.columns.at(component_id<NPos>)->field_base(0));
+                              a.column_at(component_id<NPos>).field_base(0));
                           for (std::size_t i = 0; i < n; ++i)
                               xs[i] *= 10.f;
                       }));

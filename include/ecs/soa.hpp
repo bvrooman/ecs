@@ -72,20 +72,18 @@ public:
     // otherwise the columns would be left at different lengths, silently and
     // permanently desynchronizing every row after this one.
     auto push_back(T const& v) {
-        std::size_t pushed = 0;
-        try {
-            reflect::for_each_field(v, [&](auto Ic, auto const& field) {
-                std::get<Ic.value>(columns_).push_back(field);
-                ++pushed;
-            });
-        } catch (...) {
-            std::size_t i = 0;
-            apply_columns([&](auto&... col) {
-                ((i++ < pushed ? col.pop_back() : void()), ...);
-            });
-            throw;
-        }
-        return size_++;
+        return scatter_append(v, [](auto& col, auto const& field) {
+            col.push_back(field);
+        });
+    }
+
+    // Move overload: fields are moved into their columns, so a component with
+    // heap-owning fields (std::string, std::vector) pays no copy on spawn or
+    // archetype transition. Also the only path a move-only component can take.
+    auto push_back(T&& v) {
+        return scatter_append(v, [](auto& col, auto& field) {
+            col.push_back(std::move(field));
+        });
     }
 
     // Reassemble (gather) the element at `row` into a T value.
@@ -98,10 +96,26 @@ public:
         return out;
     }
 
+    // Gather the element at `row` by MOVING each field out of its column --
+    // for relocation, where the source row is swap-removed immediately after.
+    [[nodiscard]]
+    T take(std::size_t row) {
+        T out {};
+        reflect::for_each_field(out, [&](auto Ic, auto& field) {
+            field = std::move(std::get<Ic.value>(columns_)[row]);
+        });
+        return out;
+    }
+
     // Overwrite the element at `row`.
     void set(std::size_t row, T const& v) {
         reflect::for_each_field(v, [&](auto Ic, auto const& field) {
             std::get<Ic.value>(columns_)[row] = field;
+        });
+    }
+    void set(std::size_t row, T&& v) {
+        reflect::for_each_field(v, [&](auto Ic, auto& field) {
+            std::get<Ic.value>(columns_)[row] = std::move(field);
         });
     }
 
@@ -157,6 +171,28 @@ private:
         std::apply([&](auto&... col) { f(col...); }, self.columns_);
     }
 
+    // The transactional scatter both push_back overloads share: `append`
+    // performs one column's push (copying or moving); columns already appended
+    // to are popped back on unwind (see push_back).
+    template <class V, class Append>
+    auto scatter_append(V&& v, Append&& append) {
+        std::size_t pushed = 0;
+        try {
+            reflect::for_each_field(v, [&](auto Ic, auto&& field) {
+                append(std::get<Ic.value>(columns_),
+                       std::forward<decltype(field)>(field));
+                ++pushed;
+            });
+        } catch (...) {
+            std::size_t i = 0;
+            apply_columns([&](auto&... col) {
+                ((i++ < pushed ? col.pop_back() : void()), ...);
+            });
+            throw;
+        }
+        return size_++;
+    }
+
     detail::columns_t<T> columns_ {};
     std::size_t size_ = 0;
 };
@@ -181,8 +217,11 @@ public:
     void reserve(std::size_t) noexcept {}
     void clear() noexcept { size_ = 0; }
     auto push_back(T const&) { return size_++; }
+    auto push_back(T&&) { return size_++; }
     T gather(std::size_t) const { return T {}; }
+    T take(std::size_t) { return T {}; }
     void set(std::size_t, T const&) noexcept {}
+    void set(std::size_t, T&&) noexcept {}
     auto emplace_default() { return size_++; }
     auto swap_remove(std::size_t) {
         assert(size_ > 0 && "soa_storage::swap_remove: empty tag column");
