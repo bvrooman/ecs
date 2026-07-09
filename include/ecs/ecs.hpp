@@ -4,6 +4,8 @@
 #include "archetype.hpp"
 #include "command_buffer.hpp"
 #include "entity.hpp"
+#include "event/emitter.hpp"
+#include "event/observer.hpp"
 #include "parallel/worker_pool.hpp"
 #include "query.hpp"
 #include "reflection/reflect.hpp"

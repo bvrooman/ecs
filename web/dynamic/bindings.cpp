@@ -112,9 +112,11 @@ public:
         // ?stats in the page URL -> time each tick() so JS can poll the per-tick
         // distribution via pollStats() (no env var in a browser). Guarded so the
         // node smoke modules, where `location` is undefined, just see it off.
+        // clang-format off -- EM_ASM body is JS; clang-format splits `!==` into `!= =`.
         stats_on_ = EM_ASM_INT(
             { return (typeof location !== 'undefined'
                       && location.search.indexOf('stats') >= 0) ? 1 : 0; });
+        // clang-format on
     }
 
     // fields: JS array of { name: string, type: 'f32'|'f64'|'i32'|'u32' }.
@@ -279,7 +281,7 @@ public:
 
         auto run = [query, blobStr, values, sid, np](World& w,
                                                      Commands&,
-                                                     WorkerPool* pool) {
+                                                     WorkerPool& pool) {
             Signature const required(query.begin(), query.end());
             for (auto const ai : w.matching_archetypes(required)) {
                 auto& arch       = *w.archetypes()[ai];
@@ -302,7 +304,7 @@ public:
                     reinterpret_cast<std::uintptr_t>(values->data()));
                 auto const cnt = static_cast<std::uint32_t>(count);
                 // 1-lane pool -> serial on the caller; N-lane -> across worker lanes.
-                pool->parallel_for(count, [=](std::size_t b, std::size_t e) {
+                pool.parallel_for(count, [=](std::size_t b, std::size_t e) {
                     // EM_ASM body must have NO top-level commas (the preprocessor
                     // splits macro args on them) -- commas live only inside ( ).
                     // clang-format off

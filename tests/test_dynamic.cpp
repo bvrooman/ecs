@@ -7,7 +7,6 @@
 #include "ecs/dynamic/world_ops.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
-
 #include <algorithm>
 #include <cstdint>
 
@@ -30,8 +29,8 @@ struct NPos {
 template <class Kernel>
 static auto each_chunk(Signature query, Kernel kernel) {
     std::ranges::sort(query);
-    return [query = std::move(query), kernel = std::move(kernel)](
-               World& w, Commands&, WorkerPool*) {
+    return [query  = std::move(query),
+            kernel = std::move(kernel)](World& w, Commands&, WorkerPool&) {
         for (auto const ai : w.matching_archetypes(query)) {
             auto& arch = *w.archetypes()[ai];
             if (arch.size() > 0)
@@ -164,22 +163,26 @@ static void dynamic_systems_run_and_level() {
     Schedule sched;
     SystemAccess grav;
     grav.writes = {Vel};
-    sched.add_dynamic("gravity", grav, each_chunk({Vel}, [Vel](std::size_t n, Archetype& a) {
-        auto* vy = base(a, Vel, 1);
-        for (std::size_t i = 0; i < n; ++i)
-            vy[i] += -10.f * 0.1f;
-    }));
+    sched.add_dynamic("gravity",
+                      grav,
+                      each_chunk({Vel}, [Vel](std::size_t n, Archetype& a) {
+                          auto* vy = base(a, Vel, 1);
+                          for (std::size_t i = 0; i < n; ++i)
+                              vy[i] += -10.f * 0.1f;
+                      }));
     SystemAccess integ;
     integ.writes = {Pos};
     integ.reads  = {Vel};
-    sched.add_dynamic("integrate", integ, each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
-        auto *px = base(a, Pos, 0), *py = base(a, Pos, 1);
-        auto *vx = base(a, Vel, 0), *vy = base(a, Vel, 1);
-        for (std::size_t i = 0; i < n; ++i) {
-            px[i] += vx[i] * 0.1f;
-            py[i] += vy[i] * 0.1f;
-        }
-    }));
+    sched.add_dynamic("integrate",
+                      integ,
+                      each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
+                          auto *px = base(a, Pos, 0), *py = base(a, Pos, 1);
+                          auto *vx = base(a, Vel, 0), *vy = base(a, Vel, 1);
+                          for (std::size_t i = 0; i < n; ++i) {
+                              px[i] += vx[i] * 0.1f;
+                              py[i] += vy[i] * 0.1f;
+                          }
+                      }));
 
     // gravity (writes Vel) and integrate (reads Vel) conflict -> two waves.
     CHECK(sched.level_count() == 2);
@@ -210,12 +213,14 @@ static void dynamic_system_filters_by_archetype() {
     SystemAccess acc;
     acc.writes = {Pos};
     acc.reads  = {Vel};
-    sched.add_dynamic("integrate", acc, each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
-        auto* px = base(a, Pos, 0);
-        auto* vx = base(a, Vel, 0);
-        for (std::size_t i = 0; i < n; ++i)
-            px[i] += vx[i] * 0.1f;
-    }));
+    sched.add_dynamic("integrate",
+                      acc,
+                      each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
+                          auto* px = base(a, Pos, 0);
+                          auto* vx = base(a, Vel, 0);
+                          for (std::size_t i = 0; i < n; ++i)
+                              px[i] += vx[i] * 0.1f;
+                      }));
     sched.run(w);
 
     F2 mp {}, fp {};
@@ -249,12 +254,16 @@ static void native_component_runtime_access() {
         phase<-1> {});
     SystemAccess acc;
     acc.writes = {component_id<NPos>};
-    sched.add_dynamic("scale", acc, each_chunk({component_id<NPos>}, [](std::size_t n, Archetype& a) {
-        // Field 0 of a *native* column, reached through the runtime IColumn vtable.
-        auto* xs = static_cast<float*>(a.columns.at(component_id<NPos>)->field_base(0));
-        for (std::size_t i = 0; i < n; ++i)
-            xs[i] *= 10.f;
-    }));
+    sched.add_dynamic("scale",
+                      acc,
+                      each_chunk({component_id<NPos>}, [](std::size_t n, Archetype& a) {
+                          // Field 0 of a *native* column, reached through the runtime
+                          // IColumn vtable.
+                          auto* xs = static_cast<float*>(
+                              a.columns.at(component_id<NPos>)->field_base(0));
+                          for (std::size_t i = 0; i < n; ++i)
+                              xs[i] *= 10.f;
+                      }));
     sched.run(w);
 
     CHECK(w.size() == 4);

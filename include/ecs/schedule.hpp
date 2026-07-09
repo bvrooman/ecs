@@ -30,6 +30,7 @@
 #pragma once
 
 #include "detail/move_only_function.hpp"
+#include "event/emitter.hpp"
 #include "query.hpp"
 #include "world.hpp"
 #include <algorithm>
@@ -37,9 +38,11 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ecs {
@@ -149,6 +152,41 @@ namespace detail {
     };
 
 } // namespace detail
+
+// The events Schedule::run emits as it executes, as one std::variant -- each
+// alternative carries the data for that boundary (`level` is the 0-based wave
+// index in execution order). Observe them via Schedule::events(); an observer is
+// any callable void(ScheduleEvent const&), typically one that std::visits (see
+// emitter.hpp). This is the successor to the old virtual ScheduleObserver: the
+// core announces boundaries as values and observers decide what to do with them
+// (time, log, count, ...). The profiler in tools/ is one such observer.
+namespace sched_event {
+    struct TickBegin {
+        std::size_t n_waves;
+    };
+    struct TickEnd {};
+    struct WaveBegin {
+        std::size_t level;
+        std::size_t n_systems;
+    };
+    struct WaveEnd {
+        std::size_t level;
+    };
+    struct SystemBegin {
+        SystemId id;
+        std::string_view name;
+    };
+    struct SystemEnd {
+        SystemId id;
+    };
+} // namespace sched_event
+
+using ScheduleEvent = std::variant<sched_event::TickBegin,
+                                   sched_event::TickEnd,
+                                   sched_event::WaveBegin,
+                                   sched_event::WaveEnd,
+                                   sched_event::SystemBegin,
+                                   sched_event::SystemEnd>;
 
 class Schedule {
 public:
@@ -265,16 +303,33 @@ public:
     // flushed, as on any failed run.
     void run(World& world, WorkerPool& pool) {
         rebuild();
-        auto cmds = Commands {world};
+        using namespace sched_event;
+        events_.emit(TickBegin {waves_.size()});
+        auto cmds       = Commands {world};
+        std::size_t lvl = 0;
         for (auto const& wave : waves_) {
-            for (auto const idx : wave)
+            events_.emit(WaveBegin {lvl, wave.size()});
+            for (auto const idx : wave) {
+                events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
                 systems_[idx].run(world, cmds, pool);
+                events_.emit(SystemEnd {systems_[idx].id});
+            }
             world.apply_commands();
+            events_.emit(WaveEnd {lvl});
+            ++lvl;
         }
+        events_.emit(TickEnd {});
         prune_once();
     }
 
+    [[nodiscard]]
+    auto& events(this auto& self) noexcept {
+        return self.events_;
+    }
+
 private:
+    event::Emitter<ScheduleEvent> events_;
+
     void prune_once() {
         if (std::erase_if(systems_, [](System const& s) { return s.once; }))
             dirty_ = true;
