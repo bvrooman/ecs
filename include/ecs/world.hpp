@@ -163,6 +163,10 @@ private:
     // Apply all recorded commands; driven by the Schedule at each barrier.
     void apply_commands() { commands_.apply(*this); }
 
+    // Drop all recorded commands unapplied; driven by the Schedule when a run
+    // aborts, so a failed run's edits cannot leak into the next run's flush.
+    void discard_commands() noexcept { commands_.discard(); }
+
     // Immediate mutation primitives, called only by the command closures at
     // flush time -- so they always run with exclusive, single-threaded access.
     void destroy_now(Entity const e) {
@@ -271,16 +275,26 @@ private:
 
         if (e.index >= records_.size())
             records_.resize(e.index + 1);
+
+        // Storage first, record bookkeeping second: if a column push throws,
+        // roll the archetype back to a consistent state (every column as long
+        // as `entities`) and leave the record dead, rather than registering a
+        // half-materialized entity.
+        auto& a            = *archetypes_[to];
+        auto const new_row = static_cast<std::uint32_t>(a.entities.size());
+        try {
+            (a.template column<Cs>().store.push_back(comps), ...);
+            a.entities.push_back(e);
+        } catch (...) {
+            rollback_overlong_columns(a);
+            throw;
+        }
+
         auto& [archetype, row, generation, alive] = records_[e.index];
-
-        alive      = true;
-        generation = e.generation;
-        archetype  = to;
-
-        auto& a = *archetypes_[to];
-        row     = a.entities.size();
-        a.entities.push_back(e);
-        (a.template column<Cs>().store.push_back(comps), ...);
+        alive                                     = true;
+        generation                                = e.generation;
+        archetype                                 = to;
+        row                                       = new_row;
         ++alive_count_;
     }
 
@@ -336,6 +350,9 @@ private:
 
     // Move an entity from its current archetype into `to`, copying shared
     // columns and letting `addExtra` append any newly-added component.
+    // Transactional on `b`: nothing is removed from `a` until every column of
+    // `b` has the new row, so a mid-move throw rolls `b` back and leaves the
+    // entity untouched in `a` (no silent column desynchronization).
     template <class AddExtra>
     void relocate(Entity const e, auto const to, AddExtra&& addExtra) {
         auto& rec       = records_[e.index];
@@ -343,18 +360,31 @@ private:
         auto& a         = *archetypes_[from];
         auto& b         = *archetypes_[to];
 
-        for (auto& [id, col] : a.columns) {
-            if (auto const it = b.columns.find(id); it != b.columns.end())
-                col->move_row_to(*it->second, rec.row);
+        try {
+            for (auto& [id, col] : a.columns) {
+                if (auto const it = b.columns.find(id); it != b.columns.end())
+                    col->move_row_to(*it->second, rec.row);
+            }
+            addExtra(b);
+            b.entities.push_back(e);
+        } catch (...) {
+            rollback_overlong_columns(b);
+            throw;
         }
-        addExtra(b);
-
-        auto const new_row = b.entities.size();
-        b.entities.push_back(e);
+        auto const new_row = static_cast<std::uint32_t>(b.entities.size() - 1);
 
         remove_row(a, rec.row);
         rec.archetype = to;
         rec.row       = new_row;
+    }
+
+    // Pop any column row appended beyond `entities.size()` -- the unwind path
+    // of spawn_now/relocate, restoring the "every column as long as entities"
+    // invariant after a partial append.
+    static void rollback_overlong_columns(Archetype& a) noexcept {
+        for (auto const& col : a.columns | std::views::values)
+            while (col->size() > a.entities.size())
+                col->swap_remove(col->size() - 1);
     }
 
     CommandBuffer commands_;

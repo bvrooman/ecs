@@ -67,10 +67,24 @@ public:
     }
 
     // Scatter the fields of `v` across the per-field columns. Returns the row.
+    // Transactional: if any field's push throws (growth failure, throwing field
+    // copy), the columns already appended to are popped back on unwind --
+    // otherwise the columns would be left at different lengths, silently and
+    // permanently desynchronizing every row after this one.
     auto push_back(T const& v) {
-        reflect::for_each_field(v, [&](auto Ic, auto const& field) {
-            std::get<Ic.value>(columns_).push_back(field);
-        });
+        std::size_t pushed = 0;
+        try {
+            reflect::for_each_field(v, [&](auto Ic, auto const& field) {
+                std::get<Ic.value>(columns_).push_back(field);
+                ++pushed;
+            });
+        } catch (...) {
+            std::size_t i = 0;
+            apply_columns([&](auto&... col) {
+                ((i++ < pushed ? col.pop_back() : void()), ...);
+            });
+            throw;
+        }
         return size_++;
     }
 

@@ -179,6 +179,13 @@ namespace sched_event {
     struct SystemEnd {
         SystemId id;
     };
+    // Emitted instead of the remaining SystemEnd/WaveEnd/TickEnd when a system
+    // throws and the run unwinds, so observers with open Begin/End pairs can
+    // reset instead of carrying stale timers into the next tick.
+    struct TickAbort {
+        std::size_t level;
+        SystemId system;
+    };
 } // namespace sched_event
 
 using ScheduleEvent = std::variant<sched_event::TickBegin,
@@ -186,7 +193,8 @@ using ScheduleEvent = std::variant<sched_event::TickBegin,
                                    sched_event::WaveBegin,
                                    sched_event::WaveEnd,
                                    sched_event::SystemBegin,
-                                   sched_event::SystemEnd>;
+                                   sched_event::SystemEnd,
+                                   sched_event::TickAbort>;
 
 class Schedule {
 public:
@@ -299,8 +307,10 @@ public:
     // handful of independent systems a wave offers. A 1-lane pool is plain serial
     // execution. Recorded edits flush at each wave barrier; one-shot systems are
     // removed afterwards. A system that throws (in its body or a parallel kernel)
-    // propagates the exception out of run(); the current wave's edits are not
-    // flushed, as on any failed run.
+    // propagates the exception out of run(); the aborted run's recorded edits are
+    // DISCARDED (they must not leak into a later run's first flush, possibly of a
+    // different schedule sharing this world) and a TickAbort event is emitted in
+    // place of the remaining End events.
     void run(World& world, WorkerPool& pool) {
         rebuild();
         using namespace sched_event;
@@ -311,10 +321,21 @@ public:
             events_.emit(WaveBegin {lvl, wave.size()});
             for (auto const idx : wave) {
                 events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
-                systems_[idx].run(world, cmds, pool);
+                try {
+                    systems_[idx].run(world, cmds, pool);
+                } catch (...) {
+                    world.discard_commands();
+                    events_.emit(TickAbort {lvl, systems_[idx].id});
+                    throw;
+                }
                 events_.emit(SystemEnd {systems_[idx].id});
             }
-            world.apply_commands();
+            try {
+                world.apply_commands(); // cleans up its own pending commands on throw
+            } catch (...) {
+                events_.emit(TickAbort {lvl, SystemId {0}});
+                throw;
+            }
             events_.emit(WaveEnd {lvl});
             ++lvl;
         }

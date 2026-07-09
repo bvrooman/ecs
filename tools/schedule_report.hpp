@@ -82,6 +82,11 @@ public:
                     if (auto const s = tick_.due())
                         report(*s);
                 },
+                [this](TickAbort const&) {
+                    // The run unwound mid-tick: drop the open system/wave/tick
+                    // timers rather than sampling a truncated measurement.
+                    cur_ = nullptr;
+                },
             },
             e);
     }
