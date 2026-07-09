@@ -68,6 +68,27 @@ class Query {
         return s;
     }
 
+    // The matching archetype list, memoized per (query type, thread) against
+    // the world's archetype generation: the steady state is two relaxed-ish
+    // loads and two compares -- no mutex, no signature hash -- while a new
+    // matching archetype (created at flush; the generation only changes there)
+    // or a different World forces one locked re-lookup. The world instance id
+    // guards against a destroyed World's address being reused.
+    std::vector<std::uint32_t> const& matches() const {
+        struct Cache {
+            std::uint64_t world = 0;
+            std::uint64_t gen   = ~std::uint64_t {0};
+            std::vector<std::uint32_t> const* list = nullptr;
+        };
+        thread_local Cache cache;
+        auto const gen = world_.archetype_generation();
+        if (cache.world == world_.instance_id() && cache.gen == gen)
+            return *cache.list;
+        auto const& list = world_.matching_archetypes(required());
+        cache            = {world_.instance_id(), gen, &list};
+        return list;
+    }
+
 public:
     // `pool` is the data-parallel WorkerPool the executor binds. Ad-hoc queries
     // (query()/WorldView, outside a schedule) reference a shared 1-lane serial pool,
@@ -89,7 +110,7 @@ public:
     template <class F>
     void for_each_serial(F&& fn) {
         auto const& archs = world_.archetypes();
-        for (auto const ai : world_.matching_archetypes(required())) {
+        for (auto const ai : matches()) {
             auto& arch      = *archs[ai];
             auto const ents = std::span(arch.entities);
             detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
@@ -138,22 +159,44 @@ public:
     //   });
     template <class F>
     void for_each_chunk(F&& fn) {
-        auto const& archs = world_.archetypes();
-        for (auto const ai : world_.matching_archetypes(required())) {
-            auto& arch      = *archs[ai];
-            auto const ents = std::span(arch.entities);
-            auto const n    = arch.size();
-            auto run        = [&](std::size_t b, std::size_t e) {
-                fn(ents.subspan(b, e - b), chunk_arg<Cs>(arch, b, e)...);
-            };
-            pool_.parallel_for(n, run); // a 1-lane pool runs [0, n) inline
-        }
+        auto const& archs   = world_.archetypes();
+        auto const& matched = matches();
+        // ONE dispatch over the query's total row count, with each lane mapping
+        // its global range back onto (archetype, row-range) segments -- rather
+        // than a full fork-join barrier per archetype. This also makes the
+        // pool's serial threshold apply to the query total, not per archetype
+        // (a fragmented world used to run entirely serial even with millions of
+        // total rows), and empty archetypes are skipped instead of invoking the
+        // kernel with zero rows.
+        std::size_t total = 0;
+        for (auto const ai : matched)
+            total += archs[ai]->size();
+        if (total == 0)
+            return;
+        auto run = [&](std::size_t b, std::size_t e) {
+            std::size_t base = 0;
+            for (auto const ai : matched) {
+                auto& arch          = *archs[ai];
+                std::size_t const n = arch.size();
+                if (base + n > b) {
+                    std::size_t const lo = b > base ? b - base : 0;
+                    std::size_t const hi = std::min(n, e - base);
+                    if (lo < hi)
+                        fn(std::span(arch.entities).subspan(lo, hi - lo),
+                           chunk_arg<Cs>(arch, lo, hi)...);
+                }
+                base += n;
+                if (base >= e)
+                    break;
+            }
+        };
+        pool_.parallel_for(total, run); // a 1-lane pool runs [0, total) inline
     }
 
     [[nodiscard]]
     std::size_t count() const {
         std::size_t n = 0;
-        for (auto const ai : world_.matching_archetypes(required()))
+        for (auto const ai : matches())
             n += world_.archetypes()[ai]->size();
         return n;
     }

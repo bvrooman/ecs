@@ -36,7 +36,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -246,9 +245,10 @@ public:
         sys.id     = id;
         sys.name   = std::move(name);
         sys.access = std::move(access);
-        sys.phase  = phase;
-        sys.once   = once;
-        sys.run    = std::forward<Run>(run);
+        normalize(sys.access); // caller-supplied ids: sort + dedupe
+        sys.phase = phase;
+        sys.once  = once;
+        sys.run   = std::forward<Run>(run);
         systems_.push_back(std::move(sys));
         dirty_ = true;
         return id;
@@ -376,6 +376,7 @@ private:
         sys.phase = phase;
         sys.once  = once;
         declare_into<Args>(sys.access, std::make_index_sequence<N> {});
+        normalize(sys.access);
         sys.run =
             [fn = std::forward<Fn>(fn)](World& w, Commands& c, WorkerPool& pool) mutable {
                 invoke<Args>(fn, w, c, pool, std::make_index_sequence<N> {});
@@ -388,10 +389,31 @@ private:
 
     using IdList = std::vector<std::uint32_t>;
 
+    // Access id lists are kept sorted + deduplicated (see normalize), so every
+    // conflict check is a linear merge rather than a quadratic scan.
+    static void normalize(SystemAccess& a) {
+        auto norm = [](IdList& v) {
+            std::ranges::sort(v);
+            v.erase(std::ranges::unique(v).begin(), v.end());
+        };
+        norm(a.reads);
+        norm(a.writes);
+        norm(a.res_reads);
+        norm(a.res_writes);
+    }
+
     static bool intersects(IdList const& a, IdList const& b) {
-        return std::ranges::any_of(a, [b](auto& x) {
-            return std::ranges::find(b, x) != b.end();
-        });
+        auto ia = a.begin();
+        auto ib = b.begin();
+        while (ia != a.end() && ib != b.end()) {
+            if (*ia < *ib)
+                ++ia;
+            else if (*ib < *ia)
+                ++ib;
+            else
+                return true;
+        }
+        return false;
     }
     static bool conflicts_on(IdList const& aw,
                              IdList const& ar,
@@ -421,13 +443,25 @@ private:
             systems_[i].level = lvl;
         }
         // Waves run in ascending (phase, level) order with a barrier between
-        // each.
-        auto groups = std::map<std::pair<int, std::size_t>, std::vector<std::size_t>> {};
-        for (std::size_t i = 0; i < systems_.size(); ++i)
-            groups[{systems_[i].phase, systems_[i].level}].push_back(i);
+        // each. Flat vector of (key, members) instead of a std::map: no
+        // per-rebuild node allocations, and the group count is small.
+        using Key   = std::pair<int, std::size_t>;
+        auto groups = std::vector<std::pair<Key, std::vector<std::size_t>>> {};
+        for (std::size_t i = 0; i < systems_.size(); ++i) {
+            Key const key {systems_[i].phase, systems_[i].level};
+            auto it = std::ranges::find(groups, key, [](auto const& g) {
+                return g.first;
+            });
+            if (it == groups.end()) {
+                groups.emplace_back(key, std::vector<std::size_t> {});
+                it = std::prev(groups.end());
+            }
+            it->second.push_back(i);
+        }
+        std::ranges::sort(groups, {}, [](auto const& g) { return g.first; });
         waves_.clear();
         waves_.reserve(groups.size());
-        for (auto& idxs : groups | std::views::values)
+        for (auto& [key, idxs] : groups)
             waves_.push_back(std::move(idxs));
         dirty_ = false;
     }

@@ -161,6 +161,16 @@ private:
     // Mutable archetype access for the friends above.
     auto& archetypes() { return archetypes_; }
 
+    // Bumped whenever an archetype is created (only at flush) -- lets a Query
+    // memoize its match list and skip the locked cache lookup while the set of
+    // archetypes is unchanged.
+    std::uint64_t archetype_generation() const noexcept {
+        return archetype_gen_.load(std::memory_order_acquire);
+    }
+    // Process-unique id for this World object, so a per-query-type memo cannot
+    // confuse two Worlds (or a new World reusing a destroyed one's address).
+    std::uint64_t instance_id() const noexcept { return instance_id_; }
+
     struct Record {
         // 12 bytes, not 16: `alive` lives in the top bit of the archetype index
         // (2^31 archetypes is unreachable), so a cache line holds a third more
@@ -376,10 +386,13 @@ private:
         }
         // Extend any existing query caches the new archetype matches (runs at
         // flush, single-threaded; queries only read caches during a wave).
-        auto lock = std::lock_guard(query_cache_mutex_);
-        for (auto& [required, list] : query_cache_)
-            if (includes_signature(sig, required))
-                list.push_back(idx);
+        {
+            auto lock = std::lock_guard(query_cache_mutex_);
+            for (auto& [required, list] : query_cache_)
+                if (includes_signature(sig, required))
+                    list.push_back(idx);
+        }
+        archetype_gen_.fetch_add(1, std::memory_order_release);
         return idx;
     }
 
@@ -465,6 +478,13 @@ private:
     std::vector<std::uint32_t> free_;
     std::uint32_t empty_archetype_ = 0;
     std::size_t alive_count_       = 0;
+
+    static std::uint64_t next_world_id() noexcept {
+        static std::atomic<std::uint64_t> counter {1};
+        return counter.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::uint64_t const instance_id_ = next_world_id();
+    std::atomic<std::uint64_t> archetype_gen_ {0};
 
     std::atomic<std::uint32_t> reserve_high_ {0}; // next brand-new index; ==
                                                   // records_.size() when no
