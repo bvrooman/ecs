@@ -114,7 +114,16 @@ public:
     // with no std::terminate from a worker and no use-after-unwind.
     template <class Kernel>
     void parallel_for(std::size_t count, Kernel&& kernel) {
-        if (lanes_ == 1 || count < kMinParallel) {
+        parallel_for(count, kMinParallel, std::forward<Kernel>(kernel));
+    }
+
+    // As above, with a caller-chosen serial threshold: dispatch whenever
+    // count >= min_parallel. The schedule executor uses this to fan a handful
+    // of coarse tasks (whole systems) across lanes, where the default 256-row
+    // threshold would always run serial.
+    template <class Kernel>
+    void parallel_for(std::size_t count, std::size_t min_parallel, Kernel&& kernel) {
+        if (lanes_ == 1 || count < min_parallel) {
             kernel(std::size_t {0}, count); // serial: exception propagates directly
             return;
         }

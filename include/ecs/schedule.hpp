@@ -34,6 +34,7 @@
 #include "query.hpp"
 #include "world.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -53,6 +54,26 @@ template <int>
 struct phase {};
 
 using SystemId = std::uint64_t;
+
+// How Schedule::run executes the systems within one wave.
+//
+// sequential_systems (the default, and the measured sweet spot for a tight
+// fixed-timestep loop -- see DESIGN.md §5): systems run one after another on
+// the calling thread, and EACH system's queries split their rows across all of
+// the pool's lanes. Parallelism comes from within a system.
+//
+// concurrent_systems: a wave's systems -- proven conflict-free by the access
+// analysis -- are themselves fanned out across the pool's lanes, claimed
+// dynamically so an expensive system does not serialize the cheap ones behind
+// it. Queries issued inside such a system detect the in-flight dispatch and
+// run serially on their lane. This wins when a schedule has MANY small systems
+// per wave (each below the data-parallel threshold, where sequential mode is
+// effectively single-threaded). Two caveats: per-system schedule events are
+// emitted around the whole wave (observer callbacks are not thread-safe), and
+// the cross-shard order of Commands recorded by different systems -- already
+// unspecified -- additionally varies run to run, so prefer sequential mode
+// when bit-perfect reproducibility of structural edits matters (lockstep).
+enum class RunPolicy { sequential_systems, concurrent_systems };
 
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with
@@ -311,7 +332,9 @@ public:
     // DISCARDED (they must not leak into a later run's first flush, possibly of a
     // different schedule sharing this world) and a TickAbort event is emitted in
     // place of the remaining End events.
-    void run(World& world, WorkerPool& pool) {
+    void run(World& world,
+             WorkerPool& pool,
+             RunPolicy policy = RunPolicy::sequential_systems) {
         rebuild();
         using namespace sched_event;
         events_.emit(TickBegin {waves_.size()});
@@ -319,17 +342,12 @@ public:
         std::size_t lvl = 0;
         for (auto const& wave : waves_) {
             events_.emit(WaveBegin {lvl, wave.size()});
-            for (auto const idx : wave) {
-                events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
-                try {
-                    systems_[idx].run(world, cmds, pool);
-                } catch (...) {
-                    world.discard_commands();
-                    events_.emit(TickAbort {lvl, systems_[idx].id});
-                    throw;
-                }
-                events_.emit(SystemEnd {systems_[idx].id});
-            }
+            bool const concurrent = policy == RunPolicy::concurrent_systems &&
+                                    wave.size() > 1 && pool.lanes() > 1;
+            if (concurrent)
+                run_wave_concurrent(wave, world, cmds, pool, lvl);
+            else
+                run_wave_sequential(wave, world, cmds, pool, lvl);
             try {
                 world.apply_commands(); // cleans up its own pending commands on throw
             } catch (...) {
@@ -350,6 +368,57 @@ public:
 
 private:
     event::Emitter<ScheduleEvent> events_;
+
+    void run_wave_sequential(std::vector<std::size_t> const& wave,
+                             World& world,
+                             Commands& cmds,
+                             WorkerPool& pool,
+                             std::size_t lvl) {
+        using namespace sched_event;
+        for (auto const idx : wave) {
+            events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
+            try {
+                systems_[idx].run(world, cmds, pool);
+            } catch (...) {
+                world.discard_commands();
+                events_.emit(TickAbort {lvl, systems_[idx].id});
+                throw;
+            }
+            events_.emit(SystemEnd {systems_[idx].id});
+        }
+    }
+
+    // Fan the wave's (conflict-free) systems across the pool's lanes, claimed
+    // dynamically from an atomic cursor for load balancing. Observer callbacks
+    // are not thread-safe, so per-system Begin/End events bracket the whole
+    // wave dispatch instead of each system. A throwing system aborts the run at
+    // the join, exactly like the sequential path.
+    void run_wave_concurrent(std::vector<std::size_t> const& wave,
+                             World& world,
+                             Commands& cmds,
+                             WorkerPool& pool,
+                             std::size_t lvl) {
+        using namespace sched_event;
+        for (auto const idx : wave)
+            events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
+        std::atomic<std::size_t> next {0};
+        try {
+            pool.parallel_for(wave.size(), /*min_parallel=*/2, [&](std::size_t, std::size_t) {
+                // Every lane joins in and claims systems until none are left --
+                // the handed [b, e) slice is ignored in favor of dynamic claims.
+                for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+                     i < wave.size();
+                     i = next.fetch_add(1, std::memory_order_relaxed))
+                    systems_[wave[i]].run(world, cmds, pool);
+            });
+        } catch (...) {
+            world.discard_commands();
+            events_.emit(TickAbort {lvl, SystemId {0}});
+            throw;
+        }
+        for (auto const idx : wave)
+            events_.emit(SystemEnd {systems_[idx].id});
+    }
 
     void prune_once() {
         if (std::erase_if(systems_, [](System const& s) { return s.once; }))
