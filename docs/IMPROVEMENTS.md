@@ -1,0 +1,278 @@
+# Improvement roadmap
+
+A consolidated audit of the library, tests, benchmarks, examples, tooling, and
+web layer (July 2026). Items marked **[done]** were implemented on the branch
+that introduced this document; the rest are recorded as a roadmap.
+
+## Top ten highest-leverage actions
+
+1. **[done]** Fix the exception-safety hole family in the command/flush path —
+   a throwing command replayed the entire shard on the next flush, and a
+   mid-wave throw left stale commands that a *different* schedule would
+   silently apply (`command_buffer.hpp`, `schedule.hpp`).
+2. **[done]** Guard `WorkerPool` against nested dispatch — a `Query` used
+   inside a chunk kernel clobbered the shared job slot (silent corruption or
+   deadlock); nested dispatches now run serial on the calling lane.
+3. **[done]** Fix the native/dynamic column type confusion — `register_native<T>`
+   made `Registry::is_dynamic()` lie, and `WorldOps` then `static_cast`ed a
+   `Column<T>` to `DynamicColumn`: UB reachable from the JS host path.
+4. **[done]** Add CI with sanitizers — ASAN/UBSAN + TSAN legs, gcc + clang,
+   Debug + Release (`.github/workflows/ci.yml`, `ECS_SANITIZE` option).
+5. **[done]** Add multi-lane tests for the two headline concurrent paths —
+   `for_each_chunk`/`for_each_parallel` splitting and sharded command
+   recording previously ran serial-only in the entire suite (every query test
+   was below the 256-row parallel threshold).
+6. **[done — opt-in]** Cross-system parallelism: waves ran systems
+   sequentially, so the conflict analysis bought nothing but flush placement.
+   `Schedule::run(world, pool, RunPolicy::concurrent_systems)` now dispatches
+   a wave's conflict-free systems across lanes (default remains sequential;
+   see DESIGN.md §5 for the measured rationale and the determinism caveat).
+7. Query filters (`Without`/`With`/`Optional`) and change detection
+   (`Changed`/`Added`) — the two most-missed ECS features vs bevy/flecs; both
+   fit this design cheaply (see §6).
+8. **[done]** Archetype edge cache + flat sorted columns — `add`/`remove`
+   heap-allocated and hashed a signature per structural op, and every column
+   lookup paid an `unordered_map` chase.
+9. **[done]** Wasm: futex-park idle lanes under Emscripten, `-msimd128`,
+   `-fwasm-exceptions`, and the f32-only typed-array bug in
+   `defineParallelSystem`.
+10. Install/packaging + a named-module target — no install rules, no version,
+    no `find_package` support today; the module plan (§5) is mostly mechanical
+    once that lands.
+
+---
+
+## 1. Correctness
+
+### Command buffer & flush
+- **[done]** `CommandStore::apply` ran all invokes, then all destroys, then
+  cleared; a throwing command left the shard intact and the next flush
+  **re-executed every command from the beginning** (duplicate spawns of the
+  same reserved handle, double destroys). Now invokes-and-destroys in one pass
+  with unwind cleanup that destroys the remaining commands and rewinds.
+- **[done]** A system throwing mid-wave propagated out of `Schedule::run`, but
+  the world-owned buffer kept earlier systems' recorded edits; the **next**
+  run (possibly a different schedule) silently applied them, and
+  `spawn()`-reserved ids leaked. `Schedule::run` now discards pending commands
+  on unwind (`CommandBuffer::discard()`).
+- **[done]** `soa_storage::push_back` scattered field-by-field; a throw at
+  column *k* permanently desynchronized the columns (silent data corruption).
+  Same class of bug in `World::relocate`. Columns are now pre-reserved so the
+  scatter cannot throw mid-way for nothrow-copyable fields.
+
+### Concurrency
+- **[done]** Nested `parallel_for` overwrote the pool's single job slot while
+  lanes were mid-flight; now detected and run serial on the calling lane.
+- **[done]** `next_component_id()` / `next_resource_id()` were plain
+  `counter++` on shared statics — two types first-touched on two threads could
+  get the same id, silently aliasing columns and merging conflict analysis.
+  Now atomic.
+- **[done]** `CommandBuffer::apply` drained shards without taking shard
+  mutexes (safe only by invariant); it now locks each (uncontended) mutex.
+
+### Type-system / API integrity
+- **[done]** `Query<Position, const Position>` compiled and handed a kernel two
+  aliased chunks, one mutable; now a named `static_assert`.
+- **[done]** Non-const `World::archetypes()` handed any `World&` system full
+  structural mutation, bypassing the Commands-only invariant; now const-only.
+- **[done]** `make_archetype` published the `sig_index_` entry before pushing
+  the archetype — a throwing `push_back` left a dangling index.
+- **[done]** `swap_remove` self-move-assigned when removing the last row and
+  indexed wildly on an empty store; both guarded (native + dynamic columns).
+- **[done]** Dynamic layer: descriptor redefinition invalidated live
+  `DynamicColumn`s (now rejected); `register_native` validates blob layout
+  (`sizeof(T) == stride`) so padded structs can't be silently misread.
+- **[done]** Portable reflection: C-array members and aggregates with base
+  classes now produce named `static_assert`s instead of a structured-binding
+  ladder explosion; `field_name<I>` returns unique `"field0"…` names.
+- **[done]** `Entity` gained a null sentinel (`Entity::null()`,
+  `explicit operator bool`) and `operator<=>`.
+- **[done]** Missing `<cstdint>` includes; debug asserts in `chunk`,
+  `field_base`, `move_row_to`; `Emitter` re-entrancy debug assert;
+  `soa_storage::column<I>()` constrained against rvalues.
+- Cross-thread reads of `records_`/`alive_count_` from consumer threads (the
+  render-thread `alive(e)` pattern) are wave-scoped only — documentation gap.
+
+## 2. Performance
+
+### Scheduling & parallelism
+- **[done — opt-in]** Cross-system parallelism (see item 6 above).
+- **[done]** `for_each_chunk` paid one fork-join barrier per archetype and
+  applied the 256-row serial threshold per archetype; now a single flattened
+  `parallel_for` over the total row count, mapping global ranges to
+  (archetype, row-range) segments.
+- **[done]** Idle lanes spun at 100% forever; now a bounded spin followed by
+  `atomic::wait` (futex) parking — preserving the measured in-frame dispatch
+  latency while eliminating idle burn between ticks (always parks under
+  Emscripten, where the spin also burned Worker cores for the tab's lifetime).
+- **[done]** Query match lookup took a global mutex and hashed a signature
+  vector on every `for_each_*`; now memoized per query type against a world
+  archetype-generation counter (steady state: one relaxed load).
+- **[done]** `rebuild()` captured an id vector **by value** per `intersects`
+  call, used O(n²·|ids|²) linear scans and a per-rebuild `std::map`; now
+  by-reference, sorted-merge intersection, and flat vectors.
+- Static equal split has no load balancing for skewed kernels — a deterministic
+  chunk-claiming scheme (lanes × 4–8 chunks via one atomic `fetch_add`) keeps
+  chunk contents deterministic while letting lane assignment float. Roadmap.
+
+### Storage
+- **[done]** Archetype add/remove **edge cache** — steady-state transitions are
+  one array lookup, zero allocation (previously a fresh heap `Signature` +
+  hash + map lookup per structural op).
+- **[done]** `Archetype::columns` flattened from
+  `unordered_map<ComponentId, unique_ptr<IColumn>>` to a vector parallel to
+  the sorted signature; `relocate` is now a two-pointer merge.
+- **[done]** Move path: `push_back(T&&)`, move-aware `move_row_to`, and
+  forwarding `Commands::spawn/add/set` — heap-owning fields no longer pay a
+  full copy per archetype transition.
+- **[done]** `World::reserve_entities(n)` + `Archetype::reserve(n)` for batch
+  spawns; `Record` packed from 16 to 12 bytes (alive bit in the generation).
+- **[done]** Entity recycling no longer takes a mutex in the common case
+  (atomic cursor over the flush-frozen free list).
+- **[done]** False-sharing padding for the pool's `gen_`/`remaining_` and
+  `TripleBuffer`; `SnapshotChannel` recycles publish buffers via a
+  `use_count()==1` free list.
+- Tag components still allocate one virtual column per archetype (LOW);
+  a shared singleton tag column is roadmap.
+- Chunked storage (Unity-DOTS style fixed blocks) is deliberately **not**
+  adopted: dense per-field columns maximize contiguity/SIMD; instead prefer
+  `reserve` + a column version counter for host-pointer invalidation.
+
+## 3. Ergonomics (roadmap)
+
+- `Res<T>` from `World const&`; `try_get<C>(Entity) -> C const*` /
+  `std::optional<C>`; a consistent `std::expected<T, ecs::errc>` surface
+  (would also clean up `WorldOps`' bool-plus-out-param style).
+- `SystemParam`/`SystemFn` concepts so unsupported system signatures produce a
+  named diagnostic (the `fn_traits` ladder rejects generic lambdas,
+  ref-qualified `operator()`, and function references with opaque errors).
+- `std::formatter<Entity>`; `alignas(32)` components in `cmd.spawn` (arena
+  currently hard-errors); document `World` immovability.
+
+## 4. Modern C++ (C++26) (roadmap)
+
+- `template for` (P1306) to collapse every `index_sequence` IIFE — start with
+  the P2996-only files (zero portability cost).
+- P2996 annotations (P3394): `[[=ecs::skip]]`, `[[=ecs::name("...")]]` to
+  drive SoA splitting and JS interchange names; auto-derive
+  `register_native<T>()` names from `field_name`; generate `parse_type` from
+  `enumerators_of(^^FieldType)`; reflect over `^^chunk` instead of the
+  hardcoded collision list.
+- Stable ids: `stable_component_id<T> = fnv1a(type_name<T>())` for
+  serialization/interop; a reflection-driven `ecs/serialize.hpp`.
+- `std::inplace_vector<ComponentId, N>` for `Signature`; `std::jthread` +
+  `stop_token` in `WorkerPool`; `std::flat_map` in `rebuild()`;
+  `std::function_ref` for factory params; `std::bit_cast` in
+  `std::hash<Entity>`; `[[assume]]` in the hot paths; C++26
+  `<hazard_pointer>` as an optional `SnapshotChannel` backend.
+- Polyfills (`move_only_function`, `atomic_shared_ptr`) are correctly
+  feature-gated; the blocker is Emscripten's libc++ — recheck per emsdk
+  upgrade. Do **not** adopt `std::hive` for storage (stable addresses defeat
+  the SoA premise).
+- Fix the facade divergence: the two reflection backends disagree on
+  `constexpr` vs `consteval` for `field_name`/`type_name`.
+
+## 5. C++ modules & packaging (roadmap)
+
+Ship a thin module interface unit wrapping the headers (the fmt pattern):
+`src/ecs.cppm` with the std includes in the global module fragment, then
+`export module ecs;` + `#define ECS_EXPORT export` + `#include "ecs/ecs.hpp"`.
+
+Blockers to clear first:
+- Presets pin `Unix Makefiles` (modules need Ninja); `cmake_minimum_required`
+  3.24 → 3.28 for `FILE_SET CXX_MODULES`.
+- Config macros (`ECS_USE_P2996`, `ECS_REFLECT_NAMES`) need an always-textual
+  `config.hpp` + `ecs::config` constants for `if constexpr` in importers.
+- **Hazard**: inline-function singletons (`next_component_id`,
+  `dynamic::registry()`, `detail::serial_pool()`, name maps) mean mixing
+  `#include` and `import` TUs yields two id counters → colliding component
+  ids. Move them into a small non-inline TU in the module target.
+- Expect Clang-first (GCC modules are shakiest with heavy templates, which
+  cuts across the GCC-16 P2996 preset); keep wasm on headers.
+
+Packaging (prerequisite, currently absent): `install(TARGETS ... FILE_SET
+HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
+`find_dependency(Threads)`), `project(... VERSION)`, options gated on
+`PROJECT_IS_TOP_LEVEL`, `cxx_std_26` on the interface when P2996 is on,
+`-freflection` guarded by compiler id, `tools/` INTERFACE targets need
+`BUILD_INTERFACE` guards, then a trivial `vcpkg.json`.
+
+## 6. ECS feature gaps vs bevy_ecs / flecs / EnTT (roadmap)
+
+1. `Without<C>` / `With<C>` / `Optional<C>` query filters — `Without` is
+   nearly free (extend the match-cache key with an excluded set); `Optional`
+   is a nullable per-archetype chunk.
+2. Change detection — coarse per-(archetype, column) ticks bumped at dispatch
+   time for non-const query components unlock `Changed<C>`/`Added<C>`.
+3. Frame-buffered gameplay events — `Events<T>` resource, double-buffered per
+   `run()`, writer side sharded like `CommandBuffer`, declared via
+   `EventReader<T>`/`EventWriter<T>` system params so conflict analysis covers
+   them (`event::Emitter` is a synchronous instrumentation bus, not this).
+4. `run_if` conditions and explicit `before/after` ordering (today only
+   registration order and `phase<N>`).
+5. Immediate edits for exclusive systems — an `ExclusiveWorld` param exposing
+   the `*_now` primitives (a `World&` system runs alone yet can't spawn).
+6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
+   spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
+   `App`/fixed-timestep layer; larger: structural-change hooks, entity
+   relationships.
+
+## 7. Tests, benchmarks, CI
+
+- **[done]** CI (GitHub Actions): gcc + clang, Debug + Release, ASAN/UBSAN and
+  TSAN legs (`ECS_SANITIZE` CMake option), warnings enabled for tests.
+- **[done]** Multi-lane `for_each_chunk`/`for_each_parallel` tests (≥10k rows,
+  every row written exactly once); command recording from parallel kernels;
+  nested-dispatch fallback; throwing-flush no-replay regression tests.
+- **[done]** Benchmarks: `scale_bench` no longer hardcodes an 8-lane pool on a
+  4-core host; `bench::keep` uses the `"+r,m"` constraint; `gather_bench`
+  unified onto `bench.hpp`.
+- Roadmap: seeded model-based structural-ops test (random
+  spawn/add/remove/destroy/set vs a map oracle); components with
+  `std::string` fields through relocation under ASAN; throwing
+  observer/missing-resource paths; tag components through the full archetype
+  path; doctest (or extend `check.hpp` with variadic `CHECK`, value-printing
+  `CHECK_EQ`, per-case ctest registration); dispersion + `--csv` in
+  benchmarks; `-march=native` as an option; structural churn / fragmentation /
+  random-access benchmark dimensions; optional EnTT/flecs comparison; a wasm
+  CI leg running `web/test/smoke.cpp` under node.
+
+## 8. Wasm & JS interop
+
+- **[done]** Idle lanes park via `atomic::wait` (futex → `Atomics.wait`)
+  instead of spinning at 100% in Workers for the tab's lifetime.
+- **[done]** `-msimd128` (+`-mrelaxed-simd`) on web demo targets — the SoA
+  vectorization pitch was scalarized on the web.
+- **[done]** `-fwasm-exceptions` on the embind targets — a JS typo in a field
+  type string aborted the whole runtime instead of throwing catchably.
+- **[done]** `defineParallelSystem` built `Float32Array` views for every field
+  regardless of declared type — `i32`/`f64`/`u32` were silently reinterpreted
+  as f32 in parallel kernels; views now honor `FieldType`.
+- Roadmap: document the heap-growth typed-array detachment hazard in the
+  `defineSystem` contract (structural ops mid-kernel on the
+  `ALLOW_MEMORY_GROWTH` build); growable SharedArrayBuffer to drop the MT
+  128 MB pin; auto-fallback from the MT page to the ST module when
+  `!crossOriginIsolated`; `coi-serviceworker` note for header-less hosts;
+  comment the wasm32 pointer-truncation assumptions (memory64 not worth
+  adopting yet); a `PROXY_TO_PTHREAD` + OffscreenCanvas demo; a hand-written
+  `.d.ts` for `DynamicWorld`; per-archetype view caching keyed by an
+  archetype-generation counter.
+
+## 9. Examples & tooling (roadmap)
+
+- `examples/hello.cpp` minimal example built in CI (the README snippet is
+  untested documentation); lead the quickstart with `for_each_parallel`.
+- De-macOS-ify `particles`/`mist` (glad instead of CGL includes) or point
+  non-Mac users at the wasm build explicitly.
+- Best missing demo: fixed timestep + render interpolation (publish
+  prev+curr, lerp by accumulator remainder) — completes the snapshot-handoff
+  story with no new library features. Also: app-level events, native dynamic
+  components, `Schedule::remove`.
+- Tools: Chrome-trace/Perfetto export (keep begin timestamps in
+  `ScheduleTrace`; ~80 lines buys the full timeline UI); per-lane
+  instrumentation in `WorkerPool` (lane imbalance and join-spin cost are
+  invisible); cost-colored `schedule_viz` nodes from `ScheduleReport`;
+  advertise the mist metrics/filmstrip harness in the top README.
+- Backport the web port's overrun resync into the native sim loops;
+  deduplicate the render-thread body and the three `gl_util` copies into
+  `examples/common/`; drop the hardcoded `Entity{0,0}` in `nbody.cpp`.
