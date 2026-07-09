@@ -48,6 +48,16 @@ constexpr FieldType to_field_type() {
 template <reflect::Reflectable T>
 ComponentId register_native(std::string name, std::vector<std::string> field_names) {
     constexpr auto N = reflect::field_count_v<T>;
+    // The interchange blob is the fields packed with NO padding, and hosts pass
+    // &T as that blob -- so T itself must be padding-free or every field after
+    // the first hole would be silently misread (e.g. {f32, f64} reads garbage).
+    constexpr auto packed = []<std::size_t... I>(std::index_sequence<I...>) {
+        return (std::size_t {0} + ... + sizeof(reflect::field_type_t<T, I>));
+    }(std::make_index_sequence<N> {});
+    static_assert(packed == sizeof(T),
+                  "register_native: T has internal padding, so its memory layout "
+                  "does not match the packed interchange blob; reorder fields or "
+                  "use same-size field types");
     std::vector<std::pair<std::string, FieldType>> fields;
     fields.reserve(N);
     [&]<std::size_t... I>(std::index_sequence<I...>) {
@@ -55,7 +65,10 @@ ComponentId register_native(std::string name, std::vector<std::string> field_nam
                              to_field_type<reflect::field_type_t<T, I>>()),
          ...);
     }(std::make_index_sequence<N> {});
-    registry().define_with_id(component_id<T>, std::move(name), fields);
+    registry().define_with_id(component_id<T>,
+                              std::move(name),
+                              fields,
+                              StorageKind::native_column);
     return component_id<T>;
 }
 

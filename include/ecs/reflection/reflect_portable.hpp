@@ -17,6 +17,7 @@
 #pragma once
 
 #include "reflect_common.hpp" // Reflectable, detail::unqualified
+#include <array>
 #include <cstddef>
 #include <string_view>
 #include <tuple>
@@ -48,6 +49,52 @@ namespace detail {
             return sizeof...(Args);
     }
 
+    // Count of top-level MEMBERS, probed with one braced initializer `{}` per
+    // member. Unlike the flat any_field probe above, a braced initializer
+    // cannot elide into a C-array member's elements, so for
+    //   struct S { float v[3]; };
+    // this counts 1 where count_fields() counts 3. The two disagreeing is how
+    // an unsupported layout is detected (see the static_assert in field_tie)
+    // instead of exploding inside the structured-binding ladder.
+    // clang-format off
+    template <class T>
+    consteval std::size_t count_members_braced() {
+        if      constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 32;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 31;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 30;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 29;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 28;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 27;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 26;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 25;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 24;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 23;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 22;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 21;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 20;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 19;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 18;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 17;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 16;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 15;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 14;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 13;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{},{}}; }) return 12;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{},{}}; }) return 11;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{},{}}; }) return 10;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{},{}}; }) return 9;
+        else if constexpr (requires { T {{},{},{},{},{},{},{},{}}; }) return 8;
+        else if constexpr (requires { T {{},{},{},{},{},{},{}}; }) return 7;
+        else if constexpr (requires { T {{},{},{},{},{},{}}; }) return 6;
+        else if constexpr (requires { T {{},{},{},{},{}}; }) return 5;
+        else if constexpr (requires { T {{},{},{},{}}; }) return 4;
+        else if constexpr (requires { T {{},{},{}}; }) return 3;
+        else if constexpr (requires { T {{},{}}; }) return 2;
+        else if constexpr (requires { T {{}}; }) return 1;
+        else return 0;
+    }
+    // clang-format on
+
 } // namespace detail
 
 template <Reflectable T>
@@ -64,6 +111,15 @@ constexpr auto field_tie(T& t) noexcept {
     static_assert(N <= 32,
                   "ecs portable reflection supports up to 32 fields; "
                   "build with -DECS_USE_P2996=1 for unlimited fields");
+    // The flat arity probe counts a C-array member once per ELEMENT (brace
+    // elision), while a structured binding binds it as ONE name -- the ladder
+    // below would then fail with an inscrutable arity error. Catch the
+    // disagreement here with a named diagnostic instead.
+    static_assert(N == detail::count_members_braced<std::remove_cvref_t<T>>(),
+                  "ecs portable reflection cannot decompose this struct: it has "
+                  "a C-array member (wrap it in std::array or a nested struct) "
+                  "or a member that is not default-constructible; alternatively "
+                  "build with -DECS_USE_P2996=1");
     using std::tie;
     // clang-format off
     if constexpr (N == 0) {
@@ -179,10 +235,29 @@ using field_type_t = std::remove_cvref_t<
                          decltype(field_tie(std::declval<std::remove_cvref_t<T>&>()))>>;
 
 // Portable reflection cannot recover member names; provide a stable synthetic
-// one. The P2996 backend returns the real identifier.
+// one, unique per index ("field0", "field1", ...) so consumers keying on names
+// (the dynamic registry, tooling) do not collide. The P2996 backend returns
+// the real identifier.
+namespace detail {
+    template <std::size_t I>
+    struct synthetic_field_name {
+        static constexpr auto storage = [] {
+            static_assert(I < 100);
+            std::array<char, 8> buf {'f', 'i', 'e', 'l', 'd'};
+            std::size_t pos = 5;
+            if constexpr (I >= 10)
+                buf[pos++] = char('0' + I / 10);
+            buf[pos++] = char('0' + I % 10);
+            return buf;
+        }();
+        static constexpr std::size_t length = I >= 10 ? 7 : 6;
+    };
+} // namespace detail
+
 template <class T, std::size_t I>
 constexpr std::string_view field_name() {
-    return "field";
+    return {detail::synthetic_field_name<I>::storage.data(),
+            detail::synthetic_field_name<I>::length};
 }
 
 // Unqualified name of the type T itself, parsed from the compiler's pretty

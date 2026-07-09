@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <memory>
 #include <ranges>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -49,6 +51,7 @@ struct WorldOps {
     // Add a dynamic component (moving the entity to the matching archetype). If
     // it already has the component, the value is overwritten in place.
     static void add(World& w, Entity e, ComponentId id, void const* blob) {
+        require_dynamic(id, "add");
         if (!w.alive(e))
             return;
         auto& rec = w.records_[e.index];
@@ -80,6 +83,7 @@ struct WorldOps {
 
     // Gather a component's fields into a packed blob. False if absent/dead.
     static bool get(World const& w, Entity e, ComponentId id, void* out) {
+        require_dynamic(id, "get");
         if (!w.alive(e))
             return false;
         auto const& a = *w.archetypes_[w.records_[e.index].archetype()];
@@ -92,6 +96,7 @@ struct WorldOps {
 
     // Overwrite a component in place. False if absent/dead.
     static bool set(World& w, Entity e, ComponentId id, void const* blob) {
+        require_dynamic(id, "set");
         if (!w.alive(e))
             return false;
         auto& rec = w.records_[e.index];
@@ -147,6 +152,8 @@ struct WorldOps {
     // component set (one transition, not one-per-component) and scatter each
     // component's bytes. Runs at flush, when nothing is iterating.
     static void build_now(World& w, Entity e, Bundle const& bundle) {
+        for (auto const& id : bundle | std::views::keys)
+            require_dynamic(id, "spawn");
         if (e.index >= w.records_.size())
             w.records_.resize(e.index + 1);
         Signature sig;
@@ -203,6 +210,7 @@ struct WorldOps {
     // for a typed-array view. (Per-archetype iteration over all matches is
     // Phase B; for now the host arranges a single matching archetype.)
     static DynamicColumn* column(World& w, ComponentId id) {
+        require_dynamic(id, "column");
         for (auto& arch : w.archetypes_)
             if (auto* c = arch->column_for(id))
                 return static_cast<DynamicColumn*>(c);
@@ -210,6 +218,17 @@ struct WorldOps {
     }
 
 private:
+    // The blob paths downcast columns to DynamicColumn. For a native id --
+    // register_native describes a Column<T>, and hosts legitimately hold those
+    // ids for views -- that downcast would be UB, so refuse loudly instead.
+    static void require_dynamic(ComponentId id, char const* op) {
+        if (!registry().is_dynamic(id))
+            throw std::invalid_argument(
+                std::string("ecs::dynamic::WorldOps::") + op +
+                ": component id is not a dynamic component (a native component "
+                "must be mutated through the C++ API)");
+    }
+
     static DynamicColumn& col(Archetype& a, ComponentId id) {
         return static_cast<DynamicColumn&>(a.column_at(id));
     }
