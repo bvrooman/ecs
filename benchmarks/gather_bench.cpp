@@ -19,6 +19,7 @@
 // Single lane throughout: this isolates the per-element gather/scatter cost, not
 // the pool. All kernels write component state, so the work is not elided.
 
+#include "bench.hpp"
 #include "ecs/ecs.hpp"
 #include <chrono>
 #include <cstdio>
@@ -51,20 +52,9 @@ void populate(World& w, Fn fn) {
     s.add_once("seed", std::move(fn));
     s.run(w);
 }
-template <class Body>
-double ns_per(std::size_t n, int repeats, Body&& body) {
-    body(); // warm
-    double best = 1e300;
-    for (int r = 0; r < repeats; ++r) {
-        auto const t0 = clk::now();
-        body();
-        auto const t1 = clk::now();
-        best = std::min(best,
-                        std::chrono::duration<double, std::nano>(t1 - t0).count() /
-                            double(n));
-    }
-    return best;
-}
+// Timing uses the shared bench::min_ns_per (bench.hpp) -- same estimator
+// as every other benchmark here.
+using bench::min_ns_per;
 void report(char const* label, double ch, double par) {
     std::printf("  %-42s chunk %8.3f ns   parallel %9.3f ns   %7.2fx\n",
                 label,
@@ -86,7 +76,7 @@ static void sparse(char const* label, std::size_t N, int R) {
         }
     });
     WorkerPool pool {1};
-    double const ch  = ns_per(N, R, [&] {
+    double const ch  = min_ns_per(N, R, [&] {
         query<W, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                  chunk<W> p,
                                                  chunk<Vel const> v) {
@@ -96,7 +86,7 @@ static void sparse(char const* label, std::size_t N, int R) {
                 a[i] += vx[i];
         });
     });
-    double const par = ns_per(N, R, [&] {
+    double const par = min_ns_per(N, R, [&] {
         Query<W, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
             p.a += v.x;
         });
@@ -128,7 +118,7 @@ int main() {
                 cmd.spawn(W16 {}, Vel {0.1f, 0.2f, 0.3f});
         });
         WorkerPool pool {1};
-        double const ch  = ns_per(N, R, [&] {
+        double const ch  = min_ns_per(N, R, [&] {
             query<W16, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                        chunk<W16> p,
                                                        chunk<Vel const> v) {
@@ -140,7 +130,7 @@ int main() {
                 }(std::make_index_sequence<16> {});
             });
         });
-        double const par = ns_per(N, R, [&] {
+        double const par = min_ns_per(N, R, [&] {
             Query<W16, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
                 p.a += v.x;
                 p.b += v.x;
@@ -172,7 +162,7 @@ int main() {
                 cmd.spawn(Named {big, float(i)}, Vel {0.1f, 0.2f, 0.3f});
         });
         WorkerPool pool {1};
-        double const ch  = ns_per(N, R, [&] {
+        double const ch  = min_ns_per(N, R, [&] {
             query<Named, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                          chunk<Named> p,
                                                          chunk<Vel const> v) {
@@ -183,7 +173,7 @@ int main() {
                     x[i] += vx[i];
             });
         });
-        double const par = ns_per(N, R, [&] {
+        double const par = min_ns_per(N, R, [&] {
             Query<Named, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
                 p.v += v.x;
             });

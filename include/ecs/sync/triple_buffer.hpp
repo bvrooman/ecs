@@ -85,9 +85,11 @@ private:
     // index with the shared one, so the three indices stay distinct -- producer
     // and consumer never touch the same buffer.
     std::array<T, 3> buffers_ {};
-    unsigned write_ = 0;               // producer-owned index
-    unsigned read_  = 1;               // consumer-owned index
-    std::atomic<unsigned> shared_ {2}; // published index + dirty bit
+    unsigned write_ = 0; // producer-owned index
+    unsigned read_  = 1; // consumer-owned index
+    // Own cache line: both threads RMW this word every publish/consume; when T
+    // is small it would otherwise share a line with the buffers themselves.
+    alignas(128) std::atomic<unsigned> shared_ {2}; // published index + dirty bit
 };
 
 } // namespace ecs::sync

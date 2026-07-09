@@ -119,7 +119,9 @@ int main() {
             spawn_n(w, n);
             Schedule s;
             build_steady(s);
-            WorkerPool pool {8};
+            // Size to the actual machine: a hardcoded 8 on a 4-core host would
+            // silently measure oversubscription, not pool speedup.
+            WorkerPool pool {std::max(2u, hw)};
             pl_us = mean_us(warm, iters, [&] { s.run(w, pool); });
         }
         std::printf("%10d | %12.2f %10.2f | %12.2f %10.2f | %5.2fx\n",
@@ -130,6 +132,5 @@ int main() {
                     pl_us * 1000.0 / n,
                     in_us / pl_us);
     }
-    (void)hw;
     return 0;
 }

@@ -16,13 +16,38 @@ namespace bench {
 using clock_type = std::chrono::steady_clock;
 
 // Defeat dead-code elimination: force `v` to be treated as observed/clobbered.
+// "+r,m" (read-write) rather than the old input-only "r,m" form: an input-only
+// constraint lets the compiler hand the asm a stale copy and keep using the
+// registerized value, which is exactly what this must prevent.
 template <class T>
-inline void keep(const T& v) {
+inline void keep(T& v) {
+  asm volatile("" : "+r,m"(v) : : "memory");
+}
+template <class T>
+inline void keep(T const& v) {
   asm volatile("" : : "r,m"(v) : "memory");
 }
 
 inline int g_iters = 50;
 inline int g_repeats = 5;
+
+// Best-of-`repeats` ns per element for one body() sweep over n elements, with
+// one untimed warmup sweep. The shared low-level helper, so every benchmark in
+// this directory uses the same estimator (see the header comment).
+template <class Body>
+double min_ns_per(std::size_t n, int repeats, Body&& body) {
+  body(); // warm caches / page in
+  double best = 1e300;
+  for (int r = 0; r < repeats; ++r) {
+    const auto t0 = clock_type::now();
+    body();
+    const auto t1 = clock_type::now();
+    best = std::min(
+        best, std::chrono::duration<double, std::nano>(t1 - t0).count() /
+                  static_cast<double>(n));
+  }
+  return best;
+}
 
 template <class Body>
 void run(const char* name, std::size_t entities, Body&& body) {

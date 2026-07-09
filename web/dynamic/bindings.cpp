@@ -268,8 +268,20 @@ public:
             val comp      = val::object();
             comp.set("n", d.name);
             val f = val::array();
-            for (auto const& fld : d.fields)
-                f.call<void>("push", fld.name);
+            for (auto const& fld : d.fields) {
+                // Ship the field TYPE alongside its name: the worker picks the
+                // matching typed-array constructor (an f64/i32/u32 field viewed
+                // as Float32Array would silently reinterpret its bits).
+                val fo = val::object();
+                fo.set("n", fld.name);
+                switch (fld.type) {
+                case FieldType::f64: fo.set("t", std::string("f64")); break;
+                case FieldType::i32: fo.set("t", std::string("i32")); break;
+                case FieldType::u32: fo.set("t", std::string("u32")); break;
+                case FieldType::f32: fo.set("t", std::string("f32")); break;
+                }
+                f.call<void>("push", fo);
+            }
             comp.set("f", f);
             layout.call<void>("push", comp);
         }
@@ -335,8 +347,16 @@ public:
                         for (var ci=0; ci<S.layout.length; ci++) {
                             var comp = S.layout[ci];
                             var o = {};
-                            for (var fi=0; fi<comp.f.length; fi++)
-                                o[comp.f[fi]] = new Float32Array(HEAPF32.buffer, bases[k++], count);
+                            for (var fi=0; fi<comp.f.length; fi++) {
+                                var fld = comp.f[fi];
+                                var base = bases[k++];
+                                var view;
+                                if (fld.t === 'f64') view = new Float64Array(HEAPF64.buffer, base, count);
+                                else if (fld.t === 'i32') view = new Int32Array(HEAP32.buffer, base, count);
+                                else if (fld.t === 'u32') view = new Uint32Array(HEAPU32.buffer, base, count);
+                                else view = new Float32Array(HEAPF32.buffer, base, count);
+                                o[fld.n] = view;
+                            }
                             c[comp.n] = o;
                         }
                         var p = {};
