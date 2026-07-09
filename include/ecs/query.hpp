@@ -50,6 +50,12 @@ class Query {
     template <class C>
     using bare = std::remove_const_t<C>; // component type minus the read-only mark
 
+    // Duplicate component types (Query<A, A> or Query<A, const A>) would hand a
+    // kernel two chunks aliasing the same column -- one possibly mutable --
+    // exactly the aliasing the scheduler's analysis promises cannot happen.
+    static_assert(detail::are_distinct_v<std::remove_const_t<Cs>...>,
+                  "Query<Cs...>: duplicate component type (ignoring const)");
+
     // The sorted set of required component ids, built once. Component ids are
     // stable after first use, so this is computed on the first query of this
     // type.

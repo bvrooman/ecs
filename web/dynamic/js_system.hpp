@@ -11,6 +11,7 @@
 #pragma once
 
 #include "ecs/dynamic/registry.hpp"
+#include "ecs/dynamic/world_ops.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 #include <algorithm>
@@ -85,7 +86,7 @@ inline SystemId add_js_system(Schedule& schedule,
     auto run = [kernel, query](World& w, Commands&, WorkerPool&) {
         Signature const required(query.begin(), query.end());
         for (auto const ai : w.matching_archetypes(required)) {
-            auto& arch       = *w.archetypes()[ai];
+            auto& arch       = WorldOps::archetype_at(w, ai);
             auto const count = arch.size();
             if (count == 0)
                 continue;

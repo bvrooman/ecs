@@ -36,6 +36,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -114,6 +115,7 @@ public:
     // Register an observer; returns a Token to remove() it later. Observers are
     // notified in registration order. An empty observer is ignored (returns 0).
     Token add(Observer obs) {
+        assert(emit_depth_ == 0 && "Emitter::add called from an observer during emit()");
         if (!obs)
             return 0;
         Token const tok = ++last_;
@@ -129,6 +131,7 @@ public:
 
     // Remove the observer with this token. Returns true if one was removed.
     bool remove(Token tok) {
+        assert(emit_depth_ == 0 && "Emitter::remove called from an observer during emit()");
         return std::erase_if(observers_,
                              [tok](auto const& e) { return e.first == tok; }) != 0;
     }
@@ -147,6 +150,19 @@ public:
     void emit(E&& e) const {
         if (observers_.empty())
             return;
+        // Depth counter backing the documented rule that an observer must not
+        // add()/remove() on this Emitter while it is handling an event (that
+        // would mutate the list being iterated). Nested emits are fine -- they
+        // only read the list -- so this is a depth, not a flag, and RAII so a
+        // throwing observer does not leave it stuck.
+        struct Guard {
+            int& depth;
+            explicit Guard(int& d) noexcept
+                : depth(d) {
+                ++depth;
+            }
+            ~Guard() { --depth; }
+        } guard {emit_depth_};
         Event const ev(std::forward<E>(e));
         for (auto const& [tok, obs] : observers_)
             obs(ev);
@@ -154,7 +170,8 @@ public:
 
 private:
     std::vector<std::pair<Token, Observer>> observers_;
-    Token last_ = 0;
+    Token last_             = 0;
+    mutable int emit_depth_ = 0;
 };
 
 } // namespace ecs::event

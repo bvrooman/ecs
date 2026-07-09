@@ -32,7 +32,7 @@ static auto each_chunk(Signature query, Kernel kernel) {
     return [query  = std::move(query),
             kernel = std::move(kernel)](World& w, Commands&, WorkerPool&) {
         for (auto const ai : w.matching_archetypes(query)) {
-            auto& arch = *w.archetypes()[ai];
+            auto& arch = dynamic::WorldOps::archetype_at(w, ai);
             if (arch.size() > 0)
                 kernel(arch.size(), arch);
         }

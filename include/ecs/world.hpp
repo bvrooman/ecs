@@ -49,6 +49,9 @@ namespace dynamic {
 struct WorldOps;
 }
 
+template <class... Cs>
+class Query; // defined in query.hpp; befriended for mutable archetype access
+
 class World {
 public:
     World() {
@@ -116,8 +119,11 @@ public:
     }
 
     // --- archetype access (used by queries) -------------------------------
+    // Read-only. The mutable view is private: exposing it publicly would let
+    // any World& holder structurally mutate mid-wave, bypassing the
+    // Commands-only invariant the concurrency model rests on. Queries (which
+    // need mutable column access for declared writes) are friends.
     auto const& archetypes() const { return archetypes_; }
-    auto& archetypes() { return archetypes_; }
 
     // Indices of the archetypes whose signature contains all of `required`
     // (sorted). Cached per required-signature and kept current as archetypes
@@ -131,7 +137,7 @@ public:
         if (auto const it = query_cache_.find(required); it != query_cache_.end())
             return it->second;
         auto matches = std::vector<std::uint32_t> {};
-        for (auto i = 0; i < archetypes_.size(); ++i)
+        for (std::uint32_t i = 0; i < archetypes_.size(); ++i)
             if (includes_signature(archetypes_[i]->signature, required))
                 matches.push_back(i);
         return query_cache_.emplace(required, std::move(matches)).first->second;
@@ -141,6 +147,11 @@ private:
     friend class Commands;         // the mutation API; records into commands_
     friend class Schedule;         // creates Commands and flushes at barriers
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
+    template <class... Cs>
+    friend class Query; // needs mutable columns for its declared writes
+
+    // Mutable archetype access for the friends above.
+    auto& archetypes() { return archetypes_; }
 
     struct Record {
         std::uint32_t archetype  = 0;
@@ -275,12 +286,20 @@ private:
 
     template <class Factory>
     auto make_archetype(Signature const& sig, Factory&& makeColumns) -> std::uint32_t {
-        auto const idx  = archetypes_.size();
+        auto const idx  = static_cast<std::uint32_t>(archetypes_.size());
         auto arch       = std::make_unique<Archetype>();
         arch->signature = sig;
         makeColumns(*arch);
-        sig_index_.emplace(sig, idx);
+        // Publish the archetype before indexing it: if the index insertion ran
+        // first and push_back then threw, sig_index_ would map this signature
+        // to an out-of-bounds slot forever.
         archetypes_.push_back(std::move(arch));
+        try {
+            sig_index_.emplace(sig, idx);
+        } catch (...) {
+            archetypes_.pop_back();
+            throw;
+        }
         // Extend any existing query caches the new archetype matches (runs at
         // flush, single-threaded; queries only read caches during a wave).
         auto lock = std::lock_guard(query_cache_mutex_);

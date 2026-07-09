@@ -18,6 +18,8 @@
 
 #include "entity.hpp"
 #include "soa.hpp"
+#include <cassert>
+#include <cstdint>
 #include <memory>
 #include <type_traits>
 #include <unordered_map>
@@ -55,6 +57,10 @@ struct Column final : IColumn {
     std::size_t emplace_default() override { return store.emplace_default(); }
     std::size_t swap_remove(std::size_t row) override { return store.swap_remove(row); }
     void move_row_to(IColumn& dst, std::size_t row) override {
+        // A ComponentId bookkeeping bug would make this cast silent UB; catch
+        // it loudly in debug builds.
+        assert(dynamic_cast<Column*>(&dst) &&
+               "Column::move_row_to: destination column has a different type");
         auto& d = static_cast<Column&>(dst);
         d.store.push_back(store.gather(row));
     }

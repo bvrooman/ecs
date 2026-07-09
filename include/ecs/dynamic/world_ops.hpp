@@ -172,6 +172,14 @@ struct WorldOps {
         });
     }
 
+    // Mutable access to one archetype, for host-side (JS) view construction over
+    // matching_archetypes() indices. World's mutable archetype accessor is
+    // private -- the dynamic layer reaches it via friendship, keeping the escape
+    // hatch scoped to this module rather than the public World API.
+    static Archetype& archetype_at(World& w, std::uint32_t i) {
+        return *w.archetypes_[i];
+    }
+
     // The first archetype that contains `id`, and its DynamicColumn -- the base
     // for a typed-array view. (Per-archetype iteration over all matches is
     // Phase B; for now the host arranges a single matching archetype.)

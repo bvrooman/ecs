@@ -5,6 +5,9 @@
 #pragma once
 
 #include "reflection/type_names.hpp"
+#include <atomic>
+#include <compare>
+#include <cstdint>
 #include <functional>
 
 namespace ecs {
@@ -16,16 +19,34 @@ struct Entity {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;
 
-    friend bool operator==(Entity, Entity) = default;
+    // A sentinel that can never be handed out by the world (indices are
+    // allocated from 0 upward and 2^32-1 is unreachable in practice), for "no
+    // entity" fields. Note Entity{} is NOT null -- it is a valid handle for the
+    // first entity ever spawned.
+    static constexpr Entity null() noexcept {
+        return Entity {0xFFFF'FFFFu, 0xFFFF'FFFFu};
+    }
+    // True when this handle is not the null() sentinel.
+    [[nodiscard]]
+    explicit constexpr operator bool() const noexcept {
+        return !(*this == null());
+    }
+
+    friend bool operator==(Entity, Entity)  = default;
+    friend auto operator<=>(Entity, Entity) = default;
 };
 
 // Stable, process-local id assigned to each component type on first use.
 using ComponentId = std::uint32_t;
 
 namespace detail {
+    // Atomic: component_id<T> instantiations are magic statics, but each guards
+    // only its *own* initialization -- two distinct component types first
+    // touched on two threads would otherwise race on the shared counter and
+    // could be handed the same id (silently aliasing their columns).
     inline ComponentId next_component_id() noexcept {
-        static ComponentId counter = 0;
-        return counter++;
+        static std::atomic<ComponentId> counter {0};
+        return counter.fetch_add(1, std::memory_order_relaxed);
     }
 } // namespace detail
 

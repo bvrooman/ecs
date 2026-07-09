@@ -1,6 +1,7 @@
 // World / archetype / query tests.
 #include "check.hpp"
 #include "setup.hpp"
+#include <utility>
 
 using namespace ecs;
 
@@ -166,7 +167,7 @@ static void spawn_goes_directly_to_final_archetype() {
     CHECK((query<Position, Velocity>(w).count() == 100));
     // Only the empty archetype and {Position, Velocity} exist -- spawning does not
     // pass through (and leave behind) an empty intermediate {Position} archetype.
-    CHECK(w.archetypes().size() == 2);
+    CHECK(std::as_const(w).archetypes().size() == 2);
 }
 
 static void query_cache_sees_archetypes_created_after_first_query() {

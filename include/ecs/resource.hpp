@@ -17,6 +17,7 @@
 #pragma once
 
 #include "reflection/type_names.hpp"
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <type_traits>
@@ -28,9 +29,11 @@ namespace ecs {
 using ResourceId = std::uint32_t;
 
 namespace detail {
+    // Atomic for the same reason as next_component_id(): concurrent first-touch
+    // of two resource_id<T> instantiations must not hand out the same id.
     inline ResourceId next_resource_id() noexcept {
-        static ResourceId counter = 0;
-        return counter++;
+        static std::atomic<ResourceId> counter {0};
+        return counter.fetch_add(1, std::memory_order_relaxed);
     }
 } // namespace detail
 

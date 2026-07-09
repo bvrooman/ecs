@@ -18,6 +18,7 @@
 
 #include "reflection/reflect.hpp"
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <tuple>
@@ -94,9 +95,14 @@ public:
     // into `row` (== new size if the last element was removed), so callers can
     // patch up any external row<->entity bookkeeping.
     auto swap_remove(std::size_t row) {
+        assert(size_ > 0 && row < size_ && "soa_storage::swap_remove: row out of range");
         auto const last = size_ - 1;
         apply_columns([&](auto&... col) {
-            ((col[row] = std::move(col[last])), ...);
+            // Skip the move when removing the last row: self-move-assignment is
+            // only valid-but-unspecified for well-behaved types and outright
+            // wrong for naive user-defined move assignments.
+            if (row != last)
+                ((col[row] = std::move(col[last])), ...);
             (col.pop_back(), ...);
         });
         --size_;
@@ -109,7 +115,9 @@ public:
     // Contiguous view over the I-th field across all elements: the SoA payoff.
     // The explicit object parameter lets one definition serve both const and
     // mutable callers -- the span's element constness follows that of `self`.
+    // Constrained to lvalues: a span into a temporary storage would dangle.
     template <std::size_t I, class Self>
+        requires std::is_lvalue_reference_v<Self>
     auto column(this Self&& self) noexcept {
         auto& c = std::get<I>(self.columns_);
         return std::span(c.data(), c.size());
@@ -120,6 +128,7 @@ public:
     // the field index is only known at run time. Dispatches i through a static
     // table of per-field getters.
     void* field_base(std::size_t i) noexcept {
+        assert(i < field_count && "soa_storage::field_base: field index out of range");
         static constexpr std::array<void* (*)(soa_storage&), field_count> getters =
             []<std::size_t... I>(std::index_sequence<I...>) {
                 return std::array<void* (*)(soa_storage&), field_count> {
@@ -161,7 +170,10 @@ public:
     T gather(std::size_t) const { return T {}; }
     void set(std::size_t, T const&) noexcept {}
     auto emplace_default() { return size_++; }
-    auto swap_remove(std::size_t) { return --size_; }
+    auto swap_remove(std::size_t) {
+        assert(size_ > 0 && "soa_storage::swap_remove: empty tag column");
+        return --size_;
+    }
     void* field_base(std::size_t) noexcept { return nullptr; } // no fields
 
 private:
