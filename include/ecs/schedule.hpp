@@ -21,11 +21,14 @@
 // systems are conflict-free. A `phase<N>` tag gives coarse ordering across
 // barriers independent of conflicts.
 //
-// Execution (run(world, WorkerPool&)): systems run sequentially in level order,
-// but each system's Query::for_each_chunk splits its rows across the pool's
-// lanes -- data parallelism *within* a system. Recorded edits flush at each
-// level barrier. `run(world)` is sugar for a 1-lane (serial) pool. See
-// worker_pool.hpp.
+// Execution (run(world, WorkerPool&)): each wave is flattened into WORK ITEMS
+// -- kernel systems (add_kernel) contribute one item per row-range slice of
+// their matched archetypes, imperative systems one opaque item each -- sorted
+// longest-first and claimed dynamically by the pool's lanes from a single
+// dispatch. Data parallelism within and across a wave's systems falls out of
+// the one mechanism; see run() for the full story. Recorded edits flush at
+// each level barrier. `run(world)` is sugar for a 1-lane (serial) pool, which
+// claims items in list order and is fully deterministic. See worker_pool.hpp.
 
 #pragma once
 
@@ -37,6 +40,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -54,27 +58,6 @@ template <int>
 struct phase {};
 
 using SystemId = std::uint64_t;
-
-// How Schedule::run executes the systems within one wave.
-//
-// sequential_systems (the default, and the measured sweet spot for a tight
-// fixed-timestep loop -- see DESIGN.md §5): systems run one after another on
-// the calling thread, and EACH system's queries split their rows across all of
-// the pool's lanes. Parallelism comes from within a system.
-//
-// concurrent_systems: a wave's systems -- proven conflict-free by the access
-// analysis -- are themselves fanned out across the pool's lanes, claimed
-// dynamically so an expensive system does not serialize the cheap ones behind
-// it. Each such system is bound to a 1-lane pool, so its queries iterate
-// inline on its lane (nested dispatch on the wave's pool is an error by
-// design; see WorkerPool). This wins when a schedule has MANY small systems
-// per wave (each below the data-parallel threshold, where sequential mode is
-// effectively single-threaded). Two caveats: per-system schedule events are
-// emitted around the whole wave (observer callbacks are not thread-safe), and
-// the cross-shard order of Commands recorded by different systems -- already
-// unspecified -- additionally varies run to run, so prefer sequential mode
-// when bit-perfect reproducibility of structural edits matters (lockstep).
-enum class RunPolicy { sequential_systems, concurrent_systems };
 
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with
@@ -172,6 +155,13 @@ namespace detail {
         static World& bind(World& w, Commands&, WorkerPool&) { return w; }
     };
 
+    // Build the chunk argument for component C over rows [b, e) of an
+    // archetype -- the kernel-system counterpart of Query's private chunk_arg.
+    template <class C>
+    chunk<C> make_chunk(Archetype& arch, std::size_t b, std::size_t e) {
+        return chunk<C>(arch.column<std::remove_const_t<C>>().store, b, e);
+    }
+
 } // namespace detail
 
 // The events Schedule::run emits as it executes, as one std::variant -- each
@@ -223,12 +213,33 @@ public:
         SystemId id = 0;
         std::string name;
         SystemAccess access;
+        // Imperative body (add/add_once/add_dynamic): opaque to the scheduler,
+        // so the whole system is ONE work item. Null for kernel systems.
         // move_only_function (not function) so a system may capture a move-only
         // value (e.g. a unique_ptr or a move_only_function of its own).
         ecs::detail::move_only_function<void(World&, Commands&, WorkerPool&)> run;
+        // Kernel body (add_kernel): the executor slices the matched rows into
+        // work items and invokes this once per (archetype, row-range) item.
+        // Null for imperative systems.
+        ecs::detail::move_only_function<
+            void(World&, std::uint32_t, std::size_t, std::size_t)>
+            run_range;
+        Signature query_sig; // kernel systems: sorted required-component ids
         int phase         = 0;
         std::size_t level = 0;
         bool once         = false;
+
+        [[nodiscard]]
+        bool is_kernel() const noexcept {
+            return static_cast<bool>(run_range);
+        }
+
+        // Kernel systems: match list memoized against the world's archetype
+        // generation (same idea as Query's per-type memo, but keyed per system
+        // record since the component set is a runtime value here).
+        std::vector<std::uint32_t> const* matches = nullptr;
+        std::uint64_t match_world                 = 0;
+        std::uint64_t match_gen                   = ~std::uint64_t {0};
     };
 
     // Register a system. Its access is derived from its parameter types; an
@@ -248,6 +259,58 @@ public:
     template <class Fn, int P = 0>
     SystemId add_once(std::string name, Fn&& fn, phase<P> = {}) {
         return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
+    }
+
+    // Register a KERNEL system: the declarative form of the for_each_chunk
+    // pattern -- a component list plus a chunk kernel, invoked as
+    //   fn(std::span<Entity>, chunk<Cs>...)
+    // over row ranges the executor chooses. Access is derived from Cs exactly
+    // like Query<Cs...> (const = read, non-const = write).
+    //
+    // Unlike an imperative add() system (an opaque callable the executor must
+    // run whole), a kernel system's iteration is VISIBLE to the scheduler: the
+    // executor slices its matched rows into work items and overlaps them with
+    // the rest of the wave's items across the pool's lanes (see run()). Kernel
+    // ranges of one system are disjoint and cross-system conflicts are leveled,
+    // so the same race-freedom argument as for_each_chunk applies -- but the
+    // kernel must still be independent per-row work (no shared mutable state).
+    // A kernel system holds no Query and no pool, so the nested-dispatch error
+    // is unreachable in this form. Prefer add_kernel for data-parallel hot
+    // systems; use add() when a system needs Commands, resources, WorldView,
+    // reductions, or ordered iteration.
+    template <class... Cs, class Fn, int P = 0>
+    SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
+        static_assert(sizeof...(Cs) > 0,
+                      "add_kernel<Cs...>: at least one component type required");
+        static_assert(ecs::detail::are_distinct_v<std::remove_const_t<Cs>...>,
+                      "add_kernel<Cs...>: duplicate component type (ignoring const)");
+        static_assert(
+            std::is_invocable_v<std::decay_t<Fn>&, std::span<Entity>, chunk<Cs>...>,
+            "add_kernel<Cs...> kernel must be callable as "
+            "fn(std::span<Entity>, chunk<Cs>...)");
+        System sys;
+        sys.id   = ++next_id_;
+        sys.name = std::move(name);
+        (detail::declare_component<Cs>(sys.access), ...);
+        normalize(sys.access);
+        sys.phase     = P;
+        sys.query_sig = [] {
+            auto v = Signature {component_id<std::remove_const_t<Cs>>...};
+            std::ranges::sort(v);
+            return v;
+        }();
+        sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
+                                                    std::uint32_t ai,
+                                                    std::size_t b,
+                                                    std::size_t e) mutable {
+            auto& arch = *w.archetypes()[ai];
+            fn(std::span(arch.entities).subspan(b, e - b),
+               detail::make_chunk<Cs>(arch, b, e)...);
+        };
+        auto const id = sys.id;
+        systems_.push_back(std::move(sys));
+        dirty_ = true;
+        return id;
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -323,19 +386,40 @@ public:
         run(world, serial);
     }
 
-    // The executor. Systems run sequentially in dependency (wave) order; each
-    // system's Query::for_each_chunk splits its rows across the pool's lanes --
-    // data parallelism *within* a system, so it scales with cores beyond the
-    // handful of independent systems a wave offers. A 1-lane pool is plain serial
-    // execution. Recorded edits flush at each wave barrier; one-shot systems are
-    // removed afterwards. A system that throws (in its body or a parallel kernel)
-    // propagates the exception out of run(); the aborted run's recorded edits are
-    // DISCARDED (they must not leak into a later run's first flush, possibly of a
-    // different schedule sharing this world) and a TickAbort event is emitted in
-    // place of the remaining End events.
-    void run(World& world,
-             WorkerPool& pool,
-             RunPolicy policy = RunPolicy::sequential_systems) {
+    // The WORK-ITEM executor. Each wave (whose members are conflict-free by
+    // construction) is flattened into one list of work items:
+    //
+    //   * a kernel system (add_kernel) contributes one item per row-range
+    //     slice of each archetype its component set matches (~lanes x 8 items,
+    //     so dynamic claiming absorbs differing per-row kernel costs), and
+    //   * an imperative system (add/add_once/add_dynamic) contributes itself
+    //     as a single opaque item.
+    //
+    // The list is sorted longest-first (greedy LPT -- the biggest work cannot
+    // become the straggler at the join) and executed with ONE pool dispatch:
+    // every lane claims items from an atomic cursor until none remain. A heavy
+    // kernel system's slices therefore overlap both with each other AND with
+    // the wave's other systems -- data parallelism within and across systems
+    // from a single fork-join, no task queue. Imperative items run bound to
+    // the shared 1-lane pool (their queries iterate inline on their lane); the
+    // common single-system wave short-circuits to run that system inline on
+    // the caller with the full pool, which preserves exact per-system observer
+    // timing there (multi-system waves emit balanced Begin/End pairs around
+    // the wave instead -- observers are not thread-safe).
+    //
+    // Item CONTENTS are deterministic (same slices, same sorted order every
+    // tick); item-to-lane assignment is not, so the cross-shard replay order
+    // of Commands recorded by different systems in one wave -- already
+    // unspecified -- varies run to run. A 1-lane pool claims items in list
+    // order on the caller and remains fully deterministic.
+    //
+    // Recorded edits flush at each wave barrier; one-shot systems are removed
+    // afterwards. A system that throws (in its body or a kernel item)
+    // propagates out of run(); the aborted run's recorded edits are DISCARDED
+    // (they must not leak into a later run's first flush, possibly of a
+    // different schedule sharing this world) and a TickAbort event is emitted
+    // in place of the remaining End events.
+    void run(World& world, WorkerPool& pool) {
         rebuild();
         using namespace sched_event;
         events_.emit(TickBegin {waves_.size()});
@@ -343,12 +427,19 @@ public:
         std::size_t lvl = 0;
         for (auto const& wave : waves_) {
             events_.emit(WaveBegin {lvl, wave.size()});
-            bool const concurrent = policy == RunPolicy::concurrent_systems &&
-                                    wave.size() > 1 && pool.lanes() > 1;
-            if (concurrent)
-                run_wave_concurrent(wave, world, cmds, pool, lvl);
-            else
-                run_wave_sequential(wave, world, cmds, pool, lvl);
+            build_items(wave, world, pool.lanes());
+            if (wave.size() == 1) {
+                auto const& s = systems_[wave[0]];
+                events_.emit(SystemBegin {s.id, s.name});
+                run_items(world, cmds, pool, lvl, s.id);
+                events_.emit(SystemEnd {s.id});
+            } else {
+                run_items(world, cmds, pool, lvl, SystemId {0});
+                for (auto const idx : wave) {
+                    events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
+                    events_.emit(SystemEnd {systems_[idx].id});
+                }
+            }
             try {
                 world.apply_commands(); // cleans up its own pending commands on throw
             } catch (...) {
@@ -370,60 +461,119 @@ public:
 private:
     event::Emitter<ScheduleEvent> events_;
 
-    void run_wave_sequential(std::vector<std::size_t> const& wave,
-                             World& world,
-                             Commands& cmds,
-                             WorkerPool& pool,
-                             std::size_t lvl) {
-        using namespace sched_event;
+    // One unit of claimable work: a row-range of one kernel system's matched
+    // archetype, or (archetype == kImperative) an entire opaque system.
+    struct WorkItem {
+        std::uint32_t system;    // index into systems_
+        std::uint32_t archetype; // world archetype index, or kImperative
+        std::uint32_t begin, end;
+    };
+    static constexpr std::uint32_t kImperative = 0xFFFF'FFFFu;
+    // A slice below this many rows is not worth a separate claim.
+    static constexpr std::size_t kMinItemRows = 1024;
+
+    // Flatten one wave into items_ (capacity retained across waves and ticks:
+    // no steady-state allocation) and sort longest-first with a deterministic
+    // tie-break. Imperative items -- unknown cost -- sort ahead of everything.
+    void build_items(std::vector<std::size_t> const& wave,
+                     World& world,
+                     unsigned lanes) {
+        items_.clear();
         for (auto const idx : wave) {
-            events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
-            try {
-                systems_[idx].run(world, cmds, pool);
-            } catch (...) {
-                world.discard_commands();
-                events_.emit(TickAbort {lvl, systems_[idx].id});
-                throw;
+            auto& s = systems_[idx];
+            if (!s.is_kernel()) {
+                items_.push_back({std::uint32_t(idx), kImperative, 0, 0});
+                continue;
             }
-            events_.emit(SystemEnd {systems_[idx].id});
+            if (s.match_world != world.instance_id() ||
+                s.match_gen != world.archetype_generation()) {
+                s.matches     = &world.matching_archetypes(s.query_sig);
+                s.match_world = world.instance_id();
+                s.match_gen   = world.archetype_generation();
+            }
+            std::size_t total = 0;
+            for (auto const ai : *s.matches)
+                total += world.archetypes()[ai]->size();
+            if (total == 0)
+                continue;
+            // ~lanes x 8 items per kernel system: enough oversubscription for
+            // dynamic claiming to balance differing per-row kernel costs, with
+            // a floor so an item always amortizes its claim. (An archetype
+            // smaller than the grain still yields its own item -- a claim is
+            // one fetch_add, far cheaper than the alternative bookkeeping.)
+            std::size_t const grain =
+                lanes <= 1 ? total
+                           : std::max<std::size_t>(
+                                 kMinItemRows,
+                                 total / (std::size_t {lanes} * 8));
+            for (auto const ai : *s.matches) {
+                auto const n = world.archetypes()[ai]->size();
+                for (std::size_t b = 0; b < n; b += grain) {
+                    auto const e = std::min(n, b + grain);
+                    items_.push_back({std::uint32_t(idx),
+                                      ai,
+                                      std::uint32_t(b),
+                                      std::uint32_t(e)});
+                }
+            }
+        }
+        std::ranges::sort(items_, [](WorkItem const& a, WorkItem const& b) {
+            bool const ia = a.archetype == kImperative;
+            bool const ib = b.archetype == kImperative;
+            if (ia != ib)
+                return ia; // imperative (unknown cost) first
+            auto const ra = a.end - a.begin;
+            auto const rb = b.end - b.begin;
+            if (ra != rb)
+                return ra > rb; // then longest first (LPT)
+            return std::tie(a.system, a.archetype, a.begin) <
+                   std::tie(b.system, b.archetype, b.begin);
+        });
+    }
+
+    // Execute items_: a lone item runs inline on the caller (an imperative
+    // system then gets the FULL pool -- the common single-system wave keeps
+    // today's within-system data parallelism); otherwise one dispatch, every
+    // lane claiming items from an atomic cursor. Imperative items are bound to
+    // the shared 1-lane pool so their queries iterate inline on their lane (a
+    // nested dispatch on `pool` is an error by design; see WorkerPool). Any
+    // throw aborts the run: recorded edits are discarded and TickAbort emitted.
+    void run_items(World& world,
+                   Commands& cmds,
+                   WorkerPool& pool,
+                   std::size_t lvl,
+                   SystemId aborted) {
+        if (items_.empty())
+            return;
+        try {
+            if (items_.size() == 1) {
+                run_item(items_[0], world, cmds, pool);
+            } else {
+                std::atomic<std::size_t> next {0};
+                auto& inner = ecs::detail::serial_pool(); // 1-lane: dispatch-free
+                pool.parallel_for(
+                    items_.size(), /*min_parallel=*/2, [&](std::size_t, std::size_t) {
+                        // Every lane claims items until none remain; the handed
+                        // [b, e) slice is ignored in favor of dynamic claims.
+                        for (auto i = next.fetch_add(1, std::memory_order_relaxed);
+                             i < items_.size();
+                             i = next.fetch_add(1, std::memory_order_relaxed))
+                            run_item(items_[i], world, cmds, inner);
+                    });
+            }
+        } catch (...) {
+            world.discard_commands();
+            events_.emit(sched_event::TickAbort {lvl, aborted});
+            throw;
         }
     }
 
-    // Fan the wave's (conflict-free) systems across the pool's lanes, claimed
-    // dynamically from an atomic cursor for load balancing. The systems
-    // themselves are bound to the shared 1-lane serial pool: a nested dispatch
-    // on `pool` is an error (see WorkerPool::parallel_for), so a system run
-    // this way iterates its queries inline on its lane by construction rather
-    // than by a runtime fallback. Observer callbacks are not thread-safe, so
-    // per-system Begin/End events bracket the whole wave dispatch instead of
-    // each system. A throwing system aborts the run at the join, exactly like
-    // the sequential path.
-    void run_wave_concurrent(std::vector<std::size_t> const& wave,
-                             World& world,
-                             Commands& cmds,
-                             WorkerPool& pool,
-                             std::size_t lvl) {
-        using namespace sched_event;
-        for (auto const idx : wave)
-            events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
-        std::atomic<std::size_t> next {0};
-        auto& inner = ecs::detail::serial_pool(); // 1-lane: dispatch-free
-        try {
-            pool.parallel_for(wave.size(), /*min_parallel=*/2, [&](std::size_t, std::size_t) {
-                // Every lane joins in and claims systems until none are left --
-                // the handed [b, e) slice is ignored in favor of dynamic claims.
-                for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
-                     i < wave.size();
-                     i = next.fetch_add(1, std::memory_order_relaxed))
-                    systems_[wave[i]].run(world, cmds, inner);
-            });
-        } catch (...) {
-            world.discard_commands();
-            events_.emit(TickAbort {lvl, SystemId {0}});
-            throw;
-        }
-        for (auto const idx : wave)
-            events_.emit(SystemEnd {systems_[idx].id});
+    void run_item(WorkItem const& it, World& world, Commands& cmds, WorkerPool& pool) {
+        auto& s = systems_[it.system];
+        if (it.archetype == kImperative)
+            s.run(world, cmds, pool);
+        else
+            s.run_range(world, it.archetype, it.begin, it.end);
     }
 
     void prune_once() {
@@ -543,6 +693,7 @@ private:
 
     std::vector<System> systems_;
     std::vector<std::vector<std::size_t>> waves_;
+    std::vector<WorkItem> items_; // per-wave scratch, capacity retained
     SystemId next_id_ = 0;
     bool dirty_       = true;
 };

@@ -62,6 +62,8 @@ static void setup(World& w) {
     w.emplace_resource<Rng>(Rng {std::mt19937 {12345u}}); // fixed seed: reproducible
     w.emplace_resource<TripleBuffer<RenderSnapshot>>();
     w.emplace_resource<Clock>(Clock {0.0f});
+    w.emplace_resource<Emitter>(
+        Emitter {cfg::kEmitPerTick, cfg::kOriginX, cfg::kOriginY});
 }
 
 static void
@@ -100,6 +102,77 @@ static std::pair<Stats, double> measure(int warm, int n, RunOne&& run_one) {
     return {Stats::of(std::move(us)), allocs};
 }
 
+// --- imperative vs kernel systems (the work-item executor) -----------------
+// One conflict-free wave: 8 tiny disjoint-write systems + 1 heavy system over
+// the same entities. Registered imperatively, every system is one opaque work
+// item -- the heavy one cannot be split, so it is the wave's straggler.
+// Registered as kernel systems, the heavy system's rows slice across lanes and
+// overlap the tiny systems' items in the same single dispatch.
+namespace shape {
+template <int>
+struct Small {
+    float v;
+};
+struct Heavy {
+    float v;
+};
+
+inline float heavy_step(float v) {
+    // Compute-bound (a dependent sqrt chain), so the heavy system dominates
+    // the wave -- the shape where slicing it matters.
+    for (int k = 0; k < 32; ++k)
+        v = std::sqrt(v * v + 1.0f);
+    return v;
+}
+
+template <int I>
+void add_small(ecs::Schedule& s, bool kernel) {
+    auto body = [](std::span<ecs::Entity>, ecs::chunk<Small<I>> c) {
+        for (auto& v : c.template column<0>())
+            v = v * 1.0001f + 0.5f;
+    };
+    if (kernel)
+        s.add_kernel<Small<I>>("small", body);
+    else
+        s.add("small", [body](ecs::Query<Small<I>> q) mutable {
+            q.for_each_chunk(body);
+        });
+}
+
+inline void build(ecs::Schedule& s, bool kernel) {
+    [&]<int... I>(std::integer_sequence<int, I...>) {
+        (add_small<I>(s, kernel), ...);
+    }(std::make_integer_sequence<int, 8> {});
+    auto body = [](std::span<ecs::Entity>, ecs::chunk<Heavy> c) {
+        for (auto& v : c.column<0>())
+            v = heavy_step(v);
+    };
+    if (kernel)
+        s.add_kernel<Heavy>("heavy", body);
+    else
+        s.add("heavy", [body](ecs::Query<Heavy> q) mutable {
+            q.for_each_chunk(body);
+        });
+}
+
+inline void populate(ecs::World& w, std::size_t n) {
+    ecs::Schedule init;
+    init.add_once("seed", [n](ecs::Commands& cmd) {
+        for (std::size_t i = 0; i < n; ++i)
+            cmd.spawn(Small<0> {1},
+                      Small<1> {1},
+                      Small<2> {1},
+                      Small<3> {1},
+                      Small<4> {1},
+                      Small<5> {1},
+                      Small<6> {1},
+                      Small<7> {1},
+                      Heavy {1});
+    });
+    init.run(w);
+}
+} // namespace shape
+
 int main(int argc, char** argv) {
     int const measured = argc > 1 ? std::atoi(argv[1]) : 5000;
     int const warm     = 800;
@@ -133,6 +206,23 @@ int main(int argc, char** argv) {
         WorkerPool pool {t};
         auto [st, al] = measure(warm, measured, [&] { s.run(w, pool); });
         report("workerpool", t, st, al);
+    }
+
+    // Imperative vs kernel registration of the same 9-system wave (see shape::).
+    std::printf("\nimperative vs kernel systems: 8 small + 1 heavy, one wave, "
+                "40k entities\n");
+    int const shape_ticks = std::max(200, measured / 10);
+    for (bool kernel : {false, true}) {
+        for (unsigned t : {1u, hw}) {
+            World w;
+            shape::populate(w, 40'000);
+            Schedule s;
+            shape::build(s, kernel);
+            WorkerPool pool {t};
+            auto [st, al] =
+                measure(warm / 4, shape_ticks, [&] { s.run(w, pool); });
+            report(kernel ? "kernel" : "imperative", t, st, al);
+        }
     }
     return 0;
 }

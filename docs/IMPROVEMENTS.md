@@ -13,8 +13,8 @@ that introduced this document; the rest are recorded as a roadmap.
 2. **[done]** Guard `WorkerPool` against nested dispatch — a `Query` used
    inside a chunk kernel clobbered the shared job slot (silent corruption or
    deadlock); a nested dispatch now throws `std::logic_error` (disallowed by
-   design; the concurrent-wave executor avoids nesting structurally by
-   binding fanned-out systems to a 1-lane pool).
+   design; the work-item executor avoids nesting structurally — kernel systems
+   hold no pool at all, and imperative items bind a 1-lane pool).
 3. **[done]** Fix the native/dynamic column type confusion — `register_native<T>`
    made `Registry::is_dynamic()` lie, and `WorldOps` then `static_cast`ed a
    `Column<T>` to `DynamicColumn`: UB reachable from the JS host path.
@@ -24,11 +24,14 @@ that introduced this document; the rest are recorded as a roadmap.
    `for_each_chunk`/`for_each_parallel` splitting and sharded command
    recording previously ran serial-only in the entire suite (every query test
    was below the 256-row parallel threshold).
-6. **[done — opt-in]** Cross-system parallelism: waves ran systems
-   sequentially, so the conflict analysis bought nothing but flush placement.
-   `Schedule::run(world, pool, RunPolicy::concurrent_systems)` now dispatches
-   a wave's conflict-free systems across lanes (default remains sequential;
-   see DESIGN.md §5 for the measured rationale and the determinism caveat).
+6. **[done]** Cross-system parallelism, via the **work-item executor**: each
+   wave is flattened into one LPT-sorted item list — declarative kernel
+   systems (`add_kernel<Cs...>`) contribute row-range slices, imperative
+   systems one opaque item each — executed with a single dispatch, lanes
+   claiming items dynamically. Replaces the interim opt-in `RunPolicy`;
+   `benchmarks/schedule_bench` shows ~2.2x on a mixed heavy+small wave.
+   (See DESIGN.md §5; a full DAG/job-graph executor remains roadmap and this
+   item model is its foundation.)
 7. Query filters (`Without`/`With`/`Optional`) and change detection
    (`Changed`/`Added`) — the two most-missed ECS features vs bevy/flecs; both
    fit this design cheaply (see §6).
@@ -67,9 +70,9 @@ that introduced this document; the rest are recorded as a roadmap.
 - **[done]** Nested `parallel_for` overwrote the pool's single job slot while
   lanes were mid-flight; now detected and rejected with `std::logic_error`
   (compile-time prevention is not expressible — lambda captures are opaque to
-  the type system — so the sanctioned nested context, the concurrent-wave
-  executor, avoids nesting structurally instead: fanned-out systems bind a
-  1-lane pool).
+  the type system — so the sanctioned nested context, the work-item executor,
+  avoids nesting structurally instead: kernel systems hold no pool, imperative
+  items bind a 1-lane one).
 - **[done]** `next_component_id()` / `next_resource_id()` were plain
   `counter++` on shared statics — two types first-touched on two threads could
   get the same id, silently aliasing columns and merging conflict analysis.
@@ -103,7 +106,8 @@ that introduced this document; the rest are recorded as a roadmap.
 ## 2. Performance
 
 ### Scheduling & parallelism
-- **[done — opt-in]** Cross-system parallelism (see item 6 above).
+- **[done]** Cross-system parallelism via the work-item executor (see item 6
+  above); `RunPolicy` was interim and removed.
 - **[done]** `for_each_chunk` paid one fork-join barrier per archetype and
   applied the 256-row serial threshold per archetype; now a single flattened
   `parallel_for` over the total row count, mapping global ranges to

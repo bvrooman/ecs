@@ -152,9 +152,46 @@ static void nested_query_inside_kernel_throws() {
     CHECK(hits.load() == 10'000);
 }
 
-// RunPolicy::concurrent_systems: a wave of conflict-free systems fans out
-// across lanes. Results must be exactly what sequential execution produces.
-static void concurrent_systems_policy_matches_sequential() {
+// A kernel system's rows are sliced into work items and claimed across lanes;
+// every row of every matching archetype must be visited exactly once per tick.
+static void kernel_system_covers_every_row() {
+    World w;
+    std::size_t const n = 20'000;
+    setup(w, [&](Commands& cmd) {
+        for (std::size_t i = 0; i < n; ++i) {
+            cmd.spawn(Position {}, Velocity {1, 2});
+            if (i % 3 == 0) // second matching archetype
+                cmd.spawn(Position {}, Velocity {1, 2}, Health {1});
+        }
+    });
+
+    Schedule s;
+    s.add_kernel<Position, const Velocity>(
+        "integrate",
+        [](std::span<Entity>, chunk<Position> p, chunk<const Velocity> v) {
+            auto px = p.column<0>();
+            auto vx = v.column<0>();
+            for (std::size_t i = 0; i < px.size(); ++i)
+                px[i] += vx[i];
+        });
+
+    WorkerPool pool {4};
+    int const ticks = 5;
+    for (int t = 0; t < ticks; ++t)
+        s.run(w, pool);
+
+    bool all_exact = true;
+    query<const Position>(w).for_each_serial([&](auto& p) {
+        if (p.x != float(ticks))
+            all_exact = false;
+    });
+    CHECK(all_exact);
+}
+
+// A mixed wave -- kernel systems, imperative systems, and a command recorder,
+// all conflict-free -- flattens into one item list; results must be exactly
+// what sequential execution would produce, on both a 1-lane and a 4-lane pool.
+static void mixed_wave_flattened_dispatch_is_exact() {
     struct A {
         float v = 0;
     };
@@ -165,35 +202,40 @@ static void concurrent_systems_policy_matches_sequential() {
         float v = 0;
     };
 
-    World w;
-    setup(w, [&](Commands& cmd) {
-        for (int i = 0; i < 5'000; ++i)
-            cmd.spawn(A {}, B {}, C {});
-    });
+    for (unsigned lanes : {1u, 4u}) {
+        World w;
+        setup(w, [&](Commands& cmd) {
+            for (int i = 0; i < 5'000; ++i)
+                cmd.spawn(A {}, B {}, C {});
+        });
 
-    Schedule s;
-    s.add("a", [](Query<A> q) { q.for_each_serial([](auto& a) { a.v += 1; }); });
-    s.add("b", [](Query<B> q) { q.for_each_serial([](auto& b) { b.v += 2; }); });
-    s.add("c", [](Query<C> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<C> c) {
+        Schedule s;
+        s.add_kernel<A>("a", [](std::span<Entity>, chunk<A> a) {
+            for (auto& v : a.column<0>())
+                v += 1;
+        });
+        s.add("b", [](Query<B> q) { q.for_each_serial([](auto& b) { b.v += 2; }); });
+        s.add_kernel<C>("c", [](std::span<Entity>, chunk<C> c) {
             for (auto& v : c.column<0>())
                 v += 3;
         });
-    });
-    CHECK(s.level_count() == 1); // all three are conflict-free: one wave
+        s.add("spawner", [](Commands& cmd) { cmd.spawn(B {100}); });
+        CHECK(s.level_count() == 1); // all conflict-free: one wave, one dispatch
 
-    WorkerPool pool {4};
-    int const ticks = 50;
-    for (int t = 0; t < ticks; ++t)
-        s.run(w, pool, RunPolicy::concurrent_systems);
+        WorkerPool pool {lanes};
+        int const ticks = 20;
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
 
-    bool exact = true;
-    query<const A, const B, const C>(w).for_each_serial(
-        [&](auto& a, auto& b, auto& c) {
-            if (a.v != float(ticks) || b.v != 2.f * ticks || c.v != 3.f * ticks)
-                exact = false;
-        });
-    CHECK(exact);
+        bool exact = true;
+        query<const A, const B, const C>(w).for_each_serial(
+            [&](auto& a, auto& b, auto& c) {
+                if (a.v != float(ticks) || b.v != 2.f * ticks || c.v != 3.f * ticks)
+                    exact = false;
+            });
+        CHECK(exact);
+        CHECK(w.size() == 5'000u + std::size_t(ticks)); // spawner ran every tick
+    }
 }
 
 int main() {
@@ -201,6 +243,7 @@ int main() {
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
     RUN_SUITE(commands_recorded_from_parallel_kernel);
     RUN_SUITE(nested_query_inside_kernel_throws);
-    RUN_SUITE(concurrent_systems_policy_matches_sequential);
+    RUN_SUITE(kernel_system_covers_every_row);
+    RUN_SUITE(mixed_wave_flattened_dispatch_is_exact);
     return REPORT();
 }

@@ -213,32 +213,54 @@ resource id spaces, so a shared mutable resource serializes two systems even
 when their component access is disjoint. A `WorldView` (reads-everything) system
 conflicts only with writers — two `WorldView` readers still run concurrently —
 while a `World&` (exclusive) system conflicts with everything. Each system is assigned a **level** equal to
-`1 + max(level)` over earlier conflicting systems; the executor runs systems in
-level order, and same-level systems are conflict-free (any order). Parallelism
-comes from *within* each system, not from running different systems at once.
+`1 + max(level)` over earlier conflicting systems; the executor runs waves in
+level order, and same-level systems are conflict-free (any order).
 
-Execution (`parallel/worker_pool.hpp`): `run(world, pool)` runs the systems
-**sequentially in level order**, but each system's `Query::for_each_chunk`
-splits its archetype rows **across the pool's lanes** — data parallelism *within*
-a system rather than across systems, so it scales with cores beyond the handful
-of independent systems a level offers. The `WorkerPool` is built once and reused
+Execution (`Schedule::run(world, pool)`) is a **work-item executor**: each wave
+is flattened into one list of items and executed with a single fork-join
+dispatch on the `WorkerPool`. A **kernel system** — registered declaratively as
+a component list plus a chunk kernel via `add_kernel<Cs...>(name, fn)`, with
+access derived from `Cs` exactly like `Query<Cs...>` — contributes one item per
+row-range slice of each archetype it matches (about `lanes × 8` slices, floored
+at 1024 rows), because its iteration is *visible* to the scheduler. An
+**imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
+may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
+contributes itself as a single item; inside a multi-item wave it is bound to a
+1-lane pool, so its queries iterate inline on the lane that claimed it (the
+common single-system wave instead runs inline on the caller with the full pool,
+so a lone system's `for_each_chunk` still fans across every lane). Items are
+sorted longest-first (greedy LPT — the biggest work cannot become the join's
+straggler) and claimed by the lanes from an atomic cursor, so a heavy kernel
+system's slices overlap both with each other and with the wave's other systems:
+data parallelism *within and across* systems from one dispatch, no task queue.
+Item contents and order are deterministic; item→lane assignment is not (a
+1-lane pool claims in list order and is fully deterministic). `run(world)` is
+sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
+buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
+with the heavy system registered as a kernel, because an opaque heavy system is
+an unsliceable straggler.
+
+The `WorkerPool` (`parallel/worker_pool.hpp`) is built once and reused
 every tick: `lanes` resident threads (the caller is lane 0) stay alive and
 spin-wait on a generation counter, so a dispatch never creates, wakes, or sleeps
 a thread — the wakeup/barrier latency that hurts a general work-stealing pool.
 The cost is that idle lanes keep their cores busy, so an N-lane pool must leave a
 core for each other hot thread (a render/main thread) rather than oversubscribe;
 *parking* idle lanes to free those cores was tried and measured markedly worse
-for a fixed-timestep loop, where the per-tick wakeup latency dwarfs the idle-core
-cost it saves (so spinning stays). Each dispatch splits `[0, rows)` into equal
-contiguous slices (deterministic load balancing, no work stealing) and is
-allocation-free (the kernel is referenced via a static trampoline, not stored);
-the first exception from any lane is rethrown on the caller, so a throwing system
-escapes `run()` as it would serially. A 1-lane pool is plain single-threaded
-execution, and `run(world)` is sugar for it.
-Commands flush at each level barrier. (This replaced an earlier
-`std::execution`/P2300 backend: a general async framework that parallelized only
-*across* systems and woke workers per wave, it cost more than it saved for a
-tight fixed-timestep loop — see `benchmarks/schedule_bench`.)
+for a fixed-timestep loop — twice: on a condition variable and again on a
+bounded-spin-then-futex hybrid — the per-tick wakeup latency dwarfs the
+idle-core cost it saves (so spinning stays). A dispatch is allocation-free (the
+kernel is referenced via a static trampoline, not stored) and **not
+re-entrant**: there is one job slot, so a nested `parallel_for` on the same pool
+throws rather than corrupting the in-flight dispatch (kernel systems cannot
+reach this by construction; an imperative system that iterates one pool-bound
+query inside another's kernel can). The first exception from any lane is
+rethrown on the caller, so a throwing system escapes `run()` as it would
+serially. Commands flush at each level barrier. (An earlier
+`std::execution`/P2300 backend — a general async framework that parallelized
+only *across* systems and woke workers per wave — cost more than it saved for a
+tight fixed-timestep loop and was removed; the work-item executor gets the
+cross-system overlap without the task-queue overhead.)
 
 ### What the scheduler trusts
 
