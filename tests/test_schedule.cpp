@@ -39,7 +39,6 @@ static void leveling_respects_conflicts() {
 static void parallel_systems_are_independent_levels() {
     Schedule sched;
     // Three systems with disjoint writes -> all level 0, fully parallel.
-    auto x = [](Query<Position>) {};
     sched.add("a", [](Query<Position>) {});
     sched.add("b", [](Query<Velocity>) {});
     sched.add("c", [](Query<Health>) {});
@@ -149,6 +148,36 @@ static void system_exception_propagates() {
     CHECK(caught);
 }
 
+// A run that throws mid-wave must DISCARD the edits recorded before the throw:
+// they must not leak into a later run's first flush (which could even belong
+// to a different schedule sharing the world).
+static void aborted_run_discards_recorded_commands() {
+    World w;
+    Schedule bad;
+    bad.add("spawner", [](Commands& cmd) {
+        cmd.spawn(Position {1, 1}); // recorded before the throw...
+    });
+    bad.add("boom", [](Query<const Position>) {
+        throw std::runtime_error("boom");
+    });
+
+    bool threw = false;
+    try {
+        bad.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.size() == 0); // nothing flushed by the failed run
+
+    // A subsequent clean run on the same world must not replay the discarded
+    // spawn.
+    Schedule ok;
+    ok.add_once("noop", [](Commands&) {});
+    ok.run(w);
+    CHECK(w.size() == 0);
+}
+
 // The observer hook is a general, always-available core feature -- an observer is
 // any callable void(ScheduleEvent const&). This one counts the boundaries it is
 // notified of and, on SystemBegin, appends its tag to a shared log so notification
@@ -225,6 +254,7 @@ int main() {
     RUN_SUITE(worldview_reads_all_parallel_but_after_writers);
     RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
     RUN_SUITE(system_exception_propagates);
+    RUN_SUITE(aborted_run_discards_recorded_commands);
     RUN_SUITE(multiple_observers_notified_in_order);
     return REPORT();
 }

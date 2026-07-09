@@ -32,6 +32,36 @@
       }
     },
     {
+      "name": "asan-config",
+      "displayName": "ASan+UBSan (clang, portable reflection)",
+      "description": "Debug build of the test suite under AddressSanitizer + UndefinedBehaviorSanitizer.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "ECS_USE_P2996": "OFF",
+        "ECS_SANITIZE": "address;undefined",
+        "ECS_BUILD_BENCHMARKS": "OFF",
+        "ECS_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
+      "name": "tsan-config",
+      "displayName": "TSan (clang, portable reflection)",
+      "description": "Debug build of the test suite under ThreadSanitizer.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "ECS_USE_P2996": "OFF",
+        "ECS_SANITIZE": "thread",
+        "ECS_BUILD_BENCHMARKS": "OFF",
+        "ECS_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
       "name": "wasm-config",
       "displayName": "WASM (Emscripten)",
       "description": "WebAssembly build via a host Emscripten SDK",
@@ -63,6 +93,16 @@
       "name": "wasm-build",
       "displayName": "WASM Build (all targets)",
       "configurePreset": "wasm-config"
+    },
+    {
+      "name": "asan-build",
+      "displayName": "ASan+UBSan Build",
+      "configurePreset": "asan-config"
+    },
+    {
+      "name": "tsan-build",
+      "displayName": "TSan Build",
+      "configurePreset": "tsan-config"
     }
   ]
 }

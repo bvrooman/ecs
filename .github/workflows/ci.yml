@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Portable-reflection builds on stock compilers, Debug (assert paths) and
+  # Release. The P2996 path needs GCC 16, which no runner image ships yet --
+  # revisit when it lands in ubuntu images.
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: clang-18 Debug
+            cxx: clang++-18
+            build_type: Debug
+            packages: clang-18
+          - name: clang-18 Release
+            cxx: clang++-18
+            build_type: Release
+            packages: clang-18
+          - name: gcc-14 Debug
+            cxx: g++-14
+            build_type: Debug
+            packages: g++-14
+          - name: gcc-14 Release
+            cxx: g++-14
+            build_type: Release
+            packages: g++-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ${{ matrix.packages }}
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DECS_USE_P2996=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The library's core claims -- lock-free handoff, spin/park pool, sharded
+  # command recording -- are exactly what the sanitizers exist to check.
+  sanitizers:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan+UBSan
+            preset: asan-config
+            build_dir: build-asan
+          - name: TSan
+            preset: tsan-config
+            build_dir: build-tsan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-18 libclang-rt-18-dev
+          sudo ln -sf $(which clang++-18) /usr/local/bin/clang++
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build ${{ matrix.build_dir }}
+      - name: Test
+        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
+
+  # Emscripten build of the wasm targets + the node smoke tests. Validates the
+  # ILP32 hash paths, the portable reflection backend under wasm, and the
+  # atomic_shared_ptr fallback (Emscripten's libc++).
+  wasm:
+    name: wasm (Emscripten)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - name: Configure
+        run: >
+          emcmake cmake -S . -B build-wasm
+          -DCMAKE_BUILD_TYPE=Release
+          -DECS_BUILD_TESTS=OFF
+          -DECS_BUILD_EXAMPLES=OFF
+          -DECS_BUILD_BENCHMARKS=OFF
+          -DECS_BUILD_TOOLS=OFF
+      - name: Build
+        run: cmake --build build-wasm
+      - name: Smoke test (single-threaded core)
+        run: node build-wasm/web/ecs_smoke.js
+      - name: Smoke test (dynamic components)
+        run: node build-wasm/web/smoke_dynamic.mjs
+      - name: Smoke test (parallel JS kernels)
+        run: node build-wasm/web/ecs_parallel_smoke.js

@@ -1,7 +1,9 @@
 // World / archetype / query tests.
 #include "check.hpp"
 #include "setup.hpp"
+#include <string>
 #include <utility>
+#include <vector>
 
 using namespace ecs;
 
@@ -181,6 +183,70 @@ static void query_cache_sees_archetypes_created_after_first_query() {
     CHECK((query<Position, Velocity>(w).count() == 1));
 }
 
+// Repeated add/remove of the same component cycles an entity between two
+// archetypes through the (cached-after-first-use) edge path; values must
+// survive every hop and the row bookkeeping must stay exact.
+static void add_remove_churn_preserves_data() {
+    World w;
+    Entity a, b;
+    setup(w, [&](Commands& cmd) {
+        a = cmd.spawn(Position {1, 2});
+        b = cmd.spawn(Position {3, 4});
+    });
+
+    Schedule s;
+    auto churn = s.add("churn", [&](Query<const Position>, Commands& cmd) {
+        if (w.has<Velocity>(a))
+            cmd.remove<Velocity>(a);
+        else
+            cmd.add(a, Velocity {9, 9});
+    });
+    for (int i = 0; i < 20; ++i)
+        s.run(w);
+    s.remove(churn);
+
+    CHECK(w.get<Position>(a).x == 1.f);
+    CHECK(w.get<Position>(b).x == 3.f);
+    CHECK(!w.has<Velocity>(a)); // 20 toggles: back off
+    CHECK(w.size() == 2);
+}
+
+// Components with heap-owning fields must survive spawn, archetype hops, and
+// swap-remove intact (exercises the move-based relocation path; run under
+// ASAN this also proves no leak/double-free).
+struct Label {
+    std::string text;
+    std::vector<int> data;
+};
+static void heap_owning_component_survives_transitions() {
+    World w;
+    Entity keep {}, dead {};
+    setup(w, [&](Commands& cmd) {
+        keep = cmd.spawn(Position {0, 0},
+                         Label {"the quick brown fox jumps over strings' SSO",
+                                {1, 2, 3, 4, 5}});
+        dead = cmd.spawn(Position {0, 0}, Label {"short", {6}});
+    });
+    setup(w, [&](Commands& cmd) {
+        cmd.add(keep, Velocity {1, 1}); // relocate {P,L} -> {P,L,V}
+        cmd.destroy(dead);              // swap-remove in the old archetype
+    });
+    CHECK(w.get<Label>(keep).text ==
+          "the quick brown fox jumps over strings' SSO");
+    CHECK(w.get<Label>(keep).data.size() == 5);
+    CHECK(!w.alive(dead));
+}
+
+static void entity_null_sentinel() {
+    CHECK(!Entity::null());
+    CHECK(static_cast<bool>(Entity {0, 0})); // the FIRST entity is not null
+    CHECK(Entity::null() == Entity::null());
+    World w;
+    CHECK(!w.alive(Entity::null()));
+    // operator<=> so handles sort / work in ordered containers.
+    CHECK((Entity {0, 0} < Entity {1, 0}));
+}
+
 int main() {
     RUN_SUITE(create_and_query);
     RUN_SUITE(add_remove_moves_archetype_preserving_data);
@@ -192,5 +258,8 @@ int main() {
     RUN_SUITE(const_query_marks_read_only);
     RUN_SUITE(spawn_goes_directly_to_final_archetype);
     RUN_SUITE(query_cache_sees_archetypes_created_after_first_query);
+    RUN_SUITE(add_remove_churn_preserves_data);
+    RUN_SUITE(heap_owning_component_survives_transitions);
+    RUN_SUITE(entity_null_sentinel);
     return REPORT();
 }
