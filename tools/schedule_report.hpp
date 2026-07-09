@@ -22,9 +22,10 @@
 
 #pragma once
 
-#include "ecs/schedule.hpp" // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
-#include "sink.hpp"         // ecs::diag::Sink
-#include "stats.hpp"        // ecs::diag::TickStats
+#include "ecs/event/observer.hpp" // ecs::event::overloaded
+#include "ecs/schedule.hpp"        // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
+#include "sink.hpp"                // ecs::diag::Sink
+#include "stats.hpp"               // ecs::diag::TickStats
 
 #include <chrono>
 #include <string>

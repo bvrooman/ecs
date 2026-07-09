@@ -1,39 +1,34 @@
 // ecs/event/emitter.hpp
 //
-// A minimal, standalone emitter/observer over a std::variant of event types,
-// living in namespace ecs::event (so the short name Emitter does not collide with
-// domain types like the particle-fountain Emitter under `using namespace ecs;`).
+// A minimal, standalone broadcast emitter over a std::variant of event types, in
+// namespace ecs::event (its own folder/namespace so the short name Emitter does
+// not collide with domain types like a particle-fountain Emitter component under
+// `using namespace ecs;`).
 //
 // An Emitter<Event> keeps a list of observers and broadcasts each emitted event
 // to all of them, in registration order. `Event` is a std::variant whose
 // alternatives are small structs, each carrying the data for one kind of event.
 // An observer is any callable `void(Event const&)` -- typically one that
-// std::visits the variant to react to the alternatives it cares about. The
-// `observer(...)` helper builds exactly that from a set of per-alternative
-// handlers, ignoring any alternative you don't handle; `overloaded` is the
-// visitor builder it (and std::visit) use, exposed for exhaustive visitors.
+// std::visits the variant. The visitor helpers to write one (`observer(...)`,
+// `overloaded`) live in event/observer.hpp; the Emitter itself is agnostic to
+// how an observer is built.
 //
 //   struct Opened { int fd; };
 //   struct Closed {};
 //   using Event = std::variant<Opened, Closed>;
 //
 //   ecs::event::Emitter<Event> bus;
-//   auto tok = bus.add(ecs::event::observer(
-//       [](Opened const& o) { open(o.fd); },     // reacted to
-//       [](Closed const&)   { close();    }));   // reacted to; others ignored
-//   bus.emit(Opened{3});                          // visits each observer
-//   bus.remove(tok);                              // ...or unregister by token
+//   auto tok = bus.add(ecs::event::observer(          // observer(): event/observer.hpp
+//       [](Opened const& o) { open(o.fd); },
+//       [](Closed const&)   { close();    }));        // other alternatives ignored
+//   bus.emit(Opened{3});                              // visits each observer
+//   bus.remove(tok);                                  // ...or unregister by token
 //
 //   // RAII alternative: the observer is removed when `sub` leaves scope.
-//   auto sub = bus.subscribe(ecs::event::observer([](Closed const&) { close(); }));
+//   auto sub = bus.subscribe(/* observer */);
 //
 // Observers may be stateful: a class with operator()(Event const&) registered by
-// std::ref, a reference-capturing handler, or a value-captured `mutable` handler
-// in observer() (which owns its state). See observer() and Subscription below.
-//
-// Nothing here is engine-specific -- it is a plain event bus. (A Schedule is a
-// natural owner of one over its own event variant; this header does not wire
-// that up.)
+// std::ref, a reference-capturing handler, or a value-captured `mutable` handler.
 //
 // Not thread-safe: add/remove/emit from one thread, and an observer must not add
 // to or remove from the same Emitter while it is handling an event (that would
@@ -45,35 +40,9 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace ecs::event {
-
-// overloaded{f, g, ...} is one callable whose overload set is the union of the
-// f, g, ... call operators -- the visitor half of std::visit. With no catch-all
-// it is exhaustive: std::visit fails to compile if an alternative is unhandled.
-template <class... Fs>
-struct overloaded : Fs... {
-    using Fs::operator()...;
-};
-
-// Build an observer (a callable Event -> void) from per-alternative handlers. A
-// trailing catch-all swallows any alternative none of the handlers match, so an
-// observer may react to just the events it wants. For an exhaustive visitor (a
-// compile error on a missing alternative) use overloaded + std::visit directly.
-//
-// The returned observer is `mutable`, so a handler may hold its own mutable state
-// (e.g. `[n = 0](Ev const&) mutable { ++n; }`) -- a self-contained stateful
-// observer, no external object needed. It persists across emits because the
-// Emitter stores the observer once and reuses it.
-template <class... Handlers>
-auto observer(Handlers... handlers) {
-    return [visitor = overloaded {std::move(handlers)...,
-                                  [](auto const&) {}}](auto const& event) mutable {
-        std::visit(visitor, event);
-    };
-}
 
 // A broadcast emitter over the variant type Event.
 template <class Event>

@@ -4,6 +4,7 @@
 
 #include "check.hpp"
 #include "ecs/event/emitter.hpp"
+#include "ecs/event/observer.hpp"
 
 #include <functional>
 #include <string>
