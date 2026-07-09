@@ -12,7 +12,9 @@ that introduced this document; the rest are recorded as a roadmap.
    silently apply (`command_buffer.hpp`, `schedule.hpp`).
 2. **[done]** Guard `WorkerPool` against nested dispatch — a `Query` used
    inside a chunk kernel clobbered the shared job slot (silent corruption or
-   deadlock); nested dispatches now run serial on the calling lane.
+   deadlock); a nested dispatch now throws `std::logic_error` (disallowed by
+   design; the concurrent-wave executor avoids nesting structurally by
+   binding fanned-out systems to a 1-lane pool).
 3. **[done]** Fix the native/dynamic column type confusion — `register_native<T>`
    made `Registry::is_dynamic()` lie, and `WorldOps` then `static_cast`ed a
    `Column<T>` to `DynamicColumn`: UB reachable from the JS host path.
@@ -33,9 +35,10 @@ that introduced this document; the rest are recorded as a roadmap.
 8. **[done]** Archetype edge cache + flat sorted columns — `add`/`remove`
    heap-allocated and hashed a signature per structural op, and every column
    lookup paid an `unordered_map` chase.
-9. **[done]** Wasm: futex-park idle lanes under Emscripten, `-msimd128`,
-   `-fwasm-exceptions`, and the f32-only typed-array bug in
-   `defineParallelSystem`.
+9. **[done]** Wasm: `-msimd128`, `-fwasm-exceptions`, and the f32-only
+   typed-array bug in `defineParallelSystem`. (Idle-lane parking was
+   prototyped and benchmarked for the Worker-burn problem but rejected — see
+   §2; an explicit app-driven idle API is the roadmap answer.)
 10. Install/packaging + a named-module target — no install rules, no version,
     no `find_package` support today; the module plan (§5) is mostly mechanical
     once that lands.
@@ -62,7 +65,11 @@ that introduced this document; the rest are recorded as a roadmap.
 
 ### Concurrency
 - **[done]** Nested `parallel_for` overwrote the pool's single job slot while
-  lanes were mid-flight; now detected and run serial on the calling lane.
+  lanes were mid-flight; now detected and rejected with `std::logic_error`
+  (compile-time prevention is not expressible — lambda captures are opaque to
+  the type system — so the sanctioned nested context, the concurrent-wave
+  executor, avoids nesting structurally instead: fanned-out systems bind a
+  1-lane pool).
 - **[done]** `next_component_id()` / `next_resource_id()` were plain
   `counter++` on shared statics — two types first-touched on two threads could
   get the same id, silently aliasing columns and merging conflict analysis.
@@ -101,10 +108,14 @@ that introduced this document; the rest are recorded as a roadmap.
   applied the 256-row serial threshold per archetype; now a single flattened
   `parallel_for` over the total row count, mapping global ranges to
   (archetype, row-range) segments.
-- **[done]** Idle lanes spun at 100% forever; now a bounded spin followed by
-  `atomic::wait` (futex) parking — preserving the measured in-frame dispatch
-  latency while eliminating idle burn between ticks (always parks under
-  Emscripten, where the spin also burned Worker cores for the tab's lifetime).
+- **[re-evaluated: rejected]** Idle-lane parking. A bounded-spin-then-futex
+  (`atomic::wait`) hybrid was implemented and benchmarked against pure
+  spinning: any budget that actually parks between 60–120 Hz ticks multiplied
+  dispatch p99 by 5–100× on a contended host (matching the DESIGN.md condvar
+  measurement), so the pool spins unconditionally. The idle-burn problem
+  (paused sims, Web Workers pinned at 100%) should be solved by the app
+  explicitly — destroy or stop dispatching to a pool whose work is gone; an
+  explicit `park()`/`resume()` API is a roadmap candidate.
 - **[done]** Query match lookup took a global mutex and hashed a signature
   vector on every `for_each_*`; now memoized per query type against a world
   archetype-generation counter (steady state: one relaxed load).
@@ -223,7 +234,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
   TSAN legs (`ECS_SANITIZE` CMake option), warnings enabled for tests.
 - **[done]** Multi-lane `for_each_chunk`/`for_each_parallel` tests (≥10k rows,
   every row written exactly once); command recording from parallel kernels;
-  nested-dispatch fallback; throwing-flush no-replay regression tests.
+  nested-dispatch error; throwing-flush no-replay regression tests.
 - **[done]** Benchmarks: `scale_bench` no longer hardcodes an 8-lane pool on a
   4-core host; `bench::keep` uses the `"+r,m"` constraint; `gather_bench`
   unified onto `bench.hpp`.
@@ -239,8 +250,8 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
 ## 8. Wasm & JS interop
 
-- **[done]** Idle lanes park via `atomic::wait` (futex → `Atomics.wait`)
-  instead of spinning at 100% in Workers for the tab's lifetime.
+- **[rejected]** Idle-lane parking under Emscripten (see §2) — the Worker
+  100%-burn problem needs an explicit app-driven idle API instead; roadmap.
 - **[done]** `-msimd128` (+`-mrelaxed-simd`) on web demo targets — the SoA
   vectorization pitch was scalarized on the web.
 - **[done]** `-fwasm-exceptions` on the embind targets — a JS typo in a field

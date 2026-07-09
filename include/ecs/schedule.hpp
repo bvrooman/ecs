@@ -65,8 +65,9 @@ using SystemId = std::uint64_t;
 // concurrent_systems: a wave's systems -- proven conflict-free by the access
 // analysis -- are themselves fanned out across the pool's lanes, claimed
 // dynamically so an expensive system does not serialize the cheap ones behind
-// it. Queries issued inside such a system detect the in-flight dispatch and
-// run serially on their lane. This wins when a schedule has MANY small systems
+// it. Each such system is bound to a 1-lane pool, so its queries iterate
+// inline on its lane (nested dispatch on the wave's pool is an error by
+// design; see WorkerPool). This wins when a schedule has MANY small systems
 // per wave (each below the data-parallel threshold, where sequential mode is
 // effectively single-threaded). Two caveats: per-system schedule events are
 // emitted around the whole wave (observer callbacks are not thread-safe), and
@@ -389,10 +390,14 @@ private:
     }
 
     // Fan the wave's (conflict-free) systems across the pool's lanes, claimed
-    // dynamically from an atomic cursor for load balancing. Observer callbacks
-    // are not thread-safe, so per-system Begin/End events bracket the whole
-    // wave dispatch instead of each system. A throwing system aborts the run at
-    // the join, exactly like the sequential path.
+    // dynamically from an atomic cursor for load balancing. The systems
+    // themselves are bound to the shared 1-lane serial pool: a nested dispatch
+    // on `pool` is an error (see WorkerPool::parallel_for), so a system run
+    // this way iterates its queries inline on its lane by construction rather
+    // than by a runtime fallback. Observer callbacks are not thread-safe, so
+    // per-system Begin/End events bracket the whole wave dispatch instead of
+    // each system. A throwing system aborts the run at the join, exactly like
+    // the sequential path.
     void run_wave_concurrent(std::vector<std::size_t> const& wave,
                              World& world,
                              Commands& cmds,
@@ -402,6 +407,7 @@ private:
         for (auto const idx : wave)
             events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
         std::atomic<std::size_t> next {0};
+        auto& inner = ecs::detail::serial_pool(); // 1-lane: dispatch-free
         try {
             pool.parallel_for(wave.size(), /*min_parallel=*/2, [&](std::size_t, std::size_t) {
                 // Every lane joins in and claims systems until none are left --
@@ -409,7 +415,7 @@ private:
                 for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
                      i < wave.size();
                      i = next.fetch_add(1, std::memory_order_relaxed))
-                    systems_[wave[i]].run(world, cmds, pool);
+                    systems_[wave[i]].run(world, cmds, inner);
             });
         } catch (...) {
             world.discard_commands();

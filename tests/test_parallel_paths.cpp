@@ -1,15 +1,14 @@
 // The concurrent paths the rest of the suite exercises only serially: a real
 // multi-lane query split (row counts above the pool's serial threshold),
 // command recording from parallel kernels (the sharded buffer's actual use
-// case), nested dispatch (a query inside a chunk kernel), park/wake across
-// idle gaps, and the opt-in concurrent-systems run policy.
+// case), the nested-dispatch error (a query inside a chunk kernel), and the
+// opt-in concurrent-systems run policy.
 #include "check.hpp"
 #include "ecs/ecs.hpp"
 #include "setup.hpp"
 #include <atomic>
-#include <chrono>
 #include <cstddef>
-#include <thread>
+#include <stdexcept>
 #include <vector>
 
 using namespace ecs;
@@ -114,10 +113,11 @@ static void commands_recorded_from_parallel_kernel() {
     CHECK(w.size() == 8'192);
 }
 
-// A Query used inside a chunk kernel dispatches on the pool that is already
-// mid-dispatch. That nested dispatch must fall back to serial on the calling
-// lane (re-entrancy guard) -- not corrupt the job slot or deadlock.
-static void nested_query_inside_kernel_is_safe() {
+// A Query iterated inside another query's chunk kernel would dispatch on the
+// pool that is already mid-dispatch. That is disallowed: the nested dispatch
+// throws (surfacing at the outer join like any kernel exception) instead of
+// corrupting the in-flight job slot or deadlocking.
+static void nested_query_inside_kernel_throws() {
     World w;
     setup(w, [&](Commands& cmd) {
         for (int i = 0; i < 4'096; ++i)
@@ -127,45 +127,29 @@ static void nested_query_inside_kernel_is_safe() {
     });
 
     WorkerPool pool {4};
-    std::atomic<long> total {0};
     Schedule s;
     // Both queries bind the SAME schedule pool; q2's for_each_chunk inside q's
     // kernel is a nested dispatch on a pool that is already mid-dispatch.
-    s.add("nested", [&total](Query<Position> q, Query<const Health> q2) {
-        q.for_each_chunk([&](std::span<Entity>, chunk<Position> p) {
-            long sum = 0;
-            q2.for_each_chunk([&](std::span<Entity>, chunk<const Health> h) {
-                for (auto v : h.column<0>())
-                    sum += v;
-            });
-            // Every Health entity has hp == 2.
-            total.fetch_add(sum == 2 * 4'096 ? long(p.size()) : 0,
-                            std::memory_order_relaxed);
+    s.add("nested", [](Query<Position> q, Query<const Health> q2) {
+        q.for_each_chunk([&](std::span<Entity>, chunk<Position>) {
+            q2.for_each_chunk([](std::span<Entity>, chunk<const Health>) {});
         });
     });
-    s.run(w, pool);
-    CHECK(total.load() == 4'096);
-}
-
-// Lanes park after their spin budget; a dispatch after a long idle gap (and
-// after the lanes have certainly parked) must wake them and complete.
-static void dispatch_after_park_completes() {
-    WorkerPool pool {4, /*spin_before_park=*/64};
-    std::vector<std::atomic<int>> hits(4'096);
-    for (int round = 0; round < 3; ++round) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
-        for (auto& h : hits)
-            h.store(0, std::memory_order_relaxed);
-        pool.parallel_for(hits.size(), [&](std::size_t b, std::size_t e) {
-            for (std::size_t i = b; i < e; ++i)
-                hits[i].fetch_add(1, std::memory_order_relaxed);
-        });
-        bool exact = true;
-        for (auto& h : hits)
-            if (h.load(std::memory_order_relaxed) != 1)
-                exact = false;
-        CHECK(exact);
+    bool threw = false;
+    try {
+        s.run(w, pool);
+    } catch (std::logic_error const&) {
+        threw = true;
     }
+    CHECK(threw);
+    CHECK(w.size() == 8'192); // the aborted run left the world intact
+
+    // The pool remains fully usable after the rejected nested dispatch.
+    std::atomic<int> hits {0};
+    pool.parallel_for(10'000, [&](std::size_t b, std::size_t e) {
+        hits.fetch_add(int(e - b), std::memory_order_relaxed);
+    });
+    CHECK(hits.load() == 10'000);
 }
 
 // RunPolicy::concurrent_systems: a wave of conflict-free systems fans out
@@ -216,8 +200,7 @@ int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
     RUN_SUITE(commands_recorded_from_parallel_kernel);
-    RUN_SUITE(nested_query_inside_kernel_is_safe);
-    RUN_SUITE(dispatch_after_park_completes);
+    RUN_SUITE(nested_query_inside_kernel_throws);
     RUN_SUITE(concurrent_systems_policy_matches_sequential);
     return REPORT();
 }

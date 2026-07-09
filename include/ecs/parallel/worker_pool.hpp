@@ -17,28 +17,23 @@
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
 // fixed-timestep loop, where a dispatch lands every tick and the cost that
-// matters is getting all lanes running *now*. (Parking idle lanes on a condition
-// variable was tried and measured markedly *worse* here: the per-tick wakeup
-// latency, and its jitter, dwarfs the idle-core cost it saves -- a 120 Hz loop
-// turned a ~620 us tick with a ~700 us p99 into ~1100 us with a ~6 ms p99.)
+// matters is getting all lanes running *now*. Parking idle lanes has been
+// tried and measured markedly *worse* twice: on a condition variable (a 120 Hz
+// loop turned a ~620 us tick with a ~700 us p99 into ~1100 us with a ~6 ms
+// p99) and again on a bounded-spin-then-futex (std::atomic::wait) hybrid,
+// where any budget that actually parks between 60-120 Hz ticks multiplied
+// dispatch p99 by 5-100x on a contended host. So idle lanes spin,
+// unconditionally. Size the pool to leave a performance core for each other
+// hot thread (e.g. a render/main thread) rather than oversubscribing, and
+// destroy (or simply stop dispatching to and shrink) pools whose work is gone
+// -- a paused app that must not burn idle cores should own that decision
+// explicitly rather than have the pool guess at it.
 //
-// So idle lanes spin -- but only for a bounded budget (`spin_before_park`
-// relax-iterations, roughly a few hundred microseconds by default). A lane that
-// exhausts it parks on the generation counter with std::atomic::wait -- a futex,
-// far cheaper to signal than a condition variable, and the dispatcher pays the
-// wake syscall only when a lane actually parked (a waiter count guards it). The
-// result keeps the measured in-frame dispatch latency -- consecutive dispatches
-// within a tick land well inside the budget -- while lanes no longer burn their
-// cores across the idle gap between ticks, while the sim is paused, or for the
-// lifetime of a pool that stopped ticking. Pass `WorkerPool::spin_forever` to
-// restore pure spinning. Under Emscripten lanes always park quickly:
-// cpu_relax() compiles to nothing on wasm and idle Web Workers burning 100% of
-// a core is exactly what a browser must not do (std::atomic::wait lowers to
-// Atomics.wait, which is legal on worker threads; lane 0 -- possibly the
-// browser main thread, where Atomics.wait throws -- only ever spins on the
-// join, which is bounded by kernel runtime, not idle time).
-// Size the pool to leave a performance core for each other hot
-// thread (e.g. a render/main thread) rather than oversubscribing.
+// A dispatch is NOT re-entrant: there is one job slot, so a nested
+// parallel_for on the same pool -- e.g. a query iterated from inside another
+// query's kernel -- throws std::logic_error rather than corrupting the
+// in-flight dispatch. Run inner iteration serially (for_each_serial / an
+// ad-hoc 1-lane query) or restructure the system.
 
 #pragma once
 
@@ -46,6 +41,7 @@
 #include <atomic>
 #include <cstddef>
 #include <exception>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -70,26 +66,15 @@ inline void cpu_relax() noexcept {
 
 class WorkerPool {
 public:
-    // Idle lanes spin for this many cpu_relax() iterations before parking on a
-    // futex (see the header comment). spin_forever restores pure spinning.
-    static constexpr std::size_t spin_forever = ~std::size_t {0};
-#if defined(__EMSCRIPTEN__)
-    static constexpr std::size_t default_spin = 1u << 8; // park fast on the web
-#else
-    static constexpr std::size_t default_spin = 1u << 15; // ~a few hundred us
-#endif
-
-    explicit WorkerPool(unsigned lanes, std::size_t spin_before_park = default_spin)
-        : lanes_(lanes < 1 ? 1u : lanes)
-        , spin_before_park_(spin_before_park) {
+    explicit WorkerPool(unsigned lanes)
+        : lanes_(lanes < 1 ? 1u : lanes) {
         for (unsigned w = 1; w < lanes_; ++w)
             threads_.emplace_back([this, w] { worker_main(w); });
     }
 
     ~WorkerPool() {
         stop_.store(true, std::memory_order_release);
-        gen_.fetch_add(1, std::memory_order_seq_cst); // wake spinning workers
-        gen_.notify_all();                            // and parked ones
+        gen_.fetch_add(1, std::memory_order_release); // wake spinning workers
         for (auto& t : threads_)
             t.join();
     }
@@ -128,15 +113,16 @@ public:
             return;
         }
         // Re-entrancy guard: there is ONE job slot. A nested dispatch -- a
-        // kernel that itself constructs a Query on this pool, or a second
-        // thread sharing it -- would overwrite count_/fn_/ctx_ while lanes are
-        // mid-flight on the outer job (corruption or deadlock). Run such a
-        // dispatch serially on the calling thread instead: still correct, and
-        // the outer dispatch keeps its lanes.
-        if (dispatching_.exchange(true, std::memory_order_acquire)) {
-            kernel(std::size_t {0}, count);
-            return;
-        }
+        // kernel that itself iterates a pool-bound Query, or a second thread
+        // sharing the pool -- would overwrite count_/fn_/ctx_ while lanes are
+        // mid-flight on the outer job (corruption or deadlock). Disallowed:
+        // thrown from inside an outer kernel, this surfaces at the outer
+        // dispatch's join like any kernel exception.
+        if (dispatching_.exchange(true, std::memory_order_acquire))
+            throw std::logic_error(
+                "WorkerPool::parallel_for: nested dispatch on a pool that is "
+                "already mid-dispatch (a Query iterated inside another query's "
+                "kernel?); use for_each_serial for inner iteration");
         count_ = count;
         fn_    = +[](void* ctx, std::size_t b, std::size_t e) {
             (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(b, e);
@@ -144,14 +130,8 @@ public:
         ctx_ = static_cast<void*>(&kernel);
         has_err_.store(false, std::memory_order_relaxed);
         remaining_.store(lanes_, std::memory_order_relaxed);
-        // seq_cst pairs with the seq_cst waiter bookkeeping in worker_main: if
-        // a lane decided to park before this bump became visible to it, its
-        // waiter increment is visible to the notify check below (Dekker-style),
-        // so the wake cannot be missed.
-        gen_.fetch_add(1, std::memory_order_seq_cst); // publish the job
-        if (waiters_.load(std::memory_order_seq_cst) > 0)
-            gen_.notify_all(); // wake parked lanes (skipped while they spin)
-        run_lane(0);           // the caller is lane 0
+        gen_.fetch_add(1, std::memory_order_release); // publish the job
+        run_lane(0);                                  // the caller is lane 0
         while (remaining_.load(std::memory_order_acquire) != 0)
             cpu_relax();
         dispatching_.store(false, std::memory_order_release);
@@ -191,26 +171,10 @@ private:
 #endif
         unsigned last = 0;
         for (;;) {
-            std::size_t spins = 0;
             while (gen_.load(std::memory_order_acquire) == last) {
                 if (stop_.load(std::memory_order_acquire))
                     return;
-                if (spins < spin_before_park_) {
-                    ++spins;
-                    cpu_relax();
-                    continue;
-                }
-                // Budget exhausted: park on gen_. The waiter count is bumped
-                // BEFORE the final seq_cst recheck; the dispatcher bumps gen_
-                // (seq_cst) BEFORE reading the count -- so either this lane
-                // sees the new generation here and skips the wait, or its
-                // increment is visible to the dispatcher, which then notifies.
-                waiters_.fetch_add(1, std::memory_order_seq_cst);
-                if (gen_.load(std::memory_order_seq_cst) == last &&
-                    !stop_.load(std::memory_order_acquire))
-                    gen_.wait(last, std::memory_order_acquire);
-                waiters_.fetch_sub(1, std::memory_order_relaxed);
-                spins = 0;
+                cpu_relax();
             }
             last = gen_.load(std::memory_order_acquire);
             if (stop_.load(std::memory_order_acquire))
@@ -220,7 +184,6 @@ private:
     }
 
     unsigned lanes_;
-    std::size_t spin_before_park_;
     std::vector<std::thread> threads_;
 
     // Job slot: written by the caller before it bumps gen_, read by each lane
@@ -234,7 +197,6 @@ private:
     // (with each other or the job slot) would cross-thrash them.
     alignas(kNoShare) std::atomic<unsigned> gen_ {0};       // bumped to release a job
     alignas(kNoShare) std::atomic<unsigned> remaining_ {0}; // lanes still working
-    alignas(kNoShare) std::atomic<unsigned> waiters_ {0};   // lanes parked on gen_
     std::atomic<bool> stop_ {false};
     std::atomic<bool> dispatching_ {false}; // re-entrancy guard (one job slot)
 
