@@ -8,15 +8,15 @@
 //     declare what it touches --
 //       void physics(Query<Position, const Velocity> q, ResMut<Gravity> g);
 //     Query<Cs...> (const component = read, non-const = write), Res<T>/
-//     ResMut<T>, Commands& (deferred edits), WorldView (reads everything),
-//     World& (exclusive). The scheduler derives the read/write sets from the
-//     parameters and constructs them when the system runs, so the declared
-//     access cannot drift from actual use. Opaque to the executor: one work
-//     item.
+//     ResMut<T>, Commands& (deferred edits), WorldView (reads everything).
+//     The scheduler derives the read/write sets from the parameters and
+//     constructs them when the system runs, so the declared access cannot
+//     drift from actual use. Opaque to the executor: one work item. (Raw
+//     World& is deliberately not a system parameter -- see system.hpp.)
 //
-//   * kernel (add_kernel<Cs...>): a component list plus a chunk kernel --
-//     the declarative for_each_chunk. Same access derivation, but the
-//     iteration is VISIBLE, so the executor slices it into work items.
+//   * kernel (add_kernel): the SAME signature rules, with exactly one Query
+//     parameter -- whose iteration is VISIBLE, so the executor slices it into
+//     work items, binding the Query restricted to each item's rows.
 //
 // Conflicting systems (one writes what another reads or writes) are assigned
 // wavefront *levels*; each wave is conflict-free and executed by the work-item
@@ -66,94 +66,75 @@ public:
         return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
     }
 
-    // Register a KERNEL system: the declarative form of the for_each_chunk
-    // pattern -- a component list plus a chunk kernel, invoked as
-    //   fn(std::span<Entity>, chunk<Cs>..., extras...)
-    // over row ranges the executor chooses. Access is derived from Cs exactly
-    // like Query<Cs...> (const = read, non-const = write), and from the
-    // optional trailing extras, which may be Res<T>, ResMut<T>, Commands&, or
-    // WorldView -- bound per item like any system parameter, so a kernel can
-    // read the clock, record spawns, or take ad-hoc reads without giving up
-    // slicing:
-    //   sched.add_kernel<Boid, const Position>("steer",
-    //       [](std::span<Entity>, chunk<Boid> b, chunk<const Position> p,
-    //          Res<Clock> clk, Res<Goal> goal) { ... });
-    // (A ResMut<T> extra is shared across the system's concurrently-running
-    // items -- treat it like any shared state in a for_each_chunk kernel.
-    // Query and World& are excluded: the one would recreate the nested-
-    // dispatch hazard, the other would hand parallel items unanalyzable
-    // mutable access.)
+    // Register a KERNEL system. Same signature rules as add() -- the system's
+    // parameter types declare its access -- with one structural requirement:
+    // exactly ONE Query<Cs...> parameter. That query is the iteration the
+    // executor slices: the system body is invoked once per work item with the
+    // Query restricted to that item's rows, so `q.for_each_chunk(...)` /
+    // `q.for_each_serial(...)` inside iterate just the slice, inline on the
+    // claiming lane. An imperative add() system with independent per-row work
+    // becomes a kernel system by changing one word:
     //
-    // Unlike an imperative add() system (an opaque callable the executor must
-    // run whole), a kernel system's iteration is VISIBLE to the scheduler: the
-    // executor slices its matched rows into work items and overlaps them with
-    // the rest of the wave's items across the pool's lanes (see run()). Kernel
-    // ranges of one system are disjoint and cross-system conflicts are leveled,
-    // so the same race-freedom argument as for_each_chunk applies -- but the
-    // kernel must still be independent per-row work (no shared mutable state).
-    // A kernel system holds no Query and no pool, so the nested-dispatch error
-    // is unreachable in this form. Prefer add_kernel for data-parallel hot
-    // systems; use add() when a system needs reductions or ordered iteration.
-    template <class... Cs, class Fn, int P = 0>
+    //   sched.add_kernel("steer",
+    //       [](Query<const Position, Velocity> q, Res<Clock> clk) {
+    //           q.for_each_serial([&](auto& p, auto& v) { ... });
+    //       });
+    //
+    // Unlike an imperative system (an opaque callable the executor must run
+    // whole), a kernel system's iteration is VISIBLE to the scheduler: its
+    // matched rows are sliced into work items and overlapped with the rest of
+    // the wave's items across the pool's lanes (see run()). Items of one
+    // system cover disjoint rows and cross-system conflicts are leveled, so
+    // the same race-freedom argument as for_each_chunk applies -- but the
+    // body must be independent per-row work: it runs CONCURRENTLY with the
+    // system's own other items, so a ResMut<T> parameter or captured state is
+    // shared across them (fine to read, a race to blindly mutate), and
+    // reductions or ordered iteration belong in an add() system instead.
+    // The sliced Query is bound to the shared 1-lane pool, so nothing a
+    // kernel body does can reach a nested dispatch.
+    template <class Fn, int P = 0>
     SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
-        static_assert(sizeof...(Cs) > 0,
-                      "add_kernel<Cs...>: at least one component type required");
-        static_assert(detail::are_distinct_v<std::remove_const_t<Cs>...>,
-                      "add_kernel<Cs...>: duplicate component type (ignoring const)");
         static_assert(detail::IntrospectableSystem<Fn>,
-                      "add_kernel kernel must be a plain function or a functor with "
-                      "exactly one non-template call operator -- a generic (auto-"
-                      "parameter) lambda cannot declare the chunk types");
-        using KArgs         = detail::system_args_t<Fn>;
-        constexpr auto kNC  = 1 + sizeof...(Cs); // span + one chunk per component
-        constexpr auto kLen = std::tuple_size_v<KArgs>;
-        static_assert(kLen >= kNC,
-                      "add_kernel<Cs...> kernel must be callable as "
-                      "fn(std::span<Entity>, chunk<Cs>..., extras...)");
-        if constexpr (kLen >= kNC) {
-            static_assert(
-                std::is_same_v<std::tuple_element_t<0, KArgs>, std::span<Entity>>,
-                "add_kernel: the kernel's first parameter must be std::span<Entity>");
-            static_assert(
-                []<std::size_t... I>(std::index_sequence<I...>) {
-                    return (std::is_same_v<std::tuple_element_t<1 + I, KArgs>,
-                                           chunk<Cs>> &&
-                            ...);
-                }(std::make_index_sequence<sizeof...(Cs)> {}),
-                "add_kernel<Cs...>: kernel parameter i+1 must be chunk<Cs[i]>, in "
-                "the declared component order (const included)");
-            using Extras = detail::tuple_tail<KArgs, kNC>;
-            static_assert(detail::all_kernel_extras_v<Extras>,
-                          "add_kernel: trailing kernel parameters must be Res<T>, "
-                          "ResMut<T>, Commands&, or WorldView (Query and World& are "
-                          "not allowed in a kernel -- see the comment above)");
-            System sys;
-            sys.name = std::move(name);
-            (detail::declare_component<Cs>(sys.access), ...);
-            detail::declare_params<Extras>(
-                sys.access,
-                std::make_index_sequence<std::tuple_size_v<Extras>> {});
-            sys.phase     = P;
-            sys.query_sig = [] {
-                auto v = Signature {component_id<std::remove_const_t<Cs>>...};
-                std::ranges::sort(v);
-                return v;
-            }();
-            sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
-                                                        Commands& cmds,
-                                                        std::uint32_t ai,
-                                                        std::size_t b,
-                                                        std::size_t e) mutable {
-                auto& arch = *w.archetypes()[ai];
-                [&]<class... Es>(std::type_identity<std::tuple<Es...>>) {
-                    fn(std::span(arch.entities).subspan(b, e - b),
-                       detail::make_chunk<Cs>(arch, b, e)...,
-                       detail::system_param<Es>::bind(w,
-                                                      cmds,
-                                                      parallel::serial_pool())...);
-                }(std::type_identity<Extras> {});
-            };
-            return register_system(std::move(sys));
+                      "a system must be a plain function or a functor with exactly "
+                      "one non-template call operator -- a generic (auto-parameter) "
+                      "lambda cannot work here, because the parameter TYPES are what "
+                      "declare the system's access");
+        if constexpr (detail::IntrospectableSystem<Fn>) {
+            using Args = detail::system_args_t<Fn>;
+            static_assert(detail::all_system_params_v<Args>,
+                          "unsupported system parameter type: a system may take "
+                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
+                          "(spelled exactly so -- e.g. Query by value, Commands by "
+                          "reference)");
+            static_assert(detail::query_info<Args>::count == 1,
+                          "add_kernel: the system must take exactly ONE Query<Cs...> "
+                          "parameter -- it is the iteration the executor slices into "
+                          "work items (use add() for zero or several queries)");
+            if constexpr (detail::all_system_params_v<Args> &&
+                          detail::query_info<Args>::count == 1) {
+                constexpr auto QI = detail::query_info<Args>::index;
+                using Q           = std::tuple_element_t<QI, Args>;
+                System sys;
+                sys.name  = std::move(name);
+                sys.phase = P;
+                detail::declare_params<Args>(
+                    sys.access,
+                    std::make_index_sequence<std::tuple_size_v<Args>> {});
+                sys.query_sig = detail::query_param_traits<Q>::signature();
+                sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
+                                                            Commands& cmds,
+                                                            std::uint32_t ai,
+                                                            std::size_t b,
+                                                            std::size_t e) mutable {
+                    [&]<std::size_t... I>(std::index_sequence<I...>) {
+                        fn(detail::bind_kernel_param<std::tuple_element_t<I, Args>,
+                                                     I == QI>(w, cmds, ai, b, e)...);
+                    }(std::make_index_sequence<std::tuple_size_v<Args>> {});
+                };
+                return register_system(std::move(sys));
+            } else {
+                return SystemId {0}; // unreachable: a static_assert above fired
+            }
         } else {
             return SystemId {0}; // unreachable: the static_assert above fired
         }
@@ -291,22 +272,28 @@ private:
             using Args = detail::system_args_t<Fn>;
             static_assert(detail::all_system_params_v<Args>,
                           "unsupported system parameter type: a system may take "
-                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
-                          "and World& (spelled exactly so -- e.g. Query by value, "
-                          "Commands by reference)");
-            constexpr auto N = std::tuple_size_v<Args>;
-            System sys;
-            sys.name  = std::move(name);
-            sys.phase = phase;
-            sys.once  = once;
-            detail::declare_params<Args>(sys.access, std::make_index_sequence<N> {});
-            sys.run = [fn = std::forward<Fn>(fn)](World& w,
-                                                  Commands& c,
-                                                  WorkerPool& pool) mutable {
-                detail::invoke_with_params<Args>(
-                    fn, w, c, pool, std::make_index_sequence<N> {});
-            };
-            return register_system(std::move(sys));
+                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
+                          "(spelled exactly so -- e.g. Query by value, Commands by "
+                          "reference); raw World& is deliberately not a system "
+                          "parameter");
+            if constexpr (detail::all_system_params_v<Args>) {
+                constexpr auto N = std::tuple_size_v<Args>;
+                System sys;
+                sys.name  = std::move(name);
+                sys.phase = phase;
+                sys.once  = once;
+                detail::declare_params<Args>(sys.access,
+                                             std::make_index_sequence<N> {});
+                sys.run = [fn = std::forward<Fn>(fn)](World& w,
+                                                      Commands& c,
+                                                      WorkerPool& pool) mutable {
+                    detail::invoke_with_params<Args>(
+                        fn, w, c, pool, std::make_index_sequence<N> {});
+                };
+                return register_system(std::move(sys));
+            } else {
+                return SystemId {0}; // unreachable: the static_assert above fired
+            }
         } else {
             return SystemId {0}; // unreachable: the static_assert above fired
         }

@@ -40,15 +40,24 @@
 #include "world.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <type_traits>
 
 namespace ecs {
 
+namespace detail {
+    template <class P>
+    struct query_param_traits; // schedule/system.hpp; befriended for slicing
+}
+
 template <class... Cs>
 class Query {
     template <class C>
     using bare = std::remove_const_t<C>; // component type minus the read-only mark
+
+    template <class P>
+    friend struct detail::query_param_traits;
 
     // Duplicate component types (Query<A, A> or Query<A, const A>) would hand a
     // kernel two chunks aliasing the same column -- one possibly mutable --
@@ -89,6 +98,24 @@ class Query {
         return list;
     }
 
+    // A Query restricted to rows [b, e) of ONE matching archetype -- how a
+    // kernel system's work item binds its Query parameter (the executor owns
+    // the slicing; see schedule/executor.hpp). Every iteration method then
+    // walks just that slice, inline on the calling lane. Constructed only by
+    // detail::query_param_traits (befriended above).
+    Query(World& world,
+          WorkerPool& pool,
+          std::uint32_t slice_archetype,
+          std::size_t slice_begin,
+          std::size_t slice_end)
+        : world_(world)
+        , pool_(pool)
+        , slice_arch_(slice_archetype)
+        , slice_b_(slice_begin)
+        , slice_e_(slice_end) {}
+
+    static constexpr std::uint32_t kNoSlice = 0xFFFF'FFFFu;
+
 public:
     // `pool` is the data-parallel WorkerPool the executor binds. Ad-hoc queries
     // (query()/WorldView, outside a schedule) reference a shared 1-lane serial pool,
@@ -109,6 +136,14 @@ public:
     //   q.for_each_serial([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
     void for_each_serial(F&& fn) {
+        if (slice_arch_ != kNoSlice) {
+            auto& arch = *world_.archetypes()[slice_arch_];
+            detail::for_each_row(fn,
+                                 std::span(arch.entities)
+                                     .subspan(slice_b_, slice_e_ - slice_b_),
+                                 chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
+            return;
+        }
         auto const& archs = world_.archetypes();
         for (auto const ai : matches()) {
             auto& arch      = *archs[ai];
@@ -159,6 +194,14 @@ public:
     //   });
     template <class F>
     void for_each_chunk(F&& fn) {
+        if (slice_arch_ != kNoSlice) {
+            // Sliced (kernel-item) query: exactly this row range, inline on
+            // the calling lane -- the executor already parallelized the items.
+            auto& arch = *world_.archetypes()[slice_arch_];
+            fn(std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
+               chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
+            return;
+        }
         auto const& archs   = world_.archetypes();
         auto const& matched = matches();
         // ONE dispatch over the query's total row count, with each lane mapping
@@ -195,6 +238,8 @@ public:
 
     [[nodiscard]]
     std::size_t count() const {
+        if (slice_arch_ != kNoSlice)
+            return slice_e_ - slice_b_;
         std::size_t n = 0;
         for (auto const ai : matches())
             n += world_.archetypes()[ai]->size();
@@ -211,6 +256,11 @@ private:
 
     World& world_;
     WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
+    // Slice restriction for kernel-item queries (kNoSlice = iterate all
+    // matching archetypes, the normal mode).
+    std::uint32_t slice_arch_ = kNoSlice;
+    std::size_t slice_b_      = 0;
+    std::size_t slice_e_      = 0;
 };
 
 template <class... Cs>

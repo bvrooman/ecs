@@ -3,11 +3,11 @@
 // What a registered system IS: the SystemRecord the Schedule stores, plus the
 // two protocols that populate it --
 //
-//   * the system-parameter protocol (detail::system_param<P>): how an
-//     imperative system's parameter types declare access and are bound when it
-//     runs, and
-//   * the kernel plumbing (detail::make_chunk): how a declarative kernel
-//     system's chunk arguments are built for a row range.
+//   * the system-parameter protocol (detail::system_param<P>): how a system's
+//     parameter types declare access and are bound when it runs, and
+//   * the kernel plumbing (query_param_traits / bind_kernel_param): how a
+//     kernel system's single Query parameter binds restricted to one work
+//     item's row range.
 //
 // The Schedule (schedule.hpp) consumes these; the executor (executor.hpp)
 // consumes SystemRecord.
@@ -142,15 +142,12 @@ struct system_param<WorldView> {
     static void declare(SystemAccess& a) { a.reads_all = true; }
     static WorldView bind(World& w, Commands&, WorkerPool&) { return WorldView(w); }
 };
-// Full escape hatch: a raw World& can also mutate component values through
-// a non-const query, so its access cannot be analyzed -- the system is
-// marked exclusive and runs alone. Prefer Query/Res, or WorldView for
-// read-only access.
-template <>
-struct system_param<World&> {
-    static void declare(SystemAccess& a) { a.exclusive = true; }
-    static World& bind(World& w, Commands&, WorkerPool&) { return w; }
-};
+// Note there is deliberately NO system_param<World&>: raw world access cannot
+// be analyzed and is dangerous under any concurrent executor, so it is not a
+// system parameter. Setup happens on the World directly (outside a run),
+// mutation goes through Commands, ad-hoc reads through WorldView; a system
+// registered via add_dynamic may still declare itself `exclusive` when its
+// access is genuinely unanalyzable.
 
 // A supported system parameter: anything the protocol above can declare and
 // bind. The primary system_param template is intentionally undefined, so an
@@ -172,36 +169,52 @@ inline constexpr bool is_query_param_v = false;
 template <class... Cs>
 inline constexpr bool is_query_param_v<Query<Cs...>> = true;
 
-// A parameter allowed AFTER the chunks of a kernel system. Everything a
-// kernel item binds must be safe to hand to concurrently-running items of the
-// SAME system: Res<T> (shared read), Commands& (sharded recording), WorldView
-// (read-only), and ResMut<T> (allowed, but the resource is shared across the
-// system's concurrent items -- treat it like any shared state in a
-// for_each_chunk kernel). A Query would recreate the nested-dispatch hazard
-// and a World& would hand unanalyzable mutable access to parallel items, so
-// both are excluded.
-template <class P>
-concept KernelExtraParam = SystemParam<P> && !is_query_param_v<P> &&
-                           !std::is_same_v<P, World&>;
-
+// How many parameters of Args are Query<Cs...>, and where the first one sits.
+// A kernel system must have exactly one: it is the iteration the executor
+// slices into work items.
 template <class Args>
-inline constexpr bool all_kernel_extras_v = false;
-template <class... E>
-inline constexpr bool all_kernel_extras_v<std::tuple<E...>> =
-    (KernelExtraParam<E> && ...);
-
-// The tuple of parameters after the first Off (used to slice a kernel's
-// trailing extras off its (span, chunks..., extras...) signature).
-template <class Tuple,
-          std::size_t Off,
-          class = std::make_index_sequence<std::tuple_size_v<Tuple> - Off>>
-struct tuple_tail_impl;
-template <class Tuple, std::size_t Off, std::size_t... I>
-struct tuple_tail_impl<Tuple, Off, std::index_sequence<I...>> {
-    using type = std::tuple<std::tuple_element_t<Off + I, Tuple>...>;
+struct query_info;
+template <class... A>
+struct query_info<std::tuple<A...>> {
+    static constexpr std::size_t count =
+        (std::size_t {0} + ... + (is_query_param_v<A> ? 1u : 0u));
+    static constexpr std::size_t index = [] {
+        constexpr bool is_q[] = {is_query_param_v<A>..., false};
+        for (std::size_t i = 0; i < sizeof...(A); ++i)
+            if (is_q[i])
+                return i;
+        return ~std::size_t {0};
+    }();
 };
-template <class Tuple, std::size_t Off>
-using tuple_tail = typename tuple_tail_impl<Tuple, Off>::type;
+
+// The slicing half of a kernel system's Query parameter: its required
+// signature (for match building) and the restricted bind the executor hands
+// each work item. Befriended by Query for the private pieces.
+template <class P>
+struct query_param_traits;
+template <class... Cs>
+struct query_param_traits<Query<Cs...>> {
+    static Signature const& signature() { return Query<Cs...>::required(); }
+    static Query<Cs...>
+    bind_slice(World& w, std::uint32_t archetype, std::size_t b, std::size_t e) {
+        return Query<Cs...>(w, parallel::serial_pool(), archetype, b, e);
+    }
+};
+
+// Bind one kernel-system parameter for a work item: the (single) Query binds
+// restricted to the item's rows; everything else binds through the normal
+// system_param protocol against the shared 1-lane pool (a kernel item never
+// dispatches -- the executor already parallelized the items).
+template <class P, bool Sliced>
+decltype(auto) bind_kernel_param(
+    World& w, Commands& c, std::uint32_t archetype, std::size_t b, std::size_t e) {
+    if constexpr (Sliced) {
+        return query_param_traits<P>::bind_slice(w, archetype, b, e);
+    } else {
+        (void)archetype, (void)b, (void)e;
+        return system_param<P>::bind(w, c, parallel::serial_pool());
+    }
+}
 
 // Fold a parameter pack's declared access into `a` / bind and invoke -- the
 // two halves of the imperative-system protocol, driven by Schedule::add.
@@ -213,13 +226,6 @@ template <class Args, class Fn, std::size_t... I>
 void invoke_with_params(
     Fn& fn, World& w, Commands& c, WorkerPool& pool, std::index_sequence<I...>) {
     fn(system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
-}
-
-// Build the chunk argument for component C over rows [b, e) of an archetype --
-// the kernel-system counterpart of Query's private chunk_arg.
-template <class C>
-chunk<C> make_chunk(Archetype& arch, std::size_t b, std::size_t e) {
-    return chunk<C>(arch.column<std::remove_const_t<C>>().store, b, e);
 }
 
 // A memoized query match list, keyed by (world instance, archetype

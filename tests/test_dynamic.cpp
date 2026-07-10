@@ -247,7 +247,7 @@ static void native_component_runtime_access() {
     // commands flush at the phase barrier) before the runtime system queries them.
     sched.add_once(
         "spawn",
-        [](World&, Commands& cmd) {
+        [](Commands& cmd) {
             for (int i = 0; i < 4; ++i)
                 cmd.spawn(NPos {float(i), 0.f});
         },

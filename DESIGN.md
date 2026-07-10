@@ -203,32 +203,46 @@ The system parameters are:
 | `Res<T>` / `ResMut<T>` | read / write resource T | typed resource handle |
 | `Commands&` | none (deferred side channel) | record structural edits |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
-| `World&` | *exclusive* — runs alone | full read/write escape hatch |
 
-A trailing `phase<N>` tag is the only non-parameter argument (ordering).
+A trailing `phase<N>` tag is the only non-parameter argument (ordering). A raw
+`World&` is deliberately **not** a system parameter: it cannot be analyzed and
+is unsafe under any concurrent executor. Setup happens on the `World` directly
+(outside a run), mutation goes through `Commands`, ad-hoc reads through
+`WorldView`; a system registered via `add_dynamic` may still *declare* itself
+exclusive when its access is genuinely unanalyzable.
 
 Conflict analysis: two systems conflict when one's write set intersects the
 other's read-or-write set — evaluated independently over the component and
 resource id spaces, so a shared mutable resource serializes two systems even
 when their component access is disjoint. A `WorldView` (reads-everything) system
 conflicts only with writers — two `WorldView` readers still run concurrently —
-while a `World&` (exclusive) system conflicts with everything. Each system is assigned a **level** equal to
+while a declared-`exclusive` system (`add_dynamic`) conflicts with everything. Each system is assigned a **level** equal to
 `1 + max(level)` over earlier conflicting systems; the executor runs waves in
 level order, and same-level systems are conflict-free (any order).
 
 Execution (`Schedule::run(world, pool)`) is a **work-item executor**: each wave
 is flattened into one list of items and executed with a single fork-join
-dispatch on the `WorkerPool`. A **kernel system** — registered declaratively as
-a component list plus a chunk kernel via `add_kernel<Cs...>(name, fn)`, with
-access derived from `Cs` exactly like `Query<Cs...>` — contributes one item per
-row-range slice of each archetype it matches (about `lanes × 8` slices, floored
-at 1024 rows), because its iteration is *visible* to the scheduler. The kernel
-may take trailing system parameters after its chunks — `Res<T>`, `ResMut<T>`,
-`Commands&`, `WorldView` — bound per item and folded into the derived access,
-so a components-plus-resources system (read the clock, chase a goal, record
-spawns) keeps slicing; `Query` and `World&` are excluded there (the one would
-recreate the nested-dispatch hazard, the other would hand concurrently-running
-items unanalyzable mutable access). An
+dispatch on the `WorkerPool`. A **kernel system** — `add_kernel(name, fn)`,
+same signature rules as `add()` but with exactly ONE `Query<Cs...>` parameter —
+contributes one item per row-range slice of each archetype that query matches
+(about `lanes × 8` slices, floored at 1024 rows): its iteration is *visible* to
+the scheduler, which invokes the body once per item with the Query restricted
+to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
+iterate just the slice, inline on the claiming lane. The other parameters
+(`Res<T>`, `ResMut<T>`, `Commands&`, `WorldView`) bind per item and fold into
+the derived access, so a components-plus-resources system (read the clock,
+chase a goal, record spawns) keeps slicing — and an imperative system with
+independent per-row work becomes a kernel system by changing one word:
+
+```cpp
+sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
+  q.for_each_serial([&](auto& p, auto& v) { /* ... */ });
+});
+```
+
+The body must be independent per-row work — it runs concurrently with the
+system's own other items, so a `ResMut<T>`/captured shared state is shared
+across them; reductions and ordered iteration belong in `add()` systems. An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a
@@ -280,14 +294,13 @@ remaining caveats:
   every component to const) beyond what a single `Query`/`Res` expresses, take a
   `WorldView`. It exposes nothing that can mutate, so it declares "reads
   everything": it still runs concurrently with other readers and is serialized
-  only against writers. Prefer it over `World&` whenever the access is read-only.
-* **`World&` is the full escape hatch, and it is exclusive.** A raw `World&` can
-  also mutate component values through a non-const query, so its access cannot be
-  analyzed — it is marked exclusive and runs alone. This is *loud* (it
-  serializes) rather than a silent race — reach for it only when a system truly
-  needs unanalyzable read-write access. (Resource reads from outside any system,
-  e.g. a consumer thread calling `world.resource<T>()`, remain the caller's
-  responsibility.)
+  only against writers.
+* **There is no raw-`World&` parameter.** Unanalyzable read-write access has no
+  safe meaning under a concurrent executor, so the type system simply does not
+  offer it; `add_dynamic` can declare a system `exclusive` when a runtime-typed
+  system is genuinely unanalyzable, and it then runs alone. (Resource reads from
+  outside any system, e.g. a consumer thread calling `world.resource<T>()`,
+  remain the caller's responsibility.)
 * **Commands recorded from a parallel kernel are unordered.** Structural edits
   recorded *inside* a `for_each_chunk` kernel land in per-lane shards whose
   cross-lane order is unspecified, and `reserve()`'s id handout then depends on

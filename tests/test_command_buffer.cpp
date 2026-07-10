@@ -16,7 +16,7 @@ struct Doomed {}; // tag marking entities to delete
 
 // A run context (here a setup system run inline) records mutations and flushes
 // when it ends -- so entities are live afterwards, but not during the callback.
-// (Taking World& makes the system exclusive; fine for a single setup system.)
+// (WorldView gives the read-only mid-run observation; mutation is Commands.)
 static void setup_applies_after_it_ends() {
     World w;
     Entity e;

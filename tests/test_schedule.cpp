@@ -98,8 +98,12 @@ static void worldview_reads_all_parallel_but_after_writers() {
     {
         Schedule sched;
         sched.add("observe", [](WorldView) {}); // reads everything
-        sched.add("exclusive", [](World&) {});  // unanalyzable
-        CHECK(sched.level_count() == 2);        // World& conflicts with all
+        // Raw World& is not a system parameter; a genuinely unanalyzable
+        // system declares itself exclusive via add_dynamic.
+        SystemAccess excl;
+        excl.exclusive = true;
+        sched.add_dynamic("exclusive", excl, [](World&, Commands&, WorkerPool&) {});
+        CHECK(sched.level_count() == 2); // exclusive conflicts with all
     }
 }
 

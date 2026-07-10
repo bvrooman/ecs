@@ -69,7 +69,7 @@ int main() {
     // Initial population: a one-shot setup system, deferred through Commands.
     {
         Schedule init;
-        init.add_once("populate", [&](World&, Commands& cmd) {
+        init.add_once("populate", [&](Commands& cmd) {
             for (int i = 0; i < kParticles; ++i) {
                 float f = float(i);
                 cmd.spawn(Position {f, -f, 0.5f * f},

@@ -125,34 +125,36 @@ inline float heavy_step(float v) {
     return v;
 }
 
+// add() and add_kernel() take the SAME system callable -- the registration
+// word is the only difference between the opaque and the sliceable form.
 template <int I>
 void add_small(ecs::Schedule& s, bool kernel) {
-    auto body = [](std::span<ecs::Entity>, ecs::chunk<Small<I>> c) {
-        for (auto& v : c.template column<0>())
-            v = v * 1.0001f + 0.5f;
+    auto body = [](ecs::Query<Small<I>> q) {
+        q.for_each_chunk([](std::span<ecs::Entity>, ecs::chunk<Small<I>> c) {
+            for (auto& v : c.template column<0>())
+                v = v * 1.0001f + 0.5f;
+        });
     };
     if (kernel)
-        s.add_kernel<Small<I>>("small", body);
+        s.add_kernel("small", body);
     else
-        s.add("small", [body](ecs::Query<Small<I>> q) mutable {
-            q.for_each_chunk(body);
-        });
+        s.add("small", body);
 }
 
 inline void build(ecs::Schedule& s, bool kernel) {
     [&]<int... I>(std::integer_sequence<int, I...>) {
         (add_small<I>(s, kernel), ...);
     }(std::make_integer_sequence<int, 8> {});
-    auto body = [](std::span<ecs::Entity>, ecs::chunk<Heavy> c) {
-        for (auto& v : c.column<0>())
-            v = heavy_step(v);
+    auto body = [](ecs::Query<Heavy> q) {
+        q.for_each_chunk([](std::span<ecs::Entity>, ecs::chunk<Heavy> c) {
+            for (auto& v : c.column<0>())
+                v = heavy_step(v);
+        });
     };
     if (kernel)
-        s.add_kernel<Heavy>("heavy", body);
+        s.add_kernel("heavy", body);
     else
-        s.add("heavy", [body](ecs::Query<Heavy> q) mutable {
-            q.for_each_chunk(body);
-        });
+        s.add("heavy", body);
 }
 
 inline void populate(ecs::World& w, std::size_t n) {

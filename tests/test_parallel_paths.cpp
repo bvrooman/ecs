@@ -166,14 +166,17 @@ static void kernel_system_covers_every_row() {
     });
 
     Schedule s;
-    s.add_kernel<Position, const Velocity>(
-        "integrate",
-        [](std::span<Entity>, chunk<Position> p, chunk<const Velocity> v) {
+    // Same signature rules as add(): the one Query parameter is what the
+    // executor slices; the body iterates just its item's rows.
+    s.add_kernel("integrate", [](Query<Position, const Velocity> q) {
+        q.for_each_chunk([](std::span<Entity>, chunk<Position> p,
+                            chunk<const Velocity> v) {
             auto px = p.column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < px.size(); ++i)
                 px[i] += vx[i];
         });
+    });
 
     WorkerPool pool {4};
     int const ticks = 5;
@@ -210,14 +213,17 @@ static void mixed_wave_flattened_dispatch_is_exact() {
         });
 
         Schedule s;
-        s.add_kernel<A>("a", [](std::span<Entity>, chunk<A> a) {
-            for (auto& v : a.column<0>())
-                v += 1;
+        // Kernel bodies may use the per-row ergonomic path too -- the sliced
+        // Query's for_each_serial covers just the item's rows.
+        s.add_kernel("a", [](Query<A> q) {
+            q.for_each_serial([](auto& a) { a.v += 1; });
         });
         s.add("b", [](Query<B> q) { q.for_each_serial([](auto& b) { b.v += 2; }); });
-        s.add_kernel<C>("c", [](std::span<Entity>, chunk<C> c) {
-            for (auto& v : c.column<0>())
-                v += 3;
+        s.add_kernel("c", [](Query<C> q) {
+            q.for_each_chunk([](std::span<Entity>, chunk<C> c) {
+                for (auto& v : c.column<0>())
+                    v += 3;
+            });
         });
         s.add("spawner", [](Commands& cmd) { cmd.spawn(B {100}); });
         CHECK(s.level_count() == 1); // all conflict-free: one wave, one dispatch
@@ -257,18 +263,20 @@ static void kernel_with_resource_and_commands_extras() {
     });
 
     Schedule s;
-    s.add_kernel<Position, const Velocity>(
-        "steer",
-        [](std::span<Entity> ents, chunk<Position> p, chunk<const Velocity> v,
-           Res<Clock> clk, Res<Goal> goal, Commands& cmd) {
-            auto px = p.column<0>();
-            auto vx = v.column<0>();
-            for (std::size_t i = 0; i < px.size(); ++i) {
-                px[i] += vx[i] * clk->dt;
-                if (px[i] > goal->x)
-                    cmd.destroy(ents[i]); // sharded: safe from any item
-            }
-        });
+    s.add_kernel("steer",
+                 [](Query<Position, const Velocity> q, Res<Clock> clk,
+                    Res<Goal> goal, Commands& cmd) {
+                     q.for_each_chunk([&](std::span<Entity> ents, chunk<Position> p,
+                                          chunk<const Velocity> v) {
+                         auto px = p.column<0>();
+                         auto vx = v.column<0>();
+                         for (std::size_t i = 0; i < px.size(); ++i) {
+                             px[i] += vx[i] * clk->dt;
+                             if (px[i] > goal->x)
+                                 cmd.destroy(ents[i]); // sharded: safe per item
+                         }
+                     });
+                 });
     // The Res reads must show in the derived access: a Clock WRITER conflicts.
     s.add("tick", [](ResMut<Clock>) {});
     CHECK(s.level_count() == 2);

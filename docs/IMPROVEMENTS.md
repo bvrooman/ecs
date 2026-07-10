@@ -226,7 +226,9 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 4. `run_if` conditions and explicit `before/after` ordering (today only
    registration order and `phase<N>`).
 5. Immediate edits for exclusive systems — an `ExclusiveWorld` param exposing
-   the `*_now` primitives (a `World&` system runs alone yet can't spawn).
+   the `*_now` primitives. (The raw `World&` parameter has since been removed
+   outright — unanalyzable access is not a system parameter; `ExclusiveWorld`
+   is the roadmap replacement for genuinely exclusive work.)
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
    spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
    `App`/fixed-timestep layer; larger: structural-change hooks, entity
