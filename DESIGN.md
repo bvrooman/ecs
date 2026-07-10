@@ -225,7 +225,9 @@ is flattened into one list of items and executed with a single fork-join
 dispatch on the `WorkerPool`. A **kernel system** — `add_kernel(name, fn)`,
 same signature rules as `add()` but with exactly ONE `Query<Cs...>` parameter —
 contributes one item per row-range slice of each archetype that query matches
-(about `lanes × 8` slices, floored at 1024 rows): its iteration is *visible* to
+(a fixed target of ~64 slices, floored at 1024 rows — deliberately independent
+of the lane count, so the slicing and therefore every barrier-time fold is
+identical whether the schedule runs on 1 lane or N): its iteration is *visible* to
 the scheduler, which invokes the body once per item with the Query restricted
 to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters

@@ -32,7 +32,9 @@
 #include "access.hpp"
 #include "events.hpp"
 #include "executor.hpp"
+#include "kernel_params.hpp"
 #include "system.hpp"
+#include <memory>
 #include <algorithm>
 #include <cstddef>
 #include <span>
@@ -104,11 +106,6 @@ public:
                       "declare the system's access");
         if constexpr (detail::IntrospectableSystem<Fn>) {
             using Args = detail::system_args_t<Fn>;
-            static_assert(detail::all_system_params_v<Args>,
-                          "unsupported system parameter type: a system may take "
-                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
-                          "(spelled exactly so -- e.g. Query by value, Commands by "
-                          "reference)");
             static_assert(detail::query_info<Args>::count == 1,
                           "add_kernel: the system must take exactly ONE Query<Cs...> "
                           "parameter -- it is the iteration the executor slices into "
@@ -116,31 +113,50 @@ public:
             static_assert(!detail::any_res_mut_v<Args>,
                           "add_kernel: ResMut<T> is not allowed in a kernel system -- "
                           "its work items run concurrently, so writes through ResMut "
-                          "would race. Read resources via Res<T>; a system that "
-                          "WRITES a resource is a reduction, and reductions belong "
-                          "in an add() system");
-            if constexpr (detail::all_system_params_v<Args> &&
-                          detail::query_info<Args>::count == 1 &&
-                          !detail::any_res_mut_v<Args>) {
+                          "would race. Read resources via Res<T>; fold shared state "
+                          "with Reduce<T, Op>, write gather-shaped output with "
+                          "Extract<T> (see schedule/kernel_params.hpp)");
+            static_assert(detail::kernel_params_info<Args>::all_allowed,
+                          "add_kernel: unsupported kernel parameter type -- a kernel "
+                          "system may take one Query<Cs...>, plus Res<T>, Commands&, "
+                          "WorldView, Reduce<T, Op>, and Extract<T>");
+            if constexpr (detail::query_info<Args>::count == 1 &&
+                          !detail::any_res_mut_v<Args> &&
+                          detail::kernel_params_info<Args>::all_allowed) {
                 constexpr auto QI = detail::query_info<Args>::index;
+                constexpr auto N  = std::tuple_size_v<Args>;
                 using Q           = std::tuple_element_t<QI, Args>;
+                using Info        = detail::kernel_params_info<Args>;
+                using Seq         = std::make_index_sequence<N>;
                 System sys;
                 sys.name  = std::move(name);
                 sys.phase = P;
-                detail::declare_params<Args>(
-                    sys.access,
-                    std::make_index_sequence<std::tuple_size_v<Args>> {});
+                detail::kernel_declare<Args>(sys.access, Seq {});
                 sys.query_sig = detail::query_param_traits<Q>::signature();
-                sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
-                                                            Commands& cmds,
-                                                            std::uint32_t ai,
-                                                            std::size_t b,
-                                                            std::size_t e) mutable {
-                    [&]<std::size_t... I>(std::index_sequence<I...>) {
-                        fn(detail::bind_kernel_param<std::tuple_element_t<I, Args>,
-                                                     I == QI>(w, cmds, ai, b, e)...);
-                    }(std::make_index_sequence<std::tuple_size_v<Args>> {});
+
+                // Per-item slot state for stateful parameters (Reduce/Extract),
+                // shared between the item bind and the barrier hooks; persists
+                // for the system's lifetime so slot capacity is retained.
+                auto states   = std::make_shared<typename Info::states>();
+                sys.run_range = [fn = std::forward<Fn>(fn),
+                                 states](World& w,
+                                         Commands& cmds,
+                                         std::uint32_t ai,
+                                         std::size_t b,
+                                         std::size_t e,
+                                         std::uint32_t ord) mutable {
+                    detail::kernel_invoke<Args, QI>(fn, *states, w, cmds, ai, b, e,
+                                                    ord, Seq {});
                 };
+                if constexpr (Info::any_stateful) {
+                    sys.prepare_items =
+                        [states](World& w, std::span<std::uint32_t const> rows) {
+                            detail::kernel_prepare_all<Args>(*states, w, rows, Seq {});
+                        };
+                    sys.finish_items = [states](World& w) {
+                        detail::kernel_finish_all<Args>(*states, w, Seq {});
+                    };
+                }
                 return register_system(std::move(sys));
             } else {
                 return SystemId {0}; // unreachable: a static_assert above fired
@@ -285,7 +301,8 @@ private:
                           "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
                           "(spelled exactly so -- e.g. Query by value, Commands by "
                           "reference); raw World& is deliberately not a system "
-                          "parameter");
+                          "parameter, and Reduce<T, Op>/Extract<T> are kernel-only "
+                          "(register with add_kernel)");
             if constexpr (detail::all_system_params_v<Args>) {
                 constexpr auto N = std::tuple_size_v<Args>;
                 System sys;
@@ -317,12 +334,19 @@ private:
                   WorkerPool& pool,
                   std::size_t lvl) {
         using namespace sched_event;
-        detail::build_wave_items(items_, wave, systems_, world, pool.lanes());
+        detail::build_wave_items(items_, wave, systems_, world);
+        prepare_hooks(wave, world);
         auto const lone = wave.size() == 1;
         if (lone)
             events_.emit(SystemBegin {systems_[wave[0]].id, systems_[wave[0]].name});
         try {
             detail::run_wave_items(items_, systems_, world, cmds, pool);
+            // Barrier folds (Reduce et al.) run after the join and before the
+            // command flush, single-threaded, in wave (registration) order;
+            // skipped when the dispatch aborted.
+            for (auto const idx : wave)
+                if (systems_[idx].finish_items)
+                    systems_[idx].finish_items(world);
         } catch (...) {
             world.discard_commands();
             events_.emit(TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId {0}});
@@ -337,6 +361,27 @@ private:
                 events_.emit(SystemBegin {systems_[idx].id, systems_[idx].name});
                 events_.emit(SystemEnd {systems_[idx].id});
             }
+        }
+    }
+
+    // Drive stateful kernel parameters' prepare hooks: for each hooked system,
+    // hand it its items' row counts in ordinal order (slot sizing, target
+    // pre-sizing, prefix sums). Single-threaded, before the wave's dispatch.
+    // A hooked system with zero items still prepares (its reduce target must
+    // reset to "empty reduction", its extract target resize to 0).
+    void prepare_hooks(std::vector<std::size_t> const& wave, World& world) {
+        for (auto const idx : wave) {
+            auto& s = systems_[idx];
+            if (!s.prepare_items)
+                continue;
+            rows_scratch_.clear();
+            for (auto const& it : items_)
+                if (it.system == idx && it.archetype != detail::kImperative) {
+                    if (rows_scratch_.size() <= it.ordinal)
+                        rows_scratch_.resize(it.ordinal + 1);
+                    rows_scratch_[it.ordinal] = it.end - it.begin;
+                }
+            s.prepare_items(world, rows_scratch_);
         }
     }
 
@@ -386,7 +431,8 @@ private:
     event::Emitter<ScheduleEvent> events_;
     std::vector<System> systems_;
     std::vector<std::vector<std::size_t>> waves_;
-    std::vector<detail::WorkItem> items_; // per-wave scratch, capacity retained
+    std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
+    std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     SystemId next_id_ = 0;
     bool dirty_       = true;
 };

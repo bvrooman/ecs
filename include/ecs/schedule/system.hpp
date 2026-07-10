@@ -20,6 +20,7 @@
 #include "access.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -211,21 +212,6 @@ struct query_param_traits<Query<Cs...>> {
     }
 };
 
-// Bind one kernel-system parameter for a work item: the (single) Query binds
-// restricted to the item's rows; everything else binds through the normal
-// system_param protocol against the shared 1-lane pool (a kernel item never
-// dispatches -- the executor already parallelized the items).
-template <class P, bool Sliced>
-decltype(auto) bind_kernel_param(
-    World& w, Commands& c, std::uint32_t archetype, std::size_t b, std::size_t e) {
-    if constexpr (Sliced) {
-        return query_param_traits<P>::bind_slice(w, archetype, b, e);
-    } else {
-        (void)archetype, (void)b, (void)e;
-        return system_param<P>::bind(w, c, parallel::serial_pool());
-    }
-}
-
 // Fold a parameter pack's declared access into `a` / bind and invoke -- the
 // two halves of the imperative-system protocol, driven by Schedule::add.
 template <class Args, std::size_t... I>
@@ -267,11 +253,20 @@ struct SystemRecord {
     // value (e.g. a unique_ptr or a move_only_function of its own).
     move_only_function<void(World&, Commands&, WorkerPool&)> run;
     // Kernel body (add_kernel): the executor slices the matched rows into
-    // work items and invokes this once per (archetype, row-range) item; the
-    // Commands& lets the kernel's trailing extra parameters bind. Null for
-    // imperative systems.
-    move_only_function<void(World&, Commands&, std::uint32_t, std::size_t, std::size_t)>
+    // work items and invokes this once per (archetype, row-range) item. The
+    // Commands& lets the kernel's other parameters bind; the trailing ordinal
+    // is the item's index in generation (serial-walk) order, which indexes the
+    // per-item slots of stateful parameters (Reduce/Extract -- see
+    // kernel_params.hpp). Null for imperative systems.
+    move_only_function<
+        void(World&, Commands&, std::uint32_t, std::size_t, std::size_t, std::uint32_t)>
         run_range;
+    // Barrier hooks for stateful kernel parameters (null when the system has
+    // none): prepare runs single-threaded before the wave's dispatch with the
+    // system's per-item row counts in ordinal order; finish runs single-
+    // threaded after the join, before the command flush (skipped on abort).
+    move_only_function<void(World&, std::span<std::uint32_t const>)> prepare_items;
+    move_only_function<void(World&)> finish_items;
     Signature query_sig; // kernel systems: sorted required-component ids
     MatchCache match;    // kernel systems: memoized query_sig match list
     int phase         = 0;

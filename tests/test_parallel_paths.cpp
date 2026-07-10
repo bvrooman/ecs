@@ -287,6 +287,136 @@ static void kernel_with_resource_and_commands_extras() {
     CHECK(w.size() == 0);
 }
 
+// --- the parallel-primitives slot substrate: Reduce / Extract ---------------
+
+struct FSum {
+    float v = 0;
+};
+struct FAdd {
+    void operator()(FSum& into, FSum& partial) const { into.v += partial.v; }
+};
+
+// Populate two archetypes with a value pattern whose float sum is order-
+// sensitive, so any change in partial boundaries or fold order would change
+// the bits of the result.
+static void populate_mixed(World& w, int n) {
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < n; ++i) {
+            float const x = 1.0f + float(i % 1013) * 0.03125f;
+            cmd.spawn(Position {x, 0});
+            if (i % 3 == 0)
+                cmd.spawn(Position {x * 0.5f, 0}, Health {i});
+        }
+    });
+}
+
+// Reduce: per-item partials folded at the barrier in canonical order. The
+// result must be BITWISE identical at 1 lane and 4 lanes (lane-count-
+// independent slicing + ordinal-order fold), the target must be rebuilt each
+// run (no accumulation across ticks), and the reduce's declared resource
+// write must level readers into a later wave.
+static void reduce_is_bitwise_deterministic_across_lane_counts() {
+    auto run_sum = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<FSum>();
+        populate_mixed(w, 30'000);
+        Schedule s;
+        s.add_kernel("sum", [](Query<const Position> q, Reduce<FSum, FAdd> sum) {
+            q.for_each_serial([&](auto& p) { sum->v += p.x; });
+        });
+        s.add("read", [](Res<FSum>) {}); // reader of the reduce target
+        if (s.level_count() != 2)
+            return -1.0f; // leveling broken; fail loudly below
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        return w.resource<FSum>().v;
+    };
+
+    float const serial1  = run_sum(1, 1);
+    float const parallel = run_sum(4, 1);
+    float const repeated = run_sum(4, 5); // rebuilt per run: same value after 5
+
+    // Reference: a double-precision serial walk. NOT bitwise-comparable to the
+    // sliced float fold -- per-item partials change the float summation TREE
+    // (association), which is inherent to any partitioned reduction (and both
+    // float results drift ~sqrt(n)*eps from the true sum). The guarantee under
+    // test is that the tree itself is fixed: same slicing and same fold order
+    // at every lane count and every run.
+    double expect = 0;
+    {
+        World w;
+        populate_mixed(w, 30'000);
+        query<const Position>(w).for_each_serial([&](auto& p) { expect += p.x; });
+    }
+    double const tol = expect * 1e-3;
+    CHECK(double(serial1) > expect - tol && double(serial1) < expect + tol);
+    CHECK(parallel == serial1); // 4 lanes == 1 lane, BITWISE
+    CHECK(repeated == serial1); // target rebuilt each run, not accumulated
+}
+
+// Reduce with vector partials (the clear()-keeps-capacity reset path and a
+// moving/merging Op): a filtered collect must match the serial filtered walk
+// exactly, including order.
+struct HpConcat {
+    void operator()(std::vector<int>& into, std::vector<int>& partial) const {
+        into.insert(into.end(), partial.begin(), partial.end());
+        partial.clear();
+    }
+};
+static void reduce_vector_partials_match_serial_collect() {
+    World w;
+    w.emplace_resource<std::vector<int>>();
+    populate_mixed(w, 12'000);
+
+    Schedule s;
+    s.add_kernel("collect",
+                 [](Query<const Health> q, Reduce<std::vector<int>, HpConcat> out) {
+                     q.for_each_serial([&](auto& h) {
+                         if (h.hp % 7 == 0)
+                             out->push_back(h.hp);
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t) // repeated runs: rebuilt, capacity retained
+        s.run(w, pool);
+
+    std::vector<int> expect;
+    query<const Health>(w).for_each_serial([&](auto& h) {
+        if (h.hp % 7 == 0)
+            expect.push_back(h.hp);
+    });
+    CHECK(!expect.empty());
+    CHECK(w.resource<std::vector<int>>() == expect);
+}
+
+// Extract: disjoint per-item spans over a pre-sized buffer resource. The
+// gathered buffer must equal the serial walk's output exactly (same values,
+// same order), at 4 lanes, across repeated runs.
+static void extract_matches_serial_gather_order() {
+    World w;
+    w.emplace_resource<std::vector<float>>();
+    populate_mixed(w, 20'000);
+
+    Schedule s;
+    s.add_kernel("extract",
+                 [](Query<const Position> q, Extract<std::vector<float>> out) {
+                     q.for_each_chunk([&](std::span<Entity>, chunk<const Position> p) {
+                         auto x = p.column<0>();
+                         for (std::size_t i = 0; i < x.size(); ++i)
+                             out[i] = x[i];
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t)
+        s.run(w, pool);
+
+    std::vector<float> expect;
+    query<const Position>(w).for_each_serial([&](auto& p) { expect.push_back(p.x); });
+    CHECK(w.resource<std::vector<float>>().size() == expect.size());
+    CHECK(w.resource<std::vector<float>>() == expect);
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -295,5 +425,8 @@ int main() {
     RUN_SUITE(kernel_system_covers_every_row);
     RUN_SUITE(mixed_wave_flattened_dispatch_is_exact);
     RUN_SUITE(kernel_with_resource_and_commands_extras);
+    RUN_SUITE(reduce_is_bitwise_deterministic_across_lane_counts);
+    RUN_SUITE(reduce_vector_partials_match_serial_collect);
+    RUN_SUITE(extract_matches_serial_gather_order);
     return REPORT();
 }
