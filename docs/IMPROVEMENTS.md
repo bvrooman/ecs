@@ -233,68 +233,59 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
    `App`/fixed-timestep layer; larger: structural-change hooks, entity
    relationships.
-7. **`Reduce<T, Op>`: contention-free reductions for kernel systems.**
-   `ResMut<T>` is rejected in `add_kernel` because a system's own work items
-   run concurrently — so today every reduction (sum the kinetic energy, build
-   the flock grid, find a bounding box) is an `add()` system pinned to
-   `for_each_serial`, single-threaded (mist's `grid` system is the canonical
-   example). Atomics are the wrong fix: per-row `fetch_add` from every lane
-   ping-pongs one cache line — the exact contention this library's layout
-   exists to avoid. The right fix is per-item partial accumulation with a
-   barrier-time fold:
+7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a
+   kernel system needs is ONE mechanism — per-item private slots plus an
+   optional deterministic barrier-time merge — wearing different typed faces.
+   Organized by where per-item state lives, whether output size is known, and
+   how it merges:
 
-   ```cpp
-   // Sketch. Reduce<T, Op> is a kernel-only system parameter.
-   struct Energy { double j = 0; };                     // resource: the target
+   | primitive | shape | output size | merge | status |
+   |---|---|---|---|---|
+   | kernel map | write own components in place | — | none (disjoint rows) | done |
+   | `Commands&` | structural edits | unknown | sharded flush at barrier | done |
+   | `Reduce<T, Op>` | fold state (sums, bounds, grids) | small | barrier fold, canonical order | **done** |
+   | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
+   | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | roadmap |
+   | `EventWriter/Reader<T>` | messages between systems (item 3 above) | unknown | barrier swap into double-buffered channel | roadmap — same slot plumbing as Collect |
+   | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | roadmap |
+   | `Random` | per-item deterministic RNG stream (counter-based, seeded by tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | roadmap |
+   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only) | — | none | roadmap |
+   | `Bin<K>` / group-by | counting-sort binning | buckets | two-pass count → prefix-sum → scatter | later (Reduce-of-grid covers it until profiling says otherwise) |
 
-   sched.add_kernel("energy",
-       [](Query<const Velocity, const Mass> q, Reduce<Energy, EnergyAdd> sum) {
-           q.for_each_serial([&](auto& v, auto& m) {
-               sum->j += 0.5 * m.kg * (v.x * v.x + v.y * v.y);
-           });                                          // sum-> is THIS ITEM's
-       });                                              // private partial: no
-                                                        // atomics, no sharing
-   ```
+   **The unifying prize — lane-count invariance.** Every primitive merges in
+   canonical world order, so a schedule's observable results are bitwise
+   identical at 1 lane and N lanes (including float reductions) — the property
+   lockstep/replay systems need and per-row atomics can never give. The one
+   remaining nondeterminism is `Commands` cross-shard flush order; the capstone
+   (much later) is routing kernel-recorded commands through per-item slots so
+   even structural edits become lane-count-invariant.
 
-   Mechanics sketch:
-   - **Declare**: contributes a resource WRITE on `T` to the derived access —
-     same-wave readers of `T` level after the system, exactly as if it took
-     `ResMut<T>`; the actual write happens at the barrier (single-threaded).
-   - **Bind**: the executor owns a per-wave slot array, one `T` per work item
-     (item-indexed, so no two items share a slot; slots are written once at
-     item completion, so no false sharing in the loop). `Reduce::operator->`
-     exposes this item's private partial, default-initialized per item.
-   - **Fold**: at the item-list join (before the command flush), the executor
-     folds the slots into the `T` resource with `Op` in ITEM ORDER. Item
-     contents and order are already deterministic (the LPT sort has a total
-     tie-break), so the fold is **bitwise deterministic for floats across
-     runs and across lane counts** — a property per-row atomics can never
-     give. `Op` is any `void(T& into, T const& partial)` callable.
-   - **Cost**: one `T` per item (~lanes × 8 per system), one `Op` per item at
-     the barrier; zero contention during iteration.
-   - This is the mechanism that lets mist's `grid` reduction (spatial-hash
-     build) go parallel: `Op` = bucket-list merge, partials = per-item grids.
+   **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
+   branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
+   (2) `Random` + `Scratch` (near-trivial on the substrate; unblock porting
+   mist's stochastic systems to kernels); (3) `Collect`, then Events on the
+   same plumbing; (4) `Local<T>`; (5) `Bin` and deterministic Commands later.
+   Deliberately out: parallel sort (a utility over an Extract'd buffer),
+   previous-value components (a storage feature), and any atomic/`Shared<T>`
+   wrapper (the suite exists precisely so nobody needs one).
 
-   Refinements settled in design discussion:
-   - **Fold in canonical world order**, (archetype, begin) ascending — not in
-     the LPT claim order. The fold is single-threaded at the barrier, so the
-     walk order is free to choose; canonical order makes an extraction-shaped
-     reduce reproduce exactly what a serial `for_each_serial` gather produces.
-   - **Slots persist per system and are reset, not reconstructed**, so
-     vector-like partials keep their heap capacity across ticks (preserves
-     zero-alloc-per-tick); `Op` may move out of the partial.
-   - **Sibling primitive `Extract<T>` for gather-shaped output** (snapshot /
-     render-buffer extraction): a reduction writes every element twice
-     (partial, then fold), which is fine for small partials but a full extra
-     pass for a 100k-entry snapshot. The executor already knows each item's
-     global row offset when it slices (prefix sums), so `Extract<T>` instead
-     binds each item a span over its DISJOINT slice of a pre-sized buffer
-     resource — one write per element, no fold, leveling via a declared
-     resource write, disjointness by the same argument as chunk slices. Rule
-     of thumb: `Reduce` for fold-shaped state (sums, grids, bounds),
-     `Extract` for gather-shaped output (mist: `grid` → Reduce, `extract` →
-     Extract; the TripleBuffer `publish()` stays a one-line next-wave
-     system).
+   Design notes settled in discussion (implemented for Reduce/Extract):
+   - **Fold in canonical world order** — item generation order (archetype
+     ascending, rows ascending), not LPT claim order: an extraction-shaped
+     reduce reproduces exactly what a serial `for_each_serial` gather
+     produces, and float folds are reproducible at any lane count.
+   - **Slots persist per system and are reset, not reconstructed** (`clear()`
+     when the type has one, else assign `T{}`), so vector-like partials keep
+     heap capacity across ticks — zero-alloc-per-tick holds. `Op` may move
+     out of the partial. A `Reduce` target resource is REBUILT each run
+     (reset at wave prepare), like the serial rebuild-every-tick systems it
+     replaces.
+   - **`Extract<T>`** avoids the reduction's double write for gather-shaped
+     output: the executor knows each item's global row offset when it slices
+     (prefix sums), pre-sizes the vector-like target resource once before
+     dispatch, and binds each item a span over its DISJOINT slice — one write
+     per element, no fold; leveling via a declared resource write. The
+     `TripleBuffer::publish()` stays a one-line next-wave system.
 
 ## 7. Tests, benchmarks, CI
 
