@@ -37,6 +37,8 @@
 #include <cstddef>
 #include <span>
 #include <string>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -66,9 +68,21 @@ public:
 
     // Register a KERNEL system: the declarative form of the for_each_chunk
     // pattern -- a component list plus a chunk kernel, invoked as
-    //   fn(std::span<Entity>, chunk<Cs>...)
+    //   fn(std::span<Entity>, chunk<Cs>..., extras...)
     // over row ranges the executor chooses. Access is derived from Cs exactly
-    // like Query<Cs...> (const = read, non-const = write).
+    // like Query<Cs...> (const = read, non-const = write), and from the
+    // optional trailing extras, which may be Res<T>, ResMut<T>, Commands&, or
+    // WorldView -- bound per item like any system parameter, so a kernel can
+    // read the clock, record spawns, or take ad-hoc reads without giving up
+    // slicing:
+    //   sched.add_kernel<Boid, const Position>("steer",
+    //       [](std::span<Entity>, chunk<Boid> b, chunk<const Position> p,
+    //          Res<Clock> clk, Res<Goal> goal) { ... });
+    // (A ResMut<T> extra is shared across the system's concurrently-running
+    // items -- treat it like any shared state in a for_each_chunk kernel.
+    // Query and World& are excluded: the one would recreate the nested-
+    // dispatch hazard, the other would hand parallel items unanalyzable
+    // mutable access.)
     //
     // Unlike an imperative add() system (an opaque callable the executor must
     // run whole), a kernel system's iteration is VISIBLE to the scheduler: the
@@ -79,36 +93,70 @@ public:
     // kernel must still be independent per-row work (no shared mutable state).
     // A kernel system holds no Query and no pool, so the nested-dispatch error
     // is unreachable in this form. Prefer add_kernel for data-parallel hot
-    // systems; use add() when a system needs Commands, resources, WorldView,
-    // reductions, or ordered iteration.
+    // systems; use add() when a system needs reductions or ordered iteration.
     template <class... Cs, class Fn, int P = 0>
     SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
         static_assert(sizeof...(Cs) > 0,
                       "add_kernel<Cs...>: at least one component type required");
         static_assert(detail::are_distinct_v<std::remove_const_t<Cs>...>,
                       "add_kernel<Cs...>: duplicate component type (ignoring const)");
-        static_assert(
-            std::is_invocable_v<std::decay_t<Fn>&, std::span<Entity>, chunk<Cs>...>,
-            "add_kernel<Cs...> kernel must be callable as "
-            "fn(std::span<Entity>, chunk<Cs>...)");
-        System sys;
-        sys.name = std::move(name);
-        (detail::declare_component<Cs>(sys.access), ...);
-        sys.phase     = P;
-        sys.query_sig = [] {
-            auto v = Signature {component_id<std::remove_const_t<Cs>>...};
-            std::ranges::sort(v);
-            return v;
-        }();
-        sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
-                                                    std::uint32_t ai,
-                                                    std::size_t b,
-                                                    std::size_t e) mutable {
-            auto& arch = *w.archetypes()[ai];
-            fn(std::span(arch.entities).subspan(b, e - b),
-               detail::make_chunk<Cs>(arch, b, e)...);
-        };
-        return register_system(std::move(sys));
+        static_assert(detail::IntrospectableSystem<Fn>,
+                      "add_kernel kernel must be a plain function or a functor with "
+                      "exactly one non-template call operator -- a generic (auto-"
+                      "parameter) lambda cannot declare the chunk types");
+        using KArgs         = detail::system_args_t<Fn>;
+        constexpr auto kNC  = 1 + sizeof...(Cs); // span + one chunk per component
+        constexpr auto kLen = std::tuple_size_v<KArgs>;
+        static_assert(kLen >= kNC,
+                      "add_kernel<Cs...> kernel must be callable as "
+                      "fn(std::span<Entity>, chunk<Cs>..., extras...)");
+        if constexpr (kLen >= kNC) {
+            static_assert(
+                std::is_same_v<std::tuple_element_t<0, KArgs>, std::span<Entity>>,
+                "add_kernel: the kernel's first parameter must be std::span<Entity>");
+            static_assert(
+                []<std::size_t... I>(std::index_sequence<I...>) {
+                    return (std::is_same_v<std::tuple_element_t<1 + I, KArgs>,
+                                           chunk<Cs>> &&
+                            ...);
+                }(std::make_index_sequence<sizeof...(Cs)> {}),
+                "add_kernel<Cs...>: kernel parameter i+1 must be chunk<Cs[i]>, in "
+                "the declared component order (const included)");
+            using Extras = detail::tuple_tail<KArgs, kNC>;
+            static_assert(detail::all_kernel_extras_v<Extras>,
+                          "add_kernel: trailing kernel parameters must be Res<T>, "
+                          "ResMut<T>, Commands&, or WorldView (Query and World& are "
+                          "not allowed in a kernel -- see the comment above)");
+            System sys;
+            sys.name = std::move(name);
+            (detail::declare_component<Cs>(sys.access), ...);
+            detail::declare_params<Extras>(
+                sys.access,
+                std::make_index_sequence<std::tuple_size_v<Extras>> {});
+            sys.phase     = P;
+            sys.query_sig = [] {
+                auto v = Signature {component_id<std::remove_const_t<Cs>>...};
+                std::ranges::sort(v);
+                return v;
+            }();
+            sys.run_range = [fn = std::forward<Fn>(fn)](World& w,
+                                                        Commands& cmds,
+                                                        std::uint32_t ai,
+                                                        std::size_t b,
+                                                        std::size_t e) mutable {
+                auto& arch = *w.archetypes()[ai];
+                [&]<class... Es>(std::type_identity<std::tuple<Es...>>) {
+                    fn(std::span(arch.entities).subspan(b, e - b),
+                       detail::make_chunk<Cs>(arch, b, e)...,
+                       detail::system_param<Es>::bind(w,
+                                                      cmds,
+                                                      parallel::serial_pool())...);
+                }(std::type_identity<Extras> {});
+            };
+            return register_system(std::move(sys));
+        } else {
+            return SystemId {0}; // unreachable: the static_assert above fired
+        }
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -167,7 +215,7 @@ public:
     // Run serially on the calling thread -- the shared 1-lane pool (which has
     // no worker threads and no dispatch state, so this is free). The way to do
     // setup: add_once a setup system, then run(world).
-    void run(World& world) { run(world, detail::serial_pool()); }
+    void run(World& world) { run(world, parallel::serial_pool()); }
 
     // The WORK-ITEM executor (see executor.hpp for the mechanism). Each wave
     // is flattened into one item list -- kernel systems sliced into row
@@ -234,19 +282,34 @@ private:
 
     template <class Fn>
     SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase) {
-        using Args       = detail::fn_traits<std::decay_t<Fn>>::args;
-        constexpr auto N = std::tuple_size_v<Args>;
-        System sys;
-        sys.name  = std::move(name);
-        sys.phase = phase;
-        sys.once  = once;
-        detail::declare_params<Args>(sys.access, std::make_index_sequence<N> {});
-        sys.run =
-            [fn = std::forward<Fn>(fn)](World& w, Commands& c, WorkerPool& pool) mutable {
+        static_assert(detail::IntrospectableSystem<Fn>,
+                      "a system must be a plain function or a functor with exactly "
+                      "one non-template call operator -- a generic (auto-parameter) "
+                      "lambda cannot work here, because the parameter TYPES are what "
+                      "declare the system's access");
+        if constexpr (detail::IntrospectableSystem<Fn>) {
+            using Args = detail::system_args_t<Fn>;
+            static_assert(detail::all_system_params_v<Args>,
+                          "unsupported system parameter type: a system may take "
+                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
+                          "and World& (spelled exactly so -- e.g. Query by value, "
+                          "Commands by reference)");
+            constexpr auto N = std::tuple_size_v<Args>;
+            System sys;
+            sys.name  = std::move(name);
+            sys.phase = phase;
+            sys.once  = once;
+            detail::declare_params<Args>(sys.access, std::make_index_sequence<N> {});
+            sys.run = [fn = std::forward<Fn>(fn)](World& w,
+                                                  Commands& c,
+                                                  WorkerPool& pool) mutable {
                 detail::invoke_with_params<Args>(
                     fn, w, c, pool, std::make_index_sequence<N> {});
             };
-        return register_system(std::move(sys));
+            return register_system(std::move(sys));
+        } else {
+            return SystemId {0}; // unreachable: the static_assert above fired
+        }
     }
 
     // Build and execute one wave's item list; on a throw, discard the aborted

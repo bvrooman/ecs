@@ -222,7 +222,13 @@ dispatch on the `WorkerPool`. A **kernel system** — registered declaratively a
 a component list plus a chunk kernel via `add_kernel<Cs...>(name, fn)`, with
 access derived from `Cs` exactly like `Query<Cs...>` — contributes one item per
 row-range slice of each archetype it matches (about `lanes × 8` slices, floored
-at 1024 rows), because its iteration is *visible* to the scheduler. An
+at 1024 rows), because its iteration is *visible* to the scheduler. The kernel
+may take trailing system parameters after its chunks — `Res<T>`, `ResMut<T>`,
+`Commands&`, `WorldView` — bound per item and folded into the derived access,
+so a components-plus-resources system (read the clock, chase a goal, record
+spawns) keeps slicing; `Query` and `World&` are excluded there (the one would
+recreate the nested-dispatch hazard, the other would hand concurrently-running
+items unanalyzable mutable access). An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a

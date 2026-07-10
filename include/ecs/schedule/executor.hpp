@@ -19,8 +19,7 @@
 
 #pragma once
 
-#include "../parallel/worker_pool.hpp"
-#include "../query.hpp" // detail::serial_pool
+#include "../parallel/worker_pool.hpp" // WorkerPool, parallel::serial_pool
 #include "../world.hpp"
 #include "system.hpp"
 #include <algorithm>
@@ -110,7 +109,7 @@ inline void run_work_item(WorkItem const& it,
     if (it.archetype == kImperative)
         s.run(world, cmds, pool);
     else
-        s.run_range(world, it.archetype, it.begin, it.end);
+        s.run_range(world, cmds, it.archetype, it.begin, it.end);
 }
 
 // Execute a built item list. A lone item runs inline on the caller (an
@@ -132,7 +131,7 @@ inline void run_wave_items(std::vector<WorkItem> const& items,
         return;
     }
     std::atomic<std::size_t> next {0};
-    auto& inner = serial_pool(); // 1-lane: dispatch-free, shareable
+    auto& inner = parallel::serial_pool(); // 1-lane: dispatch-free, shareable
     pool.parallel_for(items.size(), /*min_parallel=*/2, [&](std::size_t, std::size_t) {
         // Every lane claims items until none remain; the handed [b, e) slice
         // is ignored in favor of dynamic claims.

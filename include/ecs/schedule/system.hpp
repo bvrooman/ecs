@@ -28,8 +28,12 @@
 namespace ecs::detail {
 
 // --- extract a callable's parameter types ----------------------------------
+// fn_traits covers the member-call-operator forms (cv/ref/noexcept variants);
+// callable_args below is the SFINAE-friendly entry point that dispatches a
+// functor through &F::operator() and handles plain functions directly (a
+// function reference decays to the pointer form).
 template <class F>
-struct fn_traits : fn_traits<decltype(&F::operator())> {};
+struct fn_traits; // primary undefined: probed via callable_args
 template <class C, class R, class... A>
 struct fn_traits<R (C::*)(A...)> {
     using args = std::tuple<A...>;
@@ -46,10 +50,50 @@ template <class C, class R, class... A>
 struct fn_traits<R (C::*)(A...) const noexcept> {
     using args = std::tuple<A...>;
 };
-template <class R, class... A>
-struct fn_traits<R (*)(A...)> {
+template <class C, class R, class... A>
+struct fn_traits<R (C::*)(A...)&> {
     using args = std::tuple<A...>;
 };
+template <class C, class R, class... A>
+struct fn_traits<R (C::*)(A...) const&> {
+    using args = std::tuple<A...>;
+};
+template <class C, class R, class... A>
+struct fn_traits<R (C::*)(A...) & noexcept> {
+    using args = std::tuple<A...>;
+};
+template <class C, class R, class... A>
+struct fn_traits<R (C::*)(A...) const & noexcept> {
+    using args = std::tuple<A...>;
+};
+
+// SFINAE-friendly: `type` exists only for callables whose parameter list can
+// be recovered -- a functor with exactly one non-template operator() (a
+// generic lambda or an overload set fails the void_t probe rather than
+// hard-erroring), or a function pointer/reference.
+template <class F, class = void>
+struct callable_args {};
+template <class F>
+struct callable_args<F, std::void_t<decltype(&F::operator())>> {
+    using type = typename fn_traits<decltype(&F::operator())>::args;
+};
+template <class R, class... A>
+struct callable_args<R (*)(A...), void> {
+    using type = std::tuple<A...>;
+};
+template <class R, class... A>
+struct callable_args<R (*)(A...) noexcept, void> {
+    using type = std::tuple<A...>;
+};
+
+template <class F>
+using system_args_t = typename callable_args<std::decay_t<F>>::type;
+
+// A system whose parameter types can be recovered at all (the prerequisite
+// for deriving access from them).
+template <class F>
+concept IntrospectableSystem =
+    requires { typename callable_args<std::decay_t<F>>::type; };
 
 // --- system parameter protocol: declare(access) + bind(world, commands) ----
 template <class P>
@@ -108,6 +152,57 @@ struct system_param<World&> {
     static World& bind(World& w, Commands&, WorkerPool&) { return w; }
 };
 
+// A supported system parameter: anything the protocol above can declare and
+// bind. The primary system_param template is intentionally undefined, so an
+// unsupported type (Query<..> const&, T*, int, ...) fails this concept instead
+// of erroring inside an instantiation.
+template <class P>
+concept SystemParam = requires(SystemAccess& a, World& w, Commands& c, WorkerPool& p) {
+    system_param<P>::declare(a);
+    system_param<P>::bind(w, c, p);
+};
+
+template <class Args>
+inline constexpr bool all_system_params_v = false;
+template <class... A>
+inline constexpr bool all_system_params_v<std::tuple<A...>> = (SystemParam<A> && ...);
+
+template <class P>
+inline constexpr bool is_query_param_v = false;
+template <class... Cs>
+inline constexpr bool is_query_param_v<Query<Cs...>> = true;
+
+// A parameter allowed AFTER the chunks of a kernel system. Everything a
+// kernel item binds must be safe to hand to concurrently-running items of the
+// SAME system: Res<T> (shared read), Commands& (sharded recording), WorldView
+// (read-only), and ResMut<T> (allowed, but the resource is shared across the
+// system's concurrent items -- treat it like any shared state in a
+// for_each_chunk kernel). A Query would recreate the nested-dispatch hazard
+// and a World& would hand unanalyzable mutable access to parallel items, so
+// both are excluded.
+template <class P>
+concept KernelExtraParam = SystemParam<P> && !is_query_param_v<P> &&
+                           !std::is_same_v<P, World&>;
+
+template <class Args>
+inline constexpr bool all_kernel_extras_v = false;
+template <class... E>
+inline constexpr bool all_kernel_extras_v<std::tuple<E...>> =
+    (KernelExtraParam<E> && ...);
+
+// The tuple of parameters after the first Off (used to slice a kernel's
+// trailing extras off its (span, chunks..., extras...) signature).
+template <class Tuple,
+          std::size_t Off,
+          class = std::make_index_sequence<std::tuple_size_v<Tuple> - Off>>
+struct tuple_tail_impl;
+template <class Tuple, std::size_t Off, std::size_t... I>
+struct tuple_tail_impl<Tuple, Off, std::index_sequence<I...>> {
+    using type = std::tuple<std::tuple_element_t<Off + I, Tuple>...>;
+};
+template <class Tuple, std::size_t Off>
+using tuple_tail = typename tuple_tail_impl<Tuple, Off>::type;
+
 // Fold a parameter pack's declared access into `a` / bind and invoke -- the
 // two halves of the imperative-system protocol, driven by Schedule::add.
 template <class Args, std::size_t... I>
@@ -156,9 +251,11 @@ struct SystemRecord {
     // value (e.g. a unique_ptr or a move_only_function of its own).
     move_only_function<void(World&, Commands&, WorkerPool&)> run;
     // Kernel body (add_kernel): the executor slices the matched rows into
-    // work items and invokes this once per (archetype, row-range) item.
-    // Null for imperative systems.
-    move_only_function<void(World&, std::uint32_t, std::size_t, std::size_t)> run_range;
+    // work items and invokes this once per (archetype, row-range) item; the
+    // Commands& lets the kernel's trailing extra parameters bind. Null for
+    // imperative systems.
+    move_only_function<void(World&, Commands&, std::uint32_t, std::size_t, std::size_t)>
+        run_range;
     Signature query_sig; // kernel systems: sorted required-component ids
     MatchCache match;    // kernel systems: memoized query_sig match list
     int phase         = 0;

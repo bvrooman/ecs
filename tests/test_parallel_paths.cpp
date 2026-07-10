@@ -238,6 +238,47 @@ static void mixed_wave_flattened_dispatch_is_exact() {
     }
 }
 
+// Kernel systems may take trailing system parameters (Res/ResMut/Commands&/
+// WorldView), bound per item -- the mist "steer" shape: components + resources.
+static void kernel_with_resource_and_commands_extras() {
+    struct Clock {
+        float dt = 0;
+    };
+    struct Goal {
+        float x = 0;
+    };
+
+    World w;
+    w.emplace_resource<Clock>(0.5f);
+    w.emplace_resource<Goal>(10.f);
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 12'000; ++i)
+            cmd.spawn(Position {}, Velocity {2, 0});
+    });
+
+    Schedule s;
+    s.add_kernel<Position, const Velocity>(
+        "steer",
+        [](std::span<Entity> ents, chunk<Position> p, chunk<const Velocity> v,
+           Res<Clock> clk, Res<Goal> goal, Commands& cmd) {
+            auto px = p.column<0>();
+            auto vx = v.column<0>();
+            for (std::size_t i = 0; i < px.size(); ++i) {
+                px[i] += vx[i] * clk->dt;
+                if (px[i] > goal->x)
+                    cmd.destroy(ents[i]); // sharded: safe from any item
+            }
+        });
+    // The Res reads must show in the derived access: a Clock WRITER conflicts.
+    s.add("tick", [](ResMut<Clock>) {});
+    CHECK(s.level_count() == 2);
+
+    WorkerPool pool {4};
+    for (int t = 0; t < 12; ++t) // 12 ticks x 2*0.5 = +12 > 10: all destroyed
+        s.run(w, pool);
+    CHECK(w.size() == 0);
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -245,5 +286,6 @@ int main() {
     RUN_SUITE(nested_query_inside_kernel_throws);
     RUN_SUITE(kernel_system_covers_every_row);
     RUN_SUITE(mixed_wave_flattened_dispatch_is_exact);
+    RUN_SUITE(kernel_with_resource_and_commands_extras);
     return REPORT();
 }

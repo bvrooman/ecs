@@ -206,6 +206,17 @@ private:
     std::exception_ptr err_;
 };
 
+// A process-wide 1-lane WorkerPool. One lane spawns no threads and its
+// parallel_for just calls the kernel on the calling thread -- it never touches
+// the job slot -- so it is free and safe to share across threads: at 1 lane
+// there is no per-dispatch state. Ad-hoc queries (query()/WorldView), the
+// schedule's serial run(world), and imperative work items inside a multi-item
+// wave all bind this pool.
+inline WorkerPool& serial_pool() {
+    static WorkerPool pool {1};
+    return pool;
+}
+
 } // namespace ecs::parallel
 
 namespace ecs {

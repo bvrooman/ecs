@@ -213,20 +213,9 @@ private:
     WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
 };
 
-namespace detail {
-    // A process-wide 1-lane WorkerPool for ad-hoc queries (query()/WorldView) that
-    // run outside a schedule. One lane spawns no threads and its parallel_for just
-    // calls the kernel on the calling thread, so it is free and safe to share across
-    // threads -- at 1 lane there is no per-dispatch state.
-    inline WorkerPool& serial_pool() {
-        static WorkerPool pool {1};
-        return pool;
-    }
-} // namespace detail
-
 template <class... Cs>
 Query<Cs...> query(World& world) {
-    return Query<Cs...>(world, detail::serial_pool());
+    return Query<Cs...>(world, parallel::serial_pool());
 }
 
 // A read-only view of the world for systems that need ad-hoc reads (size, get,
@@ -260,7 +249,7 @@ public:
     // Read-only query: every component is iterated by const reference.
     template <class... Cs>
     auto query() const {
-        return Query<std::remove_const_t<Cs> const...>(*world_, detail::serial_pool());
+        return Query<std::remove_const_t<Cs> const...>(*world_, parallel::serial_pool());
     }
 
 private:
