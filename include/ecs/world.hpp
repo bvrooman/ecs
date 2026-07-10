@@ -133,6 +133,17 @@ public:
     // need mutable column access for declared writes) are friends.
     auto const& archetypes() const { return archetypes_; }
 
+    // Bumped whenever an archetype is created (only at flush) -- lets a query
+    // memoize its matching_archetypes() list and skip the locked cache lookup
+    // while the set of archetypes is unchanged (Query does this per type, the
+    // schedule executor per kernel system).
+    std::uint64_t archetype_generation() const noexcept {
+        return archetype_gen_.load(std::memory_order_acquire);
+    }
+    // Process-unique id for this World object, so a match-list memo cannot
+    // confuse two Worlds (or a new World reusing a destroyed one's address).
+    std::uint64_t instance_id() const noexcept { return instance_id_; }
+
     // Indices of the archetypes whose signature contains all of `required`
     // (sorted). Cached per required-signature and kept current as archetypes
     // are created, so a repeated query does not re-scan every archetype.
@@ -160,16 +171,6 @@ private:
 
     // Mutable archetype access for the friends above.
     auto& archetypes() { return archetypes_; }
-
-    // Bumped whenever an archetype is created (only at flush) -- lets a Query
-    // memoize its match list and skip the locked cache lookup while the set of
-    // archetypes is unchanged.
-    std::uint64_t archetype_generation() const noexcept {
-        return archetype_gen_.load(std::memory_order_acquire);
-    }
-    // Process-unique id for this World object, so a per-query-type memo cannot
-    // confuse two Worlds (or a new World reusing a destroyed one's address).
-    std::uint64_t instance_id() const noexcept { return instance_id_; }
 
     struct Record {
         // 12 bytes, not 16: `alive` lives in the top bit of the archetype index
