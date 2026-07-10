@@ -275,6 +275,27 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    - This is the mechanism that lets mist's `grid` reduction (spatial-hash
      build) go parallel: `Op` = bucket-list merge, partials = per-item grids.
 
+   Refinements settled in design discussion:
+   - **Fold in canonical world order**, (archetype, begin) ascending — not in
+     the LPT claim order. The fold is single-threaded at the barrier, so the
+     walk order is free to choose; canonical order makes an extraction-shaped
+     reduce reproduce exactly what a serial `for_each_serial` gather produces.
+   - **Slots persist per system and are reset, not reconstructed**, so
+     vector-like partials keep their heap capacity across ticks (preserves
+     zero-alloc-per-tick); `Op` may move out of the partial.
+   - **Sibling primitive `Extract<T>` for gather-shaped output** (snapshot /
+     render-buffer extraction): a reduction writes every element twice
+     (partial, then fold), which is fine for small partials but a full extra
+     pass for a 100k-entry snapshot. The executor already knows each item's
+     global row offset when it slices (prefix sums), so `Extract<T>` instead
+     binds each item a span over its DISJOINT slice of a pre-sized buffer
+     resource — one write per element, no fold, leveling via a declared
+     resource write, disjointness by the same argument as chunk slices. Rule
+     of thumb: `Reduce` for fold-shaped state (sums, grids, bounds),
+     `Extract` for gather-shaped output (mist: `grid` → Reduce, `extract` →
+     Extract; the TripleBuffer `publish()` stays a one-line next-wave
+     system).
+
 ## 7. Tests, benchmarks, CI
 
 - **[done]** CI (GitHub Actions): gcc + clang, Debug + Release, ASAN/UBSAN and
