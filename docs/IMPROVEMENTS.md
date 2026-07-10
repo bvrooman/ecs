@@ -233,6 +233,47 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
    `App`/fixed-timestep layer; larger: structural-change hooks, entity
    relationships.
+7. **`Reduce<T, Op>`: contention-free reductions for kernel systems.**
+   `ResMut<T>` is rejected in `add_kernel` because a system's own work items
+   run concurrently — so today every reduction (sum the kinetic energy, build
+   the flock grid, find a bounding box) is an `add()` system pinned to
+   `for_each_serial`, single-threaded (mist's `grid` system is the canonical
+   example). Atomics are the wrong fix: per-row `fetch_add` from every lane
+   ping-pongs one cache line — the exact contention this library's layout
+   exists to avoid. The right fix is per-item partial accumulation with a
+   barrier-time fold:
+
+   ```cpp
+   // Sketch. Reduce<T, Op> is a kernel-only system parameter.
+   struct Energy { double j = 0; };                     // resource: the target
+
+   sched.add_kernel("energy",
+       [](Query<const Velocity, const Mass> q, Reduce<Energy, EnergyAdd> sum) {
+           q.for_each_serial([&](auto& v, auto& m) {
+               sum->j += 0.5 * m.kg * (v.x * v.x + v.y * v.y);
+           });                                          // sum-> is THIS ITEM's
+       });                                              // private partial: no
+                                                        // atomics, no sharing
+   ```
+
+   Mechanics sketch:
+   - **Declare**: contributes a resource WRITE on `T` to the derived access —
+     same-wave readers of `T` level after the system, exactly as if it took
+     `ResMut<T>`; the actual write happens at the barrier (single-threaded).
+   - **Bind**: the executor owns a per-wave slot array, one `T` per work item
+     (item-indexed, so no two items share a slot; slots are written once at
+     item completion, so no false sharing in the loop). `Reduce::operator->`
+     exposes this item's private partial, default-initialized per item.
+   - **Fold**: at the item-list join (before the command flush), the executor
+     folds the slots into the `T` resource with `Op` in ITEM ORDER. Item
+     contents and order are already deterministic (the LPT sort has a total
+     tie-break), so the fold is **bitwise deterministic for floats across
+     runs and across lane counts** — a property per-row atomics can never
+     give. `Op` is any `void(T& into, T const& partial)` callable.
+   - **Cost**: one `T` per item (~lanes × 8 per system), one `Op` per item at
+     the barrier; zero contention during iteration.
+   - This is the mechanism that lets mist's `grid` reduction (spatial-hash
+     build) go parallel: `Op` = bucket-list merge, partials = per-item grids.
 
 ## 7. Tests, benchmarks, CI
 

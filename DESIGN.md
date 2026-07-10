@@ -229,10 +229,10 @@ contributes one item per row-range slice of each archetype that query matches
 the scheduler, which invokes the body once per item with the Query restricted
 to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters
-(`Res<T>`, `ResMut<T>`, `Commands&`, `WorldView`) bind per item and fold into
-the derived access, so a components-plus-resources system (read the clock,
-chase a goal, record spawns) keeps slicing — and an imperative system with
-independent per-row work becomes a kernel system by changing one word:
+(`Res<T>`, `Commands&`, `WorldView`) bind per item and fold into the derived
+access, so a components-plus-resources system (read the clock, chase a goal,
+record spawns) keeps slicing — and an imperative system with independent
+per-row work becomes a kernel system by changing one word:
 
 ```cpp
 sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
@@ -241,8 +241,12 @@ sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) 
 ```
 
 The body must be independent per-row work — it runs concurrently with the
-system's own other items, so a `ResMut<T>`/captured shared state is shared
-across them; reductions and ordered iteration belong in `add()` systems. An
+system's own other items. `ResMut<T>` is therefore rejected in a kernel (the
+conflict analysis serializes *other* systems against a resource writer, but a
+system's own items run concurrently, so writes through `ResMut` would race
+between them); a system that writes a resource is a *reduction*, and
+reductions and ordered iteration belong in `add()` systems — until the
+per-item `Reduce` parameter lands (see `docs/IMPROVEMENTS.md`). An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a

@@ -169,6 +169,16 @@ inline constexpr bool is_query_param_v = false;
 template <class... Cs>
 inline constexpr bool is_query_param_v<Query<Cs...>> = true;
 
+template <class P>
+inline constexpr bool is_res_mut_v = false;
+template <class T>
+inline constexpr bool is_res_mut_v<ResMut<T>> = true;
+
+template <class Args>
+inline constexpr bool any_res_mut_v = false;
+template <class... A>
+inline constexpr bool any_res_mut_v<std::tuple<A...>> = (is_res_mut_v<A> || ...);
+
 // How many parameters of Args are Query<Cs...>, and where the first one sits.
 // A kernel system must have exactly one: it is the iteration the executor
 // slices into work items.

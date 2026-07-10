@@ -87,11 +87,14 @@ public:
     // system cover disjoint rows and cross-system conflicts are leveled, so
     // the same race-freedom argument as for_each_chunk applies -- but the
     // body must be independent per-row work: it runs CONCURRENTLY with the
-    // system's own other items, so a ResMut<T> parameter or captured state is
-    // shared across them (fine to read, a race to blindly mutate), and
-    // reductions or ordered iteration belong in an add() system instead.
-    // The sliced Query is bound to the shared 1-lane pool, so nothing a
-    // kernel body does can reach a nested dispatch.
+    // system's own other items. For that reason ResMut<T> is rejected here
+    // (writes through it would race between the system's own items -- the
+    // conflict analysis only serializes OTHER systems); the allowed
+    // parameters besides the Query are Res<T> (shared read), Commands&
+    // (sharded recording), and WorldView (read-only). A system that writes a
+    // resource is a reduction, and reductions or ordered iteration belong in
+    // an add() system. The sliced Query is bound to the shared 1-lane pool,
+    // so nothing a kernel body does can reach a nested dispatch.
     template <class Fn, int P = 0>
     SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
         static_assert(detail::IntrospectableSystem<Fn>,
@@ -110,8 +113,15 @@ public:
                           "add_kernel: the system must take exactly ONE Query<Cs...> "
                           "parameter -- it is the iteration the executor slices into "
                           "work items (use add() for zero or several queries)");
+            static_assert(!detail::any_res_mut_v<Args>,
+                          "add_kernel: ResMut<T> is not allowed in a kernel system -- "
+                          "its work items run concurrently, so writes through ResMut "
+                          "would race. Read resources via Res<T>; a system that "
+                          "WRITES a resource is a reduction, and reductions belong "
+                          "in an add() system");
             if constexpr (detail::all_system_params_v<Args> &&
-                          detail::query_info<Args>::count == 1) {
+                          detail::query_info<Args>::count == 1 &&
+                          !detail::any_res_mut_v<Args>) {
                 constexpr auto QI = detail::query_info<Args>::index;
                 using Q           = std::tuple_element_t<QI, Args>;
                 System sys;
