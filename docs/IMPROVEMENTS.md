@@ -245,7 +245,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    |---|---|---|---|---|
    | kernel map | write own components in place | — | none (disjoint rows) | done |
    | `Commands&` | structural edits | unknown | kernel systems: per-item stores enqueued at the barrier in ordinal order (canonical replay); imperative systems: sharded flush | **done** |
-   | `Reduce<T, Op>` | fold state (sums, bounds, grids) | small | barrier fold, canonical order | **done** |
+   | `Reduce<T, Op, Partial = T>` | fold state (sums, bounds, grids); `Partial` may differ from the target — e.g. a sparse map of touched cells folded into a big dense grid | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
    | `EventWriter/Reader<T>` | messages between systems (item 3 above; `Events<T>` channel resource, tick-keyed buffer swap, serial systems participate via `Res`/`ResMut<Events<T>>`) | unknown | barrier concat into double-buffered channel, swap once per tick | **done** — same slot plumbing as Collect |

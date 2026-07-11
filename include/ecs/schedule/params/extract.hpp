@@ -68,11 +68,6 @@ private:
 
 namespace detail {
 
-    template <class P>
-    inline constexpr bool is_extract_v = false;
-    template <class T>
-    inline constexpr bool is_extract_v<Extract<T>> = true;
-
     template <class T>
     struct kernel_param<Extract<T>> {
         static constexpr bool allowed = true;

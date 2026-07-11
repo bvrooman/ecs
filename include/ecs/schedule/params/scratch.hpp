@@ -41,13 +41,8 @@ namespace detail {
     template <class T>
     struct kernel_param<Scratch<T>> {
         static constexpr bool allowed = true;
-        // Padded for the same reason as Reduce slots: scratch is written
-        // throughout iteration, and adjacent items run on different lanes.
-        struct alignas(128) Slot {
-            T value {};
-        };
         struct state {
-            std::vector<Slot> slots;
+            slot_array<T> parts;
         };
 
         static void declare(SystemAccess&) {} // private state: no access
@@ -56,10 +51,7 @@ namespace detail {
                             World&,
                             std::span<std::uint32_t const> rows,
                             KernelWaveContext const&) {
-            if (s.slots.size() < rows.size())
-                s.slots.resize(rows.size());
-            for (std::size_t i = 0; i < rows.size(); ++i)
-                reset_value(s.slots[i].value);
+            s.parts.prepare(rows.size());
         }
 
         static void finish(state&, World&) {}
@@ -71,7 +63,7 @@ namespace detail {
                                std::size_t,
                                std::size_t,
                                std::uint32_t ordinal) {
-            return Scratch<T>(s.slots[ordinal].value);
+            return Scratch<T>(s.parts[ordinal]);
         }
     };
 

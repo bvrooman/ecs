@@ -47,11 +47,6 @@ private:
 
 namespace detail {
 
-    template <class P>
-    inline constexpr bool is_local_v = false;
-    template <class T>
-    inline constexpr bool is_local_v<Local<T>> = true;
-
     // The imperative-parameter protocol: how each parameter type of an
     // add()/add_once() system declares access, owns per-system state, and
     // binds for a run. The primary template covers every ordinary system

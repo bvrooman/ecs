@@ -128,13 +128,8 @@ namespace detail {
     template <class T>
     struct kernel_param<EventWriter<T>> {
         static constexpr bool allowed = true;
-        // Padded like Collect slots: items append throughout iteration.
-        struct alignas(128) Slot {
-            std::vector<T> value;
-        };
         struct state {
-            std::vector<Slot> slots;
-            std::size_t active = 0;
+            slot_array<std::vector<T>> parts;
         };
 
         // A WRITE on the channel: two writer systems land in distinct waves
@@ -149,17 +144,13 @@ namespace detail {
                             std::span<std::uint32_t const> rows,
                             KernelWaveContext const& ctx) {
             w.resource<Events<T>>().advance_to(ctx.tick);
-            s.active = rows.size();
-            if (s.slots.size() < s.active)
-                s.slots.resize(s.active);
-            for (std::size_t i = 0; i < s.active; ++i)
-                s.slots[i].value.clear();
+            s.parts.prepare(rows.size());
         }
 
         static void finish(state& s, World& w) {
             auto& channel = w.resource<Events<T>>();
-            for (std::size_t i = 0; i < s.active; ++i) {
-                auto& part = s.slots[i].value;
+            for (std::size_t i = 0; i < s.parts.active; ++i) {
+                auto& part = s.parts[i];
                 channel.write_.insert(channel.write_.end(),
                                       std::make_move_iterator(part.begin()),
                                       std::make_move_iterator(part.end()));
@@ -173,7 +164,7 @@ namespace detail {
                                    std::size_t,
                                    std::size_t,
                                    std::uint32_t ordinal) {
-            return EventWriter<T>(s.slots[ordinal].value);
+            return EventWriter<T>(s.parts[ordinal]);
         }
     };
 

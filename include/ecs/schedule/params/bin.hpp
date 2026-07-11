@@ -76,13 +76,8 @@ namespace detail {
     struct kernel_param<Bin<V>> {
         static constexpr bool allowed = true;
         using Entry                   = std::pair<std::uint32_t, V>;
-        // Padded like the other appending slots.
-        struct alignas(128) Slot {
-            std::vector<Entry> value;
-        };
         struct state {
-            std::vector<Slot> slots;
-            std::size_t active = 0;
+            slot_array<std::vector<Entry>> parts;
             std::vector<std::size_t> cursors; // scatter scratch, reused
         };
 
@@ -94,11 +89,7 @@ namespace detail {
                             World& w,
                             std::span<std::uint32_t const> rows,
                             KernelWaveContext const&) {
-            s.active = rows.size();
-            if (s.slots.size() < s.active)
-                s.slots.resize(s.active);
-            for (std::size_t i = 0; i < s.active; ++i)
-                s.slots[i].value.clear();
+            s.parts.prepare(rows.size());
             // Rebuilt every run: reset now so an aborted wave leaves the
             // target empty rather than stale (same contract as Reduce).
             auto& target = w.resource<Bins<V>>();
@@ -110,16 +101,16 @@ namespace detail {
             auto& target = w.resource<Bins<V>>();
             // Bucket count: max emitted key + 1, floored at the reservation.
             std::size_t nb = target.min_buckets_;
-            for (std::size_t i = 0; i < s.active; ++i)
-                for (auto const& [k, v] : s.slots[i].value)
+            for (std::size_t i = 0; i < s.parts.active; ++i)
+                for (auto const& [k, v] : s.parts[i])
                     nb = std::max(nb, std::size_t {k} + 1);
             // Count into offsets_[k + 1], then prefix-sum into start offsets.
             target.offsets_.assign(nb + 1, 0);
             std::size_t total = 0;
-            for (std::size_t i = 0; i < s.active; ++i) {
-                for (auto const& [k, v] : s.slots[i].value)
+            for (std::size_t i = 0; i < s.parts.active; ++i) {
+                for (auto const& [k, v] : s.parts[i])
                     ++target.offsets_[k + 1];
-                total += s.slots[i].value.size();
+                total += s.parts[i].size();
             }
             for (std::size_t b = 1; b <= nb; ++b)
                 target.offsets_[b] += target.offsets_[b - 1];
@@ -127,8 +118,8 @@ namespace detail {
             // in canonical serial-walk order.
             target.items_.resize(total);
             s.cursors.assign(target.offsets_.begin(), target.offsets_.end() - 1);
-            for (std::size_t i = 0; i < s.active; ++i)
-                for (auto& [k, v] : s.slots[i].value)
+            for (std::size_t i = 0; i < s.parts.active; ++i)
+                for (auto& [k, v] : s.parts[i])
                     target.items_[s.cursors[k]++] = std::move(v);
         }
 
@@ -139,7 +130,7 @@ namespace detail {
                            std::size_t,
                            std::size_t,
                            std::uint32_t ordinal) {
-            return Bin<V>(s.slots[ordinal].value);
+            return Bin<V>(s.parts[ordinal]);
         }
     };
 

@@ -53,22 +53,11 @@ private:
 
 namespace detail {
 
-    template <class P>
-    inline constexpr bool is_collect_v = false;
-    template <class T>
-    inline constexpr bool is_collect_v<Collect<T>> = true;
-
     template <class T>
     struct kernel_param<Collect<T>> {
         static constexpr bool allowed = true;
-        // Padded like Reduce slots: items append into their slot throughout
-        // iteration, and adjacent partials would otherwise false-share.
-        struct alignas(128) Slot {
-            T value {};
-        };
         struct state {
-            std::vector<Slot> slots;
-            std::size_t active = 0;
+            slot_array<T> parts;
         };
 
         static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
@@ -77,19 +66,15 @@ namespace detail {
                             World& w,
                             std::span<std::uint32_t const> rows,
                             KernelWaveContext const&) {
-            s.active = rows.size();
-            if (s.slots.size() < s.active)
-                s.slots.resize(s.active);
-            for (std::size_t i = 0; i < s.active; ++i)
-                reset_value(s.slots[i].value);
+            s.parts.prepare(rows.size());
             // The target holds THIS run's gather: rebuilt every run.
             reset_value(w.resource<T>());
         }
 
         static void finish(state& s, World& w) {
             auto& target = w.resource<T>();
-            for (std::size_t i = 0; i < s.active; ++i) {
-                auto& part = s.slots[i].value;
+            for (std::size_t i = 0; i < s.parts.active; ++i) {
+                auto& part = s.parts[i];
                 target.insert(target.end(),
                               std::make_move_iterator(part.begin()),
                               std::make_move_iterator(part.end()));
@@ -103,7 +88,7 @@ namespace detail {
                                std::size_t,
                                std::size_t,
                                std::uint32_t ordinal) {
-            return Collect<T>(s.slots[ordinal].value);
+            return Collect<T>(s.parts[ordinal]);
         }
     };
 

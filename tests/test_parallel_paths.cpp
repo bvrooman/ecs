@@ -6,9 +6,11 @@
 #include "check.hpp"
 #include "ecs/ecs.hpp"
 #include "setup.hpp"
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 using namespace ecs;
@@ -390,6 +392,50 @@ static void reduce_vector_partials_match_serial_collect() {
     CHECK(w.resource<std::vector<int>>() == expect);
 }
 
+// Reduce with a Partial type different from the target: each item folds into
+// a SPARSE map of touched buckets, merged into the DENSE histogram resource
+// at the barrier -- the shape for big dense targets (spatial grids) where one
+// full copy per item would be absurd. Result must equal the serial histogram
+// exactly, at any lane count.
+struct DenseHist {
+    std::array<int, 16> v {};
+};
+struct FoldSparse {
+    void operator()(DenseHist& into, std::unordered_map<int, int>& part) const {
+        for (auto const& [k, c] : part)
+            into.v[std::size_t(k)] += c;
+    }
+};
+static void reduce_sparse_partial_matches_dense_histogram() {
+    auto run_hist = [](unsigned lanes) {
+        World w;
+        w.emplace_resource<DenseHist>();
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel(
+            "hist",
+            [](Query<const Health> q,
+               Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
+                q.for_each_serial([&](auto& hp) { ++(*h)[hp.hp % 16]; });
+            });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 2; ++t) // rebuilt per run, not accumulated
+            s.run(w, pool);
+        return w.resource<DenseHist>().v;
+    };
+
+    std::array<int, 16> expect {};
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            ++expect[std::size_t(h.hp % 16)];
+        });
+    }
+    CHECK(run_hist(1) == expect);
+    CHECK(run_hist(4) == expect);
+}
+
 // Extract: disjoint per-item spans over a pre-sized buffer resource. The
 // gathered buffer must equal the serial walk's output exactly (same values,
 // same order), at 4 lanes, across repeated runs.
@@ -753,6 +799,7 @@ int main() {
     RUN_SUITE(kernel_with_resource_and_commands_extras);
     RUN_SUITE(reduce_is_bitwise_deterministic_across_lane_counts);
     RUN_SUITE(reduce_vector_partials_match_serial_collect);
+    RUN_SUITE(reduce_sparse_partial_matches_dense_histogram);
     RUN_SUITE(extract_matches_serial_gather_order);
     RUN_SUITE(collect_matches_serial_filter_order);
     RUN_SUITE(events_are_double_buffered_and_deterministic);

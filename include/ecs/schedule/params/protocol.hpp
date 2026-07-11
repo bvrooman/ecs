@@ -39,6 +39,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace ecs {
 namespace detail {
@@ -52,6 +53,33 @@ namespace detail {
         else
             v = T {};
     }
+
+    // The per-item slots every appending/folding face shares: one T per work
+    // item, indexed by ordinal, reset (capacity retained) at each prepare.
+    // Slots are cache-line padded because items write into their slot
+    // throughout iteration, and adjacent small values would otherwise
+    // false-share across lanes -- ~kTargetItemsPerKernel slots per system, so
+    // the padding costs a few KB.
+    template <class T>
+    struct slot_array {
+        struct alignas(128) Slot {
+            T value {};
+        };
+        std::vector<Slot> slots;
+        std::size_t active = 0;
+
+        void prepare(std::size_t const n) {
+            active = n;
+            if (slots.size() < n)
+                slots.resize(n);
+            for (std::size_t i = 0; i < n; ++i)
+                reset_value(slots[i].value);
+        }
+        [[nodiscard]]
+        T& operator[](std::size_t const i) noexcept {
+            return slots[i].value;
+        }
+    };
 
     struct no_state {};
 
