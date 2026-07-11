@@ -62,6 +62,14 @@ class World; // defined in world.hpp
 // CommandBuffer shard owns one and serializes access with its mutex.
 class CommandStore {
 public:
+    CommandStore() = default;
+    // A store may die holding never-applied commands (e.g. a kernel item's
+    // private store after an aborted run): destroy their captures rather
+    // than leak them.
+    ~CommandStore() { discard(); }
+    CommandStore(CommandStore const&)            = delete;
+    CommandStore& operator=(CommandStore const&) = delete;
+
     template <class F>
     void record(F&& f) {
         using Fn = std::decay_t<F>;

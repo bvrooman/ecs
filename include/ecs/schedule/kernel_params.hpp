@@ -16,21 +16,32 @@
 //                   concatenated into the T resource in ordinal order
 //   EventWriter<T>  emit into a double-buffered Events<T> channel resource;
 //   EventReader<T>  read everything emitted during the PREVIOUS tick
+//   Bin<V>          group-by: (bucket, value) pairs counting-sorted into
+//                   contiguous per-bucket spans of a Bins<V> resource
 //   Scratch<T>      per-item temp workspace, reset keeping capacity, no access
 //   Random          per-item deterministic PCG32 stream, seeded from
 //                   (RandomSeed resource, schedule tick, system id, ordinal)
+//   Commands&       in a kernel: per-item private stores, enqueued into the
+//                   wave's flush in ordinal order (canonical replay)
 //
 // Every merge runs in canonical world order, so a schedule's observable
 // results are bitwise identical at 1 lane and N lanes -- including float
 // reductions.
+//
+// params/local.hpp is the one non-kernel face here: Local<T> per-system state
+// for imperative add()/add_once() systems, plus the imperative-parameter
+// protocol Schedule::add compiles against.
 
 #pragma once
 
 #include "params/protocol.hpp"
 
+#include "params/bin.hpp"
 #include "params/collect.hpp"
+#include "params/commands.hpp"
 #include "params/events.hpp"
 #include "params/extract.hpp"
+#include "params/local.hpp"
 #include "params/random.hpp"
 #include "params/reduce.hpp"
 #include "params/scratch.hpp"

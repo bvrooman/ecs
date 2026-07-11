@@ -160,11 +160,6 @@ concept SystemParam = requires(SystemAccess& a, World& w, Commands& c, WorkerPoo
     system_param<P>::bind(w, c, p);
 };
 
-template <class Args>
-inline constexpr bool all_system_params_v = false;
-template <class... A>
-inline constexpr bool all_system_params_v<std::tuple<A...>> = (SystemParam<A> && ...);
-
 template <class P>
 inline constexpr bool is_query_param_v = false;
 template <class... Cs>
@@ -212,17 +207,9 @@ struct query_param_traits<Query<Cs...>> {
     }
 };
 
-// Fold a parameter pack's declared access into `a` / bind and invoke -- the
-// two halves of the imperative-system protocol, driven by Schedule::add.
-template <class Args, std::size_t... I>
-void declare_params(SystemAccess& a, std::index_sequence<I...>) {
-    (system_param<std::tuple_element_t<I, Args>>::declare(a), ...);
-}
-template <class Args, class Fn, std::size_t... I>
-void invoke_with_params(
-    Fn& fn, World& w, Commands& c, WorkerPool& pool, std::index_sequence<I...>) {
-    fn(system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
-}
+// The whole-parameter-list declare/invoke drivers live with the parameter
+// protocols: schedule/params/local.hpp for imperative systems (which adds the
+// stateful Local<T> face), schedule/params/protocol.hpp for kernel systems.
 
 // Identity a wave hands to stateful kernel parameters' prepare hooks: which
 // system is preparing and which schedule tick this is. Random derives its

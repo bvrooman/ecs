@@ -232,9 +232,9 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    outright — unanalyzable access is not a system parameter; `ExclusiveWorld`
    is the roadmap replacement for genuinely exclusive work.)
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
-   spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
-   `App`/fixed-timestep layer; larger: structural-change hooks, entity
-   relationships.
+   spike), ~~`Local<T>` per-system state~~ (**done** — see item 7),
+   per-dispatch grain hints, a thin `App`/fixed-timestep layer; larger:
+   structural-change hooks, entity relationships.
 7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a
    kernel system needs is ONE mechanism — per-item private slots plus an
    optional deterministic barrier-time merge — wearing different typed faces.
@@ -244,23 +244,30 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | primitive | shape | output size | merge | status |
    |---|---|---|---|---|
    | kernel map | write own components in place | — | none (disjoint rows) | done |
-   | `Commands&` | structural edits | unknown | sharded flush at barrier | done |
+   | `Commands&` | structural edits | unknown | kernel systems: per-item stores enqueued at the barrier in ordinal order (canonical replay); imperative systems: sharded flush | **done** |
    | `Reduce<T, Op>` | fold state (sums, bounds, grids) | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
    | `EventWriter/Reader<T>` | messages between systems (item 3 above; `Events<T>` channel resource, tick-keyed buffer swap, serial systems participate via `Res`/`ResMut<Events<T>>`) | unknown | barrier concat into double-buffered channel, swap once per tick | **done** — same slot plumbing as Collect |
    | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | **done** |
    | `Random` | per-item deterministic RNG stream (counter-based PCG32, seeded by `RandomSeed` resource/tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | **done** |
-   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only) | — | none | roadmap |
-   | `Bin<K>` / group-by | counting-sort binning | buckets | two-pass count → prefix-sum → scatter | later (Reduce-of-grid covers it until profiling says otherwise) |
+   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only — rejected in `add_kernel`, where per-item state is `Scratch` and merging state is `Reduce`/`Collect`) | — | none | **done** |
+   | `Bin<V>` / group-by | (bucket, value) emission into contiguous per-bucket spans of a `Bins<V>` resource (spatial hashing) | buckets | barrier counting sort: count → prefix-sum → ordinal-order scatter | **done** |
 
    **The unifying prize — lane-count invariance.** Every primitive merges in
    canonical world order, so a schedule's observable results are bitwise
    identical at 1 lane and N lanes (including float reductions) — the property
-   lockstep/replay systems need and per-row atomics can never give. The one
-   remaining nondeterminism is `Commands` cross-shard flush order; the capstone
-   (much later) is routing kernel-recorded commands through per-item slots so
-   even structural edits become lane-count-invariant.
+   lockstep/replay systems need and per-row atomics can never give. The
+   capstone landed too: kernel-recorded `Commands` route through per-item
+   stores enqueued at the barrier in ordinal order, so kernel structural
+   edits *apply* in canonical order (same rows, same swap-and-pop layout at
+   any lane count). What remains nondeterministic, deliberately documented:
+   `spawn()` reserves its Entity handle at record time (the API returns a
+   usable handle immediately), so the *IDs* still follow cross-lane
+   reservation timing — canonical IDs need barrier-time reservation, an
+   API-visible change left for when something actually needs it — and
+   commands from *imperative* systems keep the thread-sharded path with its
+   unspecified cross-shard order.
 
    **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
    branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
@@ -268,8 +275,11 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    the system id + schedule tick into the prepare hooks for stream seeding);
    (3) `Collect`, then Events on the same plumbing — done, this branch
    (events readable exactly one tick after emission, deterministic order at
-   any lane count); (4) `Local<T>`; (5) `Bin` and deterministic Commands
-   later.
+   any lane count); (4) `Local<T>` — done, this branch (with the
+   imperative-parameter protocol mirroring `kernel_param`, so `add()` and
+   `add_kernel()` now compile against the same protocol shape); (5) `Bin` and
+   deterministic kernel Commands — done, this branch (canonical replay order;
+   record-time ID reservation is the documented residual).
    Deliberately out: parallel sort (a utility over an Extract'd buffer),
    previous-value components (a storage feature), and any atomic/`Shared<T>`
    wrapper (the suite exists precisely so nobody needs one).

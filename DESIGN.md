@@ -235,7 +235,8 @@ iterate just the slice, inline on the claiming lane. The other parameters
 Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
 a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
 `EventWriter<T>`/`EventReader<T>` over a double-buffered `Events<T>` channel,
-`Scratch<T>` private workspace, `Random` deterministic
+`Bin<V>` group-by counting-sorted into per-bucket spans of a `Bins<V>`
+resource, `Scratch<T>` private workspace, `Random` deterministic
 per-item streams) bind per item and fold into the derived access, so a
 components-plus-resources system (read the clock, chase a goal, record
 spawns, jitter an emitter) keeps slicing — and an imperative system with
@@ -256,7 +257,8 @@ between them); a system that writes a resource is a *reduction* — spelled
 the shared-target writes confined to the single-threaded barrier hooks.
 Genuinely ordered iteration still belongs in `add()` systems. An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
-may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
+may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
+persisting across ticks, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a
 1-lane pool, so its queries iterate inline on the lane that claimed it (the
 common single-system wave instead runs inline on the caller with the full pool,
@@ -266,7 +268,14 @@ straggler) and claimed by the lanes from an atomic cursor, so a heavy kernel
 system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
-1-lane pool claims in list order and is fully deterministic). `run(world)` is
+1-lane pool claims in list order and is fully deterministic). Commands recorded
+by kernel systems are insulated from that timing: each item records into a
+private per-item store, and the barrier enqueues the stores into the wave's
+flush in ordinal order, so kernel structural edits *apply* in canonical
+serial-walk order at any lane count (`spawn()` still reserves its Entity handle
+at record time, so the IDs themselves — not the resulting layout — remain
+timing-dependent; imperative systems' commands keep the thread-sharded buffer
+with its unspecified cross-shard order). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
 with the heavy system registered as a kernel, because an opaque heavy system is

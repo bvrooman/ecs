@@ -623,6 +623,126 @@ static void random_streams_are_lane_count_invariant() {
     CHECK(mean > 0.45 && mean < 0.55); // sane uniform distribution
 }
 
+// Local: per-system state persisting across ticks, private to each registered
+// system -- two registrations of the same callable get independent state, and
+// an add_once system's Local dies with it.
+struct TickLog {
+    std::vector<int> a, b;
+};
+static void local_state_persists_across_ticks() {
+    World w;
+    w.emplace_resource<TickLog>();
+
+    // The SAME callable registered twice: each registration owns its own
+    // Local (shared state would count 1..8 instead of two interleaved 1..4s).
+    auto const counter = [](Local<int> n, ResMut<TickLog> log) {
+        ++*n;
+        log->a.push_back(*n);
+    };
+    Schedule s;
+    s.add("count-a", counter);
+    s.add("count-b", counter);
+    for (int t = 0; t < 4; ++t)
+        s.run(w);
+
+    CHECK(w.resource<TickLog>().a == (std::vector<int> {1, 1, 2, 2, 3, 3, 4, 4}));
+}
+
+// Commands from a KERNEL system: per-item recording, replayed in canonical
+// order at the barrier. The spawned rows' payloads (and the survivors of a
+// destroy filter) must come out in exactly the serial walk's order at any
+// lane count -- with the old thread-sharded path their order followed lane
+// timing.
+struct Spawned {
+    int v = 0;
+};
+static void kernel_commands_replay_in_canonical_order() {
+    auto run_and_gather = [](unsigned lanes) {
+        World w;
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("edit", [](Query<const Health> q, Commands& cmd) {
+            q.for_each_chunk([&](std::span<Entity> es, chunk<const Health> h) {
+                auto hp = h.column<0>();
+                for (std::size_t i = 0; i < hp.size(); ++i) {
+                    if (hp[i] % 9 == 0)
+                        cmd.spawn(Spawned {hp[i]});
+                    if (hp[i] % 17 == 0)
+                        cmd.destroy(es[i]);
+                }
+            });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 2; ++t) // second tick: stores rewound and reused
+            s.run(w, pool);
+        std::vector<int> spawned;
+        query<const Spawned>(w).for_each_serial([&](auto& sp) {
+            spawned.push_back(sp.v);
+        });
+        std::vector<int> alive;
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            alive.push_back(h.hp);
+        });
+        return std::pair {spawned, alive};
+    };
+
+    auto const [spawned1, alive1] = run_and_gather(1);
+    auto const [spawned4, alive4] = run_and_gather(4);
+    CHECK(!spawned1.empty());
+    CHECK(spawned4 == spawned1); // apply order canonical: same rows, same order
+    CHECK(alive4 == alive1);     // destroys too: same swap-and-pop layout
+}
+
+// Bin: group-by with a barrier counting sort. Every bucket's contents must
+// equal the serial walk's per-bucket gather (values AND order) at any lane
+// count; reserve_buckets keeps empty buckets addressable.
+static void bin_groups_match_serial_walk() {
+    auto run_bins = [](unsigned lanes) {
+        World w;
+        w.emplace_resource<Bins<int>>().reserve_buckets(16);
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("bucketize", [](Query<const Health> q, Bin<int> bin) {
+            q.for_each_serial([&](auto& h) {
+                if (h.hp % 2 == 0) // only even hp: buckets 8..15 stay empty
+                    bin.emit(std::uint32_t(h.hp % 8), h.hp);
+            });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 3; ++t) // rebuilt per run, not accumulated
+            s.run(w, pool);
+        auto const& bins = w.resource<Bins<int>>();
+        std::vector<std::vector<int>> out(bins.bucket_count());
+        for (std::size_t b = 0; b < bins.bucket_count(); ++b) {
+            auto const sp = bins.bucket(b);
+            out[b].assign(sp.begin(), sp.end());
+        }
+        return out;
+    };
+
+    auto const bins1 = run_bins(1);
+    auto const bins4 = run_bins(4);
+
+    std::vector<std::vector<int>> expect(16);
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 2 == 0)
+                expect[std::size_t(h.hp % 8)].push_back(h.hp);
+        });
+    }
+
+    CHECK(bins1.size() == 16); // reserve_buckets floor honored
+    CHECK(bins4.size() == 16);
+    CHECK(bins1 == expect); // per-bucket serial order, incl. empty buckets
+    CHECK(bins4 == expect); // ... at 4 lanes too
+    std::size_t total = 0;
+    for (auto const& b : expect)
+        total += b.size();
+    CHECK(total > 0);
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -636,6 +756,9 @@ int main() {
     RUN_SUITE(extract_matches_serial_gather_order);
     RUN_SUITE(collect_matches_serial_filter_order);
     RUN_SUITE(events_are_double_buffered_and_deterministic);
+    RUN_SUITE(local_state_persists_across_ticks);
+    RUN_SUITE(kernel_commands_replay_in_canonical_order);
+    RUN_SUITE(bin_groups_match_serial_walk);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
     return REPORT();

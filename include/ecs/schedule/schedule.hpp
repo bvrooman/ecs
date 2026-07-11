@@ -92,12 +92,14 @@ public:
     // system's own other items. For that reason ResMut<T> is rejected here
     // (writes through it would race between the system's own items -- the
     // conflict analysis only serializes OTHER systems). The allowed parameters
-    // besides the Query: Res<T> (shared read), Commands& (sharded recording),
-    // WorldView (read-only), and the per-item primitives from
+    // besides the Query: Res<T> (shared read), Commands& (per-item recording,
+    // replayed in canonical order), WorldView (read-only), and the per-item
+    // primitives from
     // schedule/params/ -- Reduce<T, Op> (private partials folded at the
     // barrier), Extract<T> (disjoint spans over a pre-sized buffer),
     // Collect<T> (filtered gather, concatenated at the barrier),
     // EventWriter<T>/EventReader<T> (double-buffered Events<T> channel),
+    // Bin<V> (group-by into contiguous per-bucket spans),
     // Scratch<T> (private workspace), Random (deterministic per-item stream).
     // Ordered iteration and effects still belong in add() systems. The sliced
     // Query is bound to the shared 1-lane pool, so nothing a kernel body does
@@ -125,7 +127,9 @@ public:
                           "add_kernel: unsupported kernel parameter type -- a kernel "
                           "system may take one Query<Cs...>, plus Res<T>, Commands&, "
                           "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
-                          "EventWriter<T>, EventReader<T>, Scratch<T>, and Random");
+                          "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
+                          "Random (Local<T> is imperative-only: per-system state has "
+                          "no race-free meaning across a kernel's concurrent items)");
             if constexpr (detail::query_info<Args>::count == 1 &&
                           !detail::any_res_mut_v<Args> &&
                           detail::kernel_params_info<Args>::all_allowed) {
@@ -244,10 +248,13 @@ public:
     // the wave instead (observers are not thread-safe).
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
-    // is not, so the cross-shard replay order of Commands recorded by
-    // different systems in one wave -- already unspecified -- varies run to
-    // run. A 1-lane pool claims items in list order and is fully
-    // deterministic.
+    // is not. Commands recorded by KERNEL systems replay in canonical order
+    // regardless (per-item stores enqueued at the barrier in ordinal order --
+    // see schedule/params/commands.hpp; spawn() handles are still reserved at
+    // record time, so the IDs themselves remain timing-dependent). Commands
+    // recorded by imperative systems keep the thread-sharded path, so their
+    // cross-shard replay order -- already unspecified -- varies run to run.
+    // A 1-lane pool claims items in list order and is fully deterministic.
     //
     // Recorded edits flush at each wave barrier; one-shot systems are removed
     // afterwards. A system that throws (in its body or a kernel item)
@@ -304,29 +311,41 @@ private:
                       "declare the system's access");
         if constexpr (detail::IntrospectableSystem<Fn>) {
             using Args = detail::system_args_t<Fn>;
-            static_assert(detail::all_system_params_v<Args>,
+            static_assert(detail::imperative_params_info<Args>::all_allowed,
                           "unsupported system parameter type: a system may take "
-                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
-                          "(spelled exactly so -- e.g. Query by value, Commands by "
-                          "reference); raw World& is deliberately not a system "
-                          "parameter, and the per-item primitives "
-                          "(Reduce/Extract/Collect/EventWriter/EventReader/"
-                          "Scratch/Random) are kernel-only (register with "
-                          "add_kernel)");
-            if constexpr (detail::all_system_params_v<Args>) {
+                          "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
+                          "and Local<T> (spelled exactly so -- e.g. Query by "
+                          "value, Commands by reference); raw World& is "
+                          "deliberately not a system parameter, and the per-item "
+                          "primitives (Reduce/Extract/Collect/EventWriter/"
+                          "EventReader/Scratch/Random) are kernel-only (register "
+                          "with add_kernel)");
+            if constexpr (detail::imperative_params_info<Args>::all_allowed) {
                 constexpr auto N = std::tuple_size_v<Args>;
+                using Info       = detail::imperative_params_info<Args>;
+                using Seq        = std::make_index_sequence<N>;
                 System sys;
                 sys.name  = std::move(name);
                 sys.phase = phase;
                 sys.once  = once;
-                detail::declare_params<Args>(sys.access,
-                                             std::make_index_sequence<N> {});
-                sys.run = [fn = std::forward<Fn>(fn)](World& w,
-                                                      Commands& c,
-                                                      WorkerPool& pool) mutable {
-                    detail::invoke_with_params<Args>(
-                        fn, w, c, pool, std::make_index_sequence<N> {});
-                };
+                detail::imperative_declare<Args>(sys.access, Seq {});
+                if constexpr (Info::any_stateful) {
+                    // Per-system state (Local<T>): lives with the closure, so
+                    // it persists exactly as long as the system is registered.
+                    auto states = std::make_shared<typename Info::states>();
+                    sys.run     = [fn = std::forward<Fn>(fn),
+                               states](World& w, Commands& c, WorkerPool& pool) mutable {
+                        detail::imperative_invoke<Args>(fn, *states, w, c, pool,
+                                                        Seq {});
+                    };
+                } else {
+                    sys.run = [fn = std::forward<Fn>(fn)](World& w,
+                                                          Commands& c,
+                                                          WorkerPool& pool) mutable {
+                        typename Info::states st;
+                        detail::imperative_invoke<Args>(fn, st, w, c, pool, Seq {});
+                    };
+                }
                 return register_system(std::move(sys));
             } else {
                 return SystemId {0}; // unreachable: the static_assert above fired
