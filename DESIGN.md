@@ -233,7 +233,9 @@ to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters
 (`Res<T>`, `Commands&`, `WorldView`, and the per-item primitives — `Reduce<T,
 Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
-a pre-sized buffer, `Scratch<T>` private workspace, `Random` deterministic
+a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
+`EventWriter<T>`/`EventReader<T>` over a double-buffered `Events<T>` channel,
+`Scratch<T>` private workspace, `Random` deterministic
 per-item streams) bind per item and fold into the derived access, so a
 components-plus-resources system (read the clock, chase a goal, record
 spawns, jitter an emitter) keeps slicing — and an imperative system with
@@ -249,9 +251,10 @@ The body must be independent per-row work — it runs concurrently with the
 system's own other items. `ResMut<T>` is therefore rejected in a kernel (the
 conflict analysis serializes *other* systems against a resource writer, but a
 system's own items run concurrently, so writes through `ResMut` would race
-between them); a system that writes a resource is a *reduction*, and
-reductions and ordered iteration belong in `add()` systems — until the
-per-item `Reduce` parameter lands (see `docs/IMPROVEMENTS.md`). An
+between them); a system that writes a resource is a *reduction* — spelled
+`Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a kernel, with
+the shared-target writes confined to the single-threaded barrier hooks.
+Genuinely ordered iteration still belongs in `add()` systems. An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a

@@ -12,6 +12,10 @@
 //                   folded into the T resource in ordinal order at the barrier
 //   Extract<T>      gather where output == matched rows: disjoint spans over a
 //                   pre-sized vector-like T resource, no fold at all
+//   Collect<T>      filtered gather (output size unknown): private partials
+//                   concatenated into the T resource in ordinal order
+//   EventWriter<T>  emit into a double-buffered Events<T> channel resource;
+//   EventReader<T>  read everything emitted during the PREVIOUS tick
 //   Scratch<T>      per-item temp workspace, reset keeping capacity, no access
 //   Random          per-item deterministic PCG32 stream, seeded from
 //                   (RandomSeed resource, schedule tick, system id, ordinal)
@@ -24,6 +28,8 @@
 
 #include "params/protocol.hpp"
 
+#include "params/collect.hpp"
+#include "params/events.hpp"
 #include "params/extract.hpp"
 #include "params/random.hpp"
 #include "params/reduce.hpp"

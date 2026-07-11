@@ -219,10 +219,12 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    is a nullable per-archetype chunk.
 2. Change detection — coarse per-(archetype, column) ticks bumped at dispatch
    time for non-const query components unlock `Changed<C>`/`Added<C>`.
-3. Frame-buffered gameplay events — `Events<T>` resource, double-buffered per
-   `run()`, writer side sharded like `CommandBuffer`, declared via
-   `EventReader<T>`/`EventWriter<T>` system params so conflict analysis covers
-   them (`event::Emitter` is a synchronous instrumentation bus, not this).
+3. Frame-buffered gameplay events — **done** (see item 7): `Events<T>`
+   channel resource, double-buffered per `run()`, written through per-item
+   slots (not shards — deterministic order), declared via
+   `EventReader<T>`/`EventWriter<T>` kernel params so conflict analysis
+   covers them (`event::Emitter` is a synchronous instrumentation bus, not
+   this).
 4. `run_if` conditions and explicit `before/after` ordering (today only
    registration order and `phase<N>`).
 5. Immediate edits for exclusive systems — an `ExclusiveWorld` param exposing
@@ -245,8 +247,8 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | `Commands&` | structural edits | unknown | sharded flush at barrier | done |
    | `Reduce<T, Op>` | fold state (sums, bounds, grids) | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
-   | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | roadmap |
-   | `EventWriter/Reader<T>` | messages between systems (item 3 above) | unknown | barrier swap into double-buffered channel | roadmap — same slot plumbing as Collect |
+   | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
+   | `EventWriter/Reader<T>` | messages between systems (item 3 above; `Events<T>` channel resource, tick-keyed buffer swap, serial systems participate via `Res`/`ResMut<Events<T>>`) | unknown | barrier concat into double-buffered channel, swap once per tick | **done** — same slot plumbing as Collect |
    | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | **done** |
    | `Random` | per-item deterministic RNG stream (counter-based PCG32, seeded by `RandomSeed` resource/tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | **done** |
    | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only) | — | none | roadmap |
@@ -264,8 +266,10 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
    (2) `Random` + `Scratch` — done, this branch (`KernelWaveContext` threads
    the system id + schedule tick into the prepare hooks for stream seeding);
-   (3) `Collect`, then Events on the same plumbing; (4) `Local<T>`;
-   (5) `Bin` and deterministic Commands later.
+   (3) `Collect`, then Events on the same plumbing — done, this branch
+   (events readable exactly one tick after emission, deterministic order at
+   any lane count); (4) `Local<T>`; (5) `Bin` and deterministic Commands
+   later.
    Deliberately out: parallel sort (a utility over an Extract'd buffer),
    previous-value components (a storage feature), and any atomic/`Shared<T>`
    wrapper (the suite exists precisely so nobody needs one).

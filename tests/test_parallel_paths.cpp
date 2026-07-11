@@ -417,6 +417,126 @@ static void extract_matches_serial_gather_order() {
     CHECK(w.resource<std::vector<float>>() == expect);
 }
 
+// Collect: filtered gather with unknown output size -- per-item partials
+// concatenated at the barrier in ordinal order. The collected sequence must
+// equal the serial filtered walk exactly (values AND order) at any lane
+// count, be rebuilt every run, and its declared resource write must level
+// readers into a later wave.
+static void collect_matches_serial_filter_order() {
+    auto run_collect = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<std::vector<int>>();
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("cull",
+                     [](Query<const Health> q, Collect<std::vector<int>> out) {
+                         q.for_each_serial([&](auto& h) {
+                             if (h.hp % 7 == 0)
+                                 out->push_back(h.hp);
+                         });
+                     });
+        s.add("consume", [](Res<std::vector<int>>) {}); // reader of the target
+        if (s.level_count() != 2)
+            return std::vector<int> {}; // leveling broken; fail loudly below
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        return w.resource<std::vector<int>>();
+    };
+
+    auto const serial1  = run_collect(1, 1);
+    auto const parallel = run_collect(4, 1);
+    auto const repeated = run_collect(4, 3);
+
+    std::vector<int> expect;
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 7 == 0)
+                expect.push_back(h.hp);
+        });
+    }
+    CHECK(!expect.empty());
+    CHECK(serial1 == expect);   // the exact serial filter: values and order
+    CHECK(parallel == serial1); // 4 lanes == 1 lane
+    CHECK(repeated == serial1); // target rebuilt each run, not accumulated
+}
+
+// Events: a double-buffered channel. Events emitted during tick N are
+// readable during tick N+1 -- never the same tick -- by both a kernel
+// EventReader and a serial Res<Events<T>> system, in an order deterministic
+// at any lane count.
+struct Ping {
+    int from = 0;
+};
+struct PingLog {
+    std::vector<int> v;
+};
+static void events_are_double_buffered_and_deterministic() {
+    auto run_events = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<Events<Ping>>();
+        w.emplace_resource<PingLog>();
+        populate_mixed(w, 9'000);
+        Schedule s;
+        // Wave 1: emit one ping per Health row with hp % 5 == 0.
+        s.add_kernel("emit", [](Query<const Health> q, EventWriter<Ping> ev) {
+            q.for_each_serial([&](auto& h) {
+                if (h.hp % 5 == 0)
+                    ev.emit(Ping {h.hp});
+            });
+        });
+        // Wave 2: every item of the reader kernel sees the SAME full snapshot
+        // of last tick's pings; fold its size into each row.
+        s.add_kernel("consume", [](Query<Position> q, EventReader<Ping> ev) {
+            auto const n = float(ev.size());
+            q.for_each_serial([&](auto& p) { p.y += n; });
+        });
+        // Serial reader through the plain resource (registered after the
+        // writer, so its wave runs post-swap): log the exact sequence.
+        s.add("log", [](Res<Events<Ping>> ev, ResMut<PingLog> log) {
+            for (auto const& ping : ev->read())
+                log->v.push_back(ping.from);
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        std::vector<float> ys;
+        query<const Position>(w).for_each_serial([&](auto& p) {
+            ys.push_back(p.y);
+        });
+        return std::pair {w.resource<PingLog>().v, ys};
+    };
+
+    std::vector<int> expect; // the serial filtered walk, one tick's pings
+    {
+        World w;
+        populate_mixed(w, 9'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 5 == 0)
+                expect.push_back(h.hp);
+        });
+    }
+    CHECK(!expect.empty());
+
+    auto const [log1, ys1] = run_events(4, 1);
+    CHECK(log1.empty());                        // tick 1: nothing visible yet
+    for (float y : ys1)
+        CHECK(y == 0.0f);                       // reader kernel saw 0 events
+
+    auto const [log3, ys3]   = run_events(4, 3);
+    auto const [log3s, ys3s] = run_events(1, 3);
+    // Ticks 2 and 3 each see exactly tick N-1's pings, in canonical order.
+    std::vector<int> twice = expect;
+    twice.insert(twice.end(), expect.begin(), expect.end());
+    CHECK(log3 == twice);
+    for (float y : ys3)
+        CHECK(y == 2.0f * float(expect.size()));
+    CHECK(log3s == log3); // 1 lane == 4 lanes: same sequence, same order
+    CHECK(ys3s == ys3);
+}
+
 // Scratch: per-item private workspace, cleared before every run. Use it to
 // build a per-row temp list; results must be exact at 4 lanes, and the body
 // itself asserts the cleared-at-run-start contract.
@@ -514,6 +634,8 @@ int main() {
     RUN_SUITE(reduce_is_bitwise_deterministic_across_lane_counts);
     RUN_SUITE(reduce_vector_partials_match_serial_collect);
     RUN_SUITE(extract_matches_serial_gather_order);
+    RUN_SUITE(collect_matches_serial_filter_order);
+    RUN_SUITE(events_are_double_buffered_and_deterministic);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
     return REPORT();

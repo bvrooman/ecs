@@ -96,6 +96,8 @@ public:
     // WorldView (read-only), and the per-item primitives from
     // schedule/params/ -- Reduce<T, Op> (private partials folded at the
     // barrier), Extract<T> (disjoint spans over a pre-sized buffer),
+    // Collect<T> (filtered gather, concatenated at the barrier),
+    // EventWriter<T>/EventReader<T> (double-buffered Events<T> channel),
     // Scratch<T> (private workspace), Random (deterministic per-item stream).
     // Ordered iteration and effects still belong in add() systems. The sliced
     // Query is bound to the shared 1-lane pool, so nothing a kernel body does
@@ -122,8 +124,8 @@ public:
             static_assert(detail::kernel_params_info<Args>::all_allowed,
                           "add_kernel: unsupported kernel parameter type -- a kernel "
                           "system may take one Query<Cs...>, plus Res<T>, Commands&, "
-                          "WorldView, Reduce<T, Op>, Extract<T>, Scratch<T>, and "
-                          "Random");
+                          "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
+                          "EventWriter<T>, EventReader<T>, Scratch<T>, and Random");
             if constexpr (detail::query_info<Args>::count == 1 &&
                           !detail::any_res_mut_v<Args> &&
                           detail::kernel_params_info<Args>::all_allowed) {
@@ -307,8 +309,10 @@ private:
                           "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
                           "(spelled exactly so -- e.g. Query by value, Commands by "
                           "reference); raw World& is deliberately not a system "
-                          "parameter, and Reduce/Extract/Scratch/Random are "
-                          "kernel-only (register with add_kernel)");
+                          "parameter, and the per-item primitives "
+                          "(Reduce/Extract/Collect/EventWriter/EventReader/"
+                          "Scratch/Random) are kernel-only (register with "
+                          "add_kernel)");
             if constexpr (detail::all_system_params_v<Args>) {
                 constexpr auto N = std::tuple_size_v<Args>;
                 System sys;
