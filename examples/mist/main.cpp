@@ -118,7 +118,11 @@ int main() {
     world.emplace_resource<Cursor>(Cursor {});
     world.emplace_resource<Goal>(Goal {0.0f, 0.0f, 0.0f}); // wandering flock attractor
     world.emplace_resource<FlockGrid>(); // per-cell flock aggregates, rebuilt per tick
-    world.emplace_resource<TripleBuffer<RenderSnapshot>>();
+    world.emplace_resource<FlockStats>(); // whole-flock sums for ECS_METRICS
+    auto& snap_channel = world.emplace_resource<TripleBuffer<RenderSnapshot>>();
+    // The extract kernel's target: forwards to the channel's back buffer
+    // (resource addresses are stable, so the pointer stays valid).
+    world.emplace_resource<SnapshotTarget>(SnapshotTarget {&snap_channel});
 
     WindowState wstate;
 

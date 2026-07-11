@@ -3,6 +3,26 @@
 Tools for reviewing the murmuration's *time-varying* behaviour headless and
 quantitatively, instead of eyeballing single screenshots.
 
+## mist-headless (no GLFW)
+
+`headless.cpp` builds as the `mist-headless` target on every platform (the
+OpenGL demo needs macOS + GLFW). It runs the simulation at 1 lane and 4 lanes
+with the same seed, verifies the flock evolves **bitwise identically** (the
+kernel schedule's lane-count-invariance guarantee), and reports tick timing:
+
+```sh
+cmake --build build --target mist-headless
+./build/examples/mist-headless                    # 40k birds, 240 ticks
+ECS_PARTICLES=85000 ECS_TICKS=600 ./build/examples/mist-headless
+ECS_METRICS=/tmp/m.csv ./build/examples/mist-headless   # + metrics CSV
+```
+
+It honours `ECS_METRICS` and the steering-weight env vars below; the cursor
+stays inactive (`ECS_CURSOR_PATH` needs the GL build), and the seed is fixed
+(determinism is the point).
+
+## GL demo hooks
+
 The demo (`examples/mist`) exposes these env-gated hooks (zero cost when unset):
 
 | env var | effect |
