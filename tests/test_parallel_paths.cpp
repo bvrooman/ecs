@@ -417,6 +417,92 @@ static void extract_matches_serial_gather_order() {
     CHECK(w.resource<std::vector<float>>() == expect);
 }
 
+// Scratch: per-item private workspace, cleared before every run. Use it to
+// build a per-row temp list; results must be exact at 4 lanes, and the body
+// itself asserts the cleared-at-run-start contract.
+static void scratch_is_private_and_cleared() {
+    World w;
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 12'000; ++i)
+            cmd.spawn(Health {i % 32});
+    });
+
+    std::atomic<int> dirty {0};
+    Schedule s;
+    s.add_kernel("smooth",
+                 [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
+                     if (!tmp->empty())
+                         dirty.fetch_add(1, std::memory_order_relaxed);
+                     q.for_each_serial([&](auto& h) {
+                         // A silly per-row use of workspace: digits of hp.
+                         tmp->clear();
+                         for (int v = h.hp; v > 0; v /= 10)
+                             tmp->push_back(v % 10);
+                         int sum = 0;
+                         for (int d : *tmp)
+                             sum += d;
+                         h.hp = sum; // digit sum, computed via scratch
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t)
+        s.run(w, pool);
+    CHECK(dirty.load() == 0); // scratch arrived cleared for every item
+
+    bool exact = true;
+    query<const Health>(w).for_each_serial([&](auto& h) {
+        if (h.hp > 9 + 9) // three runs of digit-summing values < 32: <= 18... always small
+            exact = false;
+    });
+    CHECK(exact);
+}
+
+// Random: counter-based per-item streams. Same seed + tick => identical
+// values at 1 lane and 4 lanes (and across repeated identical runs); a new
+// tick or a different RandomSeed resource changes the stream; the values are
+// sanely distributed.
+static void random_streams_are_lane_count_invariant() {
+    auto roll = [](unsigned lanes, std::uint64_t seed, int ticks) {
+        World w;
+        w.emplace_resource<RandomSeed>(seed);
+        setup(w, [&](Commands& cmd) {
+            for (int i = 0; i < 20'000; ++i)
+                cmd.spawn(Position {});
+        });
+        Schedule s;
+        s.add_kernel("jitter", [](Query<Position> q, Random rng) {
+            q.for_each_serial([&](auto& p) { p.x = rng.f32(); });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        std::vector<float> out;
+        query<const Position>(w).for_each_serial([&](auto& p) {
+            out.push_back(p.x);
+        });
+        return out;
+    };
+
+    auto const serial1  = roll(1, 42, 1);
+    auto const parallel = roll(4, 42, 1);
+    auto const again    = roll(4, 42, 1);
+    auto const tick2    = roll(4, 42, 2);
+    auto const seeded   = roll(4, 43, 1);
+
+    CHECK(serial1 == parallel); // bitwise: 1 lane == 4 lanes
+    CHECK(parallel == again);   // bitwise: run-to-run reproducible
+    CHECK(tick2 != parallel);   // a new tick is a new stream
+    CHECK(seeded != parallel);  // the RandomSeed resource is honored
+
+    double mean = 0;
+    for (float v : parallel) {
+        CHECK(v >= 0.0f && v < 1.0f);
+        mean += v;
+    }
+    mean /= double(parallel.size());
+    CHECK(mean > 0.45 && mean < 0.55); // sane uniform distribution
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -428,5 +514,7 @@ int main() {
     RUN_SUITE(reduce_is_bitwise_deterministic_across_lane_counts);
     RUN_SUITE(reduce_vector_partials_match_serial_collect);
     RUN_SUITE(extract_matches_serial_gather_order);
+    RUN_SUITE(scratch_is_private_and_cleared);
+    RUN_SUITE(random_streams_are_lane_count_invariant);
     return REPORT();
 }

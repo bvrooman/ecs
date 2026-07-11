@@ -91,12 +91,15 @@ public:
     // body must be independent per-row work: it runs CONCURRENTLY with the
     // system's own other items. For that reason ResMut<T> is rejected here
     // (writes through it would race between the system's own items -- the
-    // conflict analysis only serializes OTHER systems); the allowed
-    // parameters besides the Query are Res<T> (shared read), Commands&
-    // (sharded recording), and WorldView (read-only). A system that writes a
-    // resource is a reduction, and reductions or ordered iteration belong in
-    // an add() system. The sliced Query is bound to the shared 1-lane pool,
-    // so nothing a kernel body does can reach a nested dispatch.
+    // conflict analysis only serializes OTHER systems). The allowed parameters
+    // besides the Query: Res<T> (shared read), Commands& (sharded recording),
+    // WorldView (read-only), and the per-item primitives from
+    // kernel_params.hpp -- Reduce<T, Op> (private partials folded at the
+    // barrier), Extract<T> (disjoint spans over a pre-sized buffer),
+    // Scratch<T> (private workspace), Random (deterministic per-item stream).
+    // Ordered iteration and effects still belong in add() systems. The sliced
+    // Query is bound to the shared 1-lane pool, so nothing a kernel body does
+    // can reach a nested dispatch.
     template <class Fn, int P = 0>
     SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
         static_assert(detail::IntrospectableSystem<Fn>,
@@ -119,7 +122,8 @@ public:
             static_assert(detail::kernel_params_info<Args>::all_allowed,
                           "add_kernel: unsupported kernel parameter type -- a kernel "
                           "system may take one Query<Cs...>, plus Res<T>, Commands&, "
-                          "WorldView, Reduce<T, Op>, and Extract<T>");
+                          "WorldView, Reduce<T, Op>, Extract<T>, Scratch<T>, and "
+                          "Random");
             if constexpr (detail::query_info<Args>::count == 1 &&
                           !detail::any_res_mut_v<Args> &&
                           detail::kernel_params_info<Args>::all_allowed) {
@@ -149,10 +153,11 @@ public:
                                                     ord, Seq {});
                 };
                 if constexpr (Info::any_stateful) {
-                    sys.prepare_items =
-                        [states](World& w, std::span<std::uint32_t const> rows) {
-                            detail::kernel_prepare_all<Args>(*states, w, rows, Seq {});
-                        };
+                    sys.prepare_items = [states](World& w,
+                                                 std::span<std::uint32_t const> rows,
+                                                 detail::KernelWaveContext const& ctx) {
+                        detail::kernel_prepare_all<Args>(*states, w, rows, ctx, Seq {});
+                    };
                     sys.finish_items = [states](World& w) {
                         detail::kernel_finish_all<Args>(*states, w, Seq {});
                     };
@@ -250,6 +255,7 @@ public:
     // in place of the remaining End events.
     void run(World& world, WorkerPool& pool) {
         rebuild();
+        ++tick_; // seeds Random streams; a fresh tick is a fresh stream
         using namespace sched_event;
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
@@ -301,8 +307,8 @@ private:
                           "Query<Cs...>, Res<T>, ResMut<T>, Commands&, and WorldView "
                           "(spelled exactly so -- e.g. Query by value, Commands by "
                           "reference); raw World& is deliberately not a system "
-                          "parameter, and Reduce<T, Op>/Extract<T> are kernel-only "
-                          "(register with add_kernel)");
+                          "parameter, and Reduce/Extract/Scratch/Random are "
+                          "kernel-only (register with add_kernel)");
             if constexpr (detail::all_system_params_v<Args>) {
                 constexpr auto N = std::tuple_size_v<Args>;
                 System sys;
@@ -381,7 +387,9 @@ private:
                         rows_scratch_.resize(it.ordinal + 1);
                     rows_scratch_[it.ordinal] = it.end - it.begin;
                 }
-            s.prepare_items(world, rows_scratch_);
+            s.prepare_items(world,
+                            rows_scratch_,
+                            detail::KernelWaveContext {s.id, tick_});
         }
     }
 
@@ -433,6 +441,7 @@ private:
     std::vector<std::vector<std::size_t>> waves_;
     std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
+    std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
     SystemId next_id_ = 0;
     bool dirty_       = true;
 };

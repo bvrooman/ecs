@@ -247,8 +247,8 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | roadmap |
    | `EventWriter/Reader<T>` | messages between systems (item 3 above) | unknown | barrier swap into double-buffered channel | roadmap — same slot plumbing as Collect |
-   | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | roadmap |
-   | `Random` | per-item deterministic RNG stream (counter-based, seeded by tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | roadmap |
+   | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | **done** |
+   | `Random` | per-item deterministic RNG stream (counter-based PCG32, seeded by `RandomSeed` resource/tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | **done** |
    | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only) | — | none | roadmap |
    | `Bin<K>` / group-by | counting-sort binning | buckets | two-pass count → prefix-sum → scatter | later (Reduce-of-grid covers it until profiling says otherwise) |
 
@@ -262,9 +262,10 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
    **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
    branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
-   (2) `Random` + `Scratch` (near-trivial on the substrate; unblock porting
-   mist's stochastic systems to kernels); (3) `Collect`, then Events on the
-   same plumbing; (4) `Local<T>`; (5) `Bin` and deterministic Commands later.
+   (2) `Random` + `Scratch` — done, this branch (`KernelWaveContext` threads
+   the system id + schedule tick into the prepare hooks for stream seeding);
+   (3) `Collect`, then Events on the same plumbing; (4) `Local<T>`;
+   (5) `Bin` and deterministic Commands later.
    Deliberately out: parallel sort (a utility over an Extract'd buffer),
    previous-value components (a storage feature), and any atomic/`Shared<T>`
    wrapper (the suite exists precisely so nobody needs one).

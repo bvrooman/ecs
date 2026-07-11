@@ -224,6 +224,15 @@ void invoke_with_params(
     fn(system_param<std::tuple_element_t<I, Args>>::bind(w, c, pool)...);
 }
 
+// Identity a wave hands to stateful kernel parameters' prepare hooks: which
+// system is preparing and which schedule tick this is. Random derives its
+// per-item stream seeds from these (deterministic, lane-count-independent);
+// most parameters ignore it.
+struct KernelWaveContext {
+    SystemId system    = 0;
+    std::uint64_t tick = 0;
+};
+
 // A memoized query match list, keyed by (world instance, archetype
 // generation) -- the per-record counterpart of Query's per-type thread_local
 // memo, for kernel systems whose component set is a runtime value.
@@ -263,9 +272,12 @@ struct SystemRecord {
         run_range;
     // Barrier hooks for stateful kernel parameters (null when the system has
     // none): prepare runs single-threaded before the wave's dispatch with the
-    // system's per-item row counts in ordinal order; finish runs single-
-    // threaded after the join, before the command flush (skipped on abort).
-    move_only_function<void(World&, std::span<std::uint32_t const>)> prepare_items;
+    // system's per-item row counts in ordinal order plus the wave context;
+    // finish runs single-threaded after the join, before the command flush
+    // (skipped on abort).
+    move_only_function<
+        void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>
+        prepare_items;
     move_only_function<void(World&)> finish_items;
     Signature query_sig; // kernel systems: sorted required-component ids
     MatchCache match;    // kernel systems: memoized query_sig match list

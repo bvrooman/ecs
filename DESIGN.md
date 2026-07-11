@@ -231,10 +231,13 @@ identical whether the schedule runs on 1 lane or N): its iteration is *visible* 
 the scheduler, which invokes the body once per item with the Query restricted
 to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters
-(`Res<T>`, `Commands&`, `WorldView`) bind per item and fold into the derived
-access, so a components-plus-resources system (read the clock, chase a goal,
-record spawns) keeps slicing — and an imperative system with independent
-per-row work becomes a kernel system by changing one word:
+(`Res<T>`, `Commands&`, `WorldView`, and the per-item primitives — `Reduce<T,
+Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
+a pre-sized buffer, `Scratch<T>` private workspace, `Random` deterministic
+per-item streams) bind per item and fold into the derived access, so a
+components-plus-resources system (read the clock, chase a goal, record
+spawns, jitter an emitter) keeps slicing — and an imperative system with
+independent per-row work becomes a kernel system by changing one word:
 
 ```cpp
 sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
