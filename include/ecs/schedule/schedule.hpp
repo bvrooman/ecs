@@ -94,7 +94,7 @@ public:
     // conflict analysis only serializes OTHER systems). The allowed parameters
     // besides the Query: Res<T> (shared read), Commands& (sharded recording),
     // WorldView (read-only), and the per-item primitives from
-    // kernel_params.hpp -- Reduce<T, Op> (private partials folded at the
+    // schedule/params/ -- Reduce<T, Op> (private partials folded at the
     // barrier), Extract<T> (disjoint spans over a pre-sized buffer),
     // Scratch<T> (private workspace), Random (deterministic per-item stream).
     // Ordered iteration and effects still belong in add() systems. The sliced
@@ -118,7 +118,7 @@ public:
                           "its work items run concurrently, so writes through ResMut "
                           "would race. Read resources via Res<T>; fold shared state "
                           "with Reduce<T, Op>, write gather-shaped output with "
-                          "Extract<T> (see schedule/kernel_params.hpp)");
+                          "Extract<T> (see schedule/params/)");
             static_assert(detail::kernel_params_info<Args>::all_allowed,
                           "add_kernel: unsupported kernel parameter type -- a kernel "
                           "system may take one Query<Cs...>, plus Res<T>, Commands&, "
