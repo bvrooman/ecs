@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +38,10 @@ struct IColumn {
     virtual std::size_t emplace_default() = 0;
     // swap-remove a row; return the row that was relocated into it.
     virtual std::size_t swap_remove(std::size_t row) = 0;
+    // Reorder rows: new row i holds what was at row perm[i] (perm is a
+    // permutation of [0, size)). Bulk maintenance (row sorting); the caller
+    // owns any external row bookkeeping (see Archetype::permute_rows).
+    virtual void apply_permutation(std::span<std::uint32_t const> perm) = 0;
     // Move element `row` of *this into a fresh row of `dst` (same dynamic
     // type).
     virtual void move_row_to(IColumn& dst, std::size_t row) = 0;
@@ -60,6 +65,9 @@ struct Column final : IColumn {
     void reserve(std::size_t n) override { store.reserve(n); }
     std::size_t emplace_default() override { return store.emplace_default(); }
     std::size_t swap_remove(std::size_t row) override { return store.swap_remove(row); }
+    void apply_permutation(std::span<std::uint32_t const> perm) override {
+        store.apply_permutation(perm);
+    }
     void move_row_to(IColumn& dst, std::size_t row) override {
         // A ComponentId bookkeeping bug would make this cast silent UB; catch
         // it loudly in debug builds.
@@ -163,6 +171,22 @@ struct Archetype {
         entities.reserve(n);
         for (auto const& col : columns)
             col->reserve(n);
+    }
+
+    // Reorder this archetype's rows: new row i takes old row perm[i], in
+    // every column and the row->entity table together. Entity RECORDS still
+    // name the old rows afterwards -- the caller must patch them
+    // (World::sort_rows does), so this is a building block, not an entry
+    // point.
+    void permute_rows(std::span<std::uint32_t const> perm) {
+        assert(perm.size() == entities.size() &&
+               "Archetype::permute_rows: perm size != row count");
+        std::vector<Entity> next(entities.size());
+        for (std::size_t i = 0; i < perm.size(); ++i)
+            next[i] = entities[perm[i]];
+        entities = std::move(next);
+        for (auto const& col : columns)
+            col->apply_permutation(perm);
     }
 
     auto size() const { return entities.size(); }

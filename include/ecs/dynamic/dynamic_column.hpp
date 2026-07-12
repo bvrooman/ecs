@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace ecs::dynamic {
@@ -49,6 +50,19 @@ public:
         }
         --count_;
         return last;
+    }
+
+    void apply_permutation(std::span<std::uint32_t const> perm) override {
+        assert(perm.size() == count_ &&
+               "DynamicColumn::apply_permutation: perm size != row count");
+        for (std::size_t i = 0; i < fields_.size(); ++i) {
+            auto const sz = desc_->fields[i].size;
+            auto& b       = fields_[i];
+            std::vector<std::byte> next(b.size());
+            for (std::size_t r = 0; r < perm.size(); ++r)
+                std::memcpy(next.data() + r * sz, b.data() + perm[r] * sz, sz);
+            b = std::move(next);
+        }
     }
 
     void move_row_to(ecs::IColumn& dst_, std::size_t row) override {

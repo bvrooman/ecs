@@ -20,6 +20,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <tuple>
 #include <utility>
@@ -140,6 +141,17 @@ public:
     // Append a default-constructed element and return its row.
     auto emplace_default() { return push_back(T {}); }
 
+    // Reorder the elements: new row i holds what was at row perm[i] (perm is
+    // a permutation of [0, size)). One linear gather pass per field column
+    // into fresh storage -- a maintenance operation (World::sort_rows), not a
+    // hot-path one, so it allocates the buffers it gathers into rather than
+    // permuting in place.
+    void apply_permutation(std::span<std::uint32_t const> perm) {
+        assert(perm.size() == size_ &&
+               "soa_storage::apply_permutation: perm size != element count");
+        apply_columns([&](auto&... col) { (permute_column(col, perm), ...); });
+    }
+
     // Contiguous view over the I-th field across all elements: the SoA payoff.
     // The explicit object parameter lets one definition serve both const and
     // mutable callers -- the span's element constness follows that of `self`.
@@ -169,6 +181,15 @@ private:
     template <class Self, class F>
     void apply_columns(this Self&& self, F&& f) {
         std::apply([&](auto&... col) { f(col...); }, self.columns_);
+    }
+
+    template <class C>
+    static void permute_column(C& col, std::span<std::uint32_t const> perm) {
+        C next;
+        next.reserve(col.size());
+        for (auto const from : perm)
+            next.push_back(std::move(col[from]));
+        col = std::move(next);
     }
 
     // The transactional scatter both push_back overloads share: `append`
@@ -227,6 +248,7 @@ public:
         assert(size_ > 0 && "soa_storage::swap_remove: empty tag column");
         return --size_;
     }
+    void apply_permutation(std::span<std::uint32_t const>) noexcept {} // no data
     void* field_base(std::size_t) noexcept { return nullptr; } // no fields
 
 private:

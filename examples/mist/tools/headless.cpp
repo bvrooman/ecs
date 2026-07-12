@@ -11,6 +11,9 @@
 //   ECS_PARTICLES=85000 ECS_TICKS=600 ./build/examples/mist-headless
 //   ECS_METRICS=/tmp/m.csv ./build/examples/mist-headless  # + metrics CSV
 //     (the CSV is written once per run(); the last of the three runs wins)
+//   ECS_SORT_EVERY=64 ./build/examples/mist-headless # row-sort maintenance:
+//     re-sort birds by grid cell every n ticks (World::sort_rows) -- the
+//     bitwise checks prove determinism composes with sorting
 #include "ecs/ecs.hpp"
 #include "mist.hpp"
 #include "simulation.hpp"
@@ -25,6 +28,13 @@ using namespace ecs;
 namespace {
 
 WindowState g_wstate; // cursor inactive: the goal wanders on its own
+
+int env_int(char const* key, int const dflt) {
+    if (char const* v = std::getenv(key))
+        if (int n = std::atoi(v); n > 0)
+            return n;
+    return dflt;
+}
 
 struct RunResult {
     std::vector<float> state; // every bird's position + velocity, serial order
@@ -48,10 +58,22 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags}, count);
 
     WorkerPool pool {lanes};
+    int const sort_every = env_int("ECS_SORT_EVERY", 0);
     s.run(w, pool); // tick 1: scatter + first sim tick
     auto const t0 = std::chrono::steady_clock::now();
-    for (int t = 1; t < ticks; ++t)
+    for (int t = 1; t < ticks; ++t) {
+        // Optional row-sort maintenance (ECS_SORT_EVERY=<n>): re-sort birds by
+        // grid cell every n ticks, OUTSIDE run(), so work items and steer's
+        // neighborhood reads stay key-coherent. Stable + canonical key: the
+        // bitwise lane-invariance checks below still hold with this on.
+        if (sort_every > 0 && t % sort_every == 0)
+            w.sort_rows<Position>([](Position const& p) {
+                return FlockGrid::index(FlockGrid::axis(p.x),
+                                        FlockGrid::axis(p.y),
+                                        FlockGrid::axis(p.z));
+            });
         s.run(w, pool);
+    }
     auto const t1 = std::chrono::steady_clock::now();
 
     RunResult r;
@@ -64,13 +86,6 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     channel.consume();
     r.frame = channel.front();
     return r;
-}
-
-int env_int(char const* key, int const dflt) {
-    if (char const* v = std::getenv(key))
-        if (int n = std::atoi(v); n > 0)
-            return n;
-    return dflt;
 }
 
 } // namespace

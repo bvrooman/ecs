@@ -302,6 +302,70 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      per element, no fold; leveling via a declared resource write. The
      `TripleBuffer::publish()` stays a one-line next-wave system.
 
+   **Choosing between a kernel primitive and a serial system** (the rule the
+   mist `grid` measurement produced). A partial+merge primitive costs
+   *(per-row work / lanes) + a serial merge of everything the partials hold*,
+   so ask: **how big is one item's partial at the barrier, relative to the
+   rows it consumed?**
+   - Partial is O(1) or O(few buckets) — sums, bounds, means, small
+     histograms: the fold compresses; the kernel wins as soon as per-row work
+     is nontrivial.
+   - Partial is O(rows) — every row emits an entry (`Collect`, `Bin`): the
+     merge re-does O(n) serially, so the kernel wins only when *producing*
+     each entry costs real compute. (`Extract` escapes this: disjoint spans,
+     no merge at all.)
+   - The losing shape: per-row work ≈ zero AND keys uncorrelated with row
+     order (mist's grid — a cheap scatter-add over many cells). Partials
+     neither compress nor come cheap; keep it serial.
+   The A/B is safe by construction — `add` ↔ `add_kernel` is a one-word,
+   behavior-preserving switch (identical results at any lane count), so
+   measure with `ScheduleReport` and believe the numbers. Tooling roadmap: the
+   profiler should surface per-system barrier-hook time so a kernel whose
+   finish fold costs as much as its dispatch flags itself.
+
+   **Data layout as the missing precondition — spatial/key sorting
+   (in prototype).** The grid shape loses above because work items are
+   contiguous ROW ranges while its keys are spatially random, so partials
+   can't compress. Periodically reordering an archetype's rows so row order
+   correlates with the key (sort by cell index every N ticks; coherence
+   decays slowly, the sort amortizes) fixes the precondition instead of
+   retiring the tool: each item then touches a compact key range, the same
+   `Reduce<Grid, Op, SparsePartial>` compresses, and neighborhood-reading
+   kernels (mist's `steer`) gain cache locality on top. Pieces:
+   - **[done — this branch]** `Archetype::permute_rows(perm)` /
+     `IColumn::apply_permutation`: apply a permutation to every column
+     (described and dynamic) plus the row→entity table, then fix up the
+     entity records — bulk swap-and-pop-family bookkeeping, structural, so it
+     runs outside `run()` like other maintenance.
+   - **[done — this branch]** `World::sort_rows<C>(key)`: stable sort of every
+     archetype containing C by a key of C's value — stable + canonical keys
+     ⇒ the permutation is identical at every lane count, so the determinism
+     guarantee survives sorting.
+   - Measured (mist grid shape, 40k rows, 4-core container): sorting flips
+     the kernel Reduce grid from a 2× LOSS to a 2× WIN in isolation
+     (~250-300µs serial → 125µs kernel-over-sorted at 4 lanes), and the
+     bitwise lane-invariance checks pass with sorting on
+     (`ECS_SORT_EVERY=64 mist-headless`). End-to-end mist lands at PARITY on
+     4 cores: the prototype sort costs ~5ms/40k rows (gather-allocates fresh
+     buffers per column) and its amortized cost eats the per-tick saving —
+     though the lane-scaling ratio improves (2.8× → 3.1×), so wider machines
+     tip net-positive.
+   - Roadmap: cut the sort's constant (in-place cycle permutation or retained
+     scratch buffers; skip when disorder is below a threshold), a
+     schedule-integrated maintenance hook (sort every N ticks without leaving
+     the tick loop), and sort-by-entity/multi-component keys.
+
+   **Parallel two-pass `Bin` (roadmap)** — the deterministic answer for
+   scatter shapes that sorting can't fix (keys genuinely uncorrelated,
+   many-core targets, where engines reach for atomic containers and give up
+   reproducibility): today `Bin`'s count → prefix-sum → scatter runs serially
+   in the finish hook; both passes parallelize deterministically — parallel
+   per-(item, key) count, barrier prefix-sum into DISJOINT precomputed
+   ranges, parallel scatter into them (no atomics, canonical within-bucket
+   order preserved), plus a parallel per-bucket fold for aggregation-shaped
+   uses. Covers most of the "atomic container territory" without forfeiting
+   bitwise invariance; build it when a profiled workload asks.
+
 ## 7. Tests, benchmarks, CI
 
 - **[done]** CI (GitHub Actions): gcc + clang, Debug + Release, ASAN/UBSAN and

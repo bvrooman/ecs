@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <ranges>
 #include <type_traits>
 #include <unordered_map>
@@ -85,6 +86,47 @@ public:
     // allocation optimization for bulk setup (per-archetype component storage
     // is pre-grown separately via Archetype::reserve).
     void reserve_entities(std::size_t n) { records_.reserve(n); }
+
+    // --- maintenance: row sorting ------------------------------------------
+    // Stable-sort the rows of every archetype containing C by key(component
+    // value) -- a data-LAYOUT operation. Work items and chunk splits slice
+    // contiguous ROW ranges, so making row order correlate with the key a
+    // kernel scatters by (e.g. a spatial cell index) is what lets per-item
+    // partials compress (see docs/IMPROVEMENTS.md, parallel-primitives
+    // section); neighborhood-reading kernels gain cache locality as a bonus.
+    //
+    // Entity handles remain valid (their records are patched); what changes
+    // is iteration/serial-walk order -- deterministically: a stable sort by a
+    // canonical key is the same permutation at any lane count, so schedule
+    // results stay bitwise reproducible across sorts. Rows drift back out of
+    // order via swap-and-pop churn; re-sort every N ticks (key coherence
+    // decays slowly, the sort amortizes). Structural, like the *_now
+    // primitives: call it OUTSIDE run(), never from inside a system.
+    template <class C, class KeyFn>
+    void sort_rows(KeyFn key) {
+        std::vector<std::uint32_t> perm;
+        for (auto const& arch_ptr : archetypes_) {
+            auto& arch = *arch_ptr;
+            if (!arch.has(component_id<C>) || arch.size() < 2)
+                continue;
+            auto const& store = arch.template column<C>().store;
+            auto const n      = arch.size();
+            using Key         = decltype(key(store.gather(0)));
+            std::vector<Key> keys(n);
+            for (std::size_t r = 0; r < n; ++r)
+                keys[r] = key(store.gather(r));
+            perm.resize(n);
+            std::ranges::iota(perm, 0u);
+            std::ranges::stable_sort(perm, {}, [&](std::uint32_t const r) {
+                return keys[r];
+            });
+            if (std::ranges::is_sorted(perm)) // already in key order
+                continue;
+            arch.permute_rows(perm);
+            for (std::uint32_t r = 0; r < n; ++r)
+                records_[arch.entities[r].index].row = r;
+        }
+    }
 
     // --- reads ------------------------------------------------------------
     template <class C>
