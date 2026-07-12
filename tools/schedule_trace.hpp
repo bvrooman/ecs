@@ -2,10 +2,10 @@
 //
 // A schedule observer that writes a per-tick timing trace: one CSV row per
 // system per tick, buffered and flushed to a Sink. Feed it to a file for
-// offline analysis -- tools/schedule_report_html.py renders it into a
-// self-contained HTML report. It is a plain callable observer
-// (operator()(ScheduleEvent const&) that std::visits), registered on the
-// schedule's event emitter:
+// offline analysis -- the tools/schedule_report package renders it into a
+// self-contained HTML report (see tools/schedule_report/README.md). It is a
+// plain callable observer (operator()(ScheduleEvent const&) that
+// std::visits), registered on the schedule's event emitter:
 //
 //   std::ofstream csv("trace.csv");
 //   ecs::diag::ScheduleTrace trace(ecs::diag::to_stream(csv));

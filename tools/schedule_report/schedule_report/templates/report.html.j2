@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schedule report — {{ source }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<main>
+  <h1>Schedule report</h1>
+  <div class="meta">{{ source }} &middot; {{ "{:,}".format(n_ticks) }} ticks
+    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves</div>
+
+  <div class="tiles">
+    {% for label, value in tiles %}
+    <div class="tile"><div class="k">{{ label }}</div>
+      <div class="v">{{ value }}</div></div>
+    {% endfor %}
+  </div>
+
+  <h2>Tick wall time</h2>
+  <div class="card">
+    {% if tick_banded %}
+    <div class="sub">mean per bucket; the wash spans each bucket&rsquo;s
+      min&hellip;max</div>
+    {% endif %}
+    {{ tick_svg }}
+  </div>
+
+  <h2>Waves</h2>
+  <div class="card">
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent)"></span>work</span>
+      <span><span class="sw" style="background:var(--accent-soft)"></span>command flush</span>
+    </div>
+    <div class="sub">mean wall time per tick, per wave</div>
+    {{ waves_svg }}
+  </div>
+
+  <h2>Systems by busy time per tick</h2>
+  <div class="card">
+    <div class="sub">total busy across the run / total ticks. busy = sum of
+      the system&rsquo;s work items across all lanes (CPU time; a fanned
+      wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall
+      time)</div>
+    {{ overview_svg }}
+  </div>
+
+  <h2>Systems</h2>
+  {% for c in cards %}
+  <div class="card">
+    <h3>{{ c.name }}</h3>
+    <div class="sub">wave {{ c.wave }} &middot;
+      {{ c.items }} work item{{ "s" if c.items != 1 }} &middot;
+      busy = {{ c.share }}% of mean tick wall{% if c.ran_partial %} &middot;
+      ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
+    <div class="statrow">
+      {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
+    </div>
+    <div class="sub">busy time distribution</div>
+    {{ c.hist }}
+    <div class="sub">busy time over the run</div>
+    {{ c.series }}
+  </div>
+  {% endfor %}
+
+  <h2>All numbers</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
+        <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
+        <th>prepare</th><th>finish</th><th>% of tick</th></tr></thead>
+      <tbody>
+        {% for row in table %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+<div id="tip"></div>
+<script type="application/json" id="data">{{ payload }}</script>
+<script>{{ js }}</script>
+</body>
+</html>

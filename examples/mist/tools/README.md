@@ -38,7 +38,7 @@ For **schedule timing** (as opposed to flock behaviour): run the GL demo with
 `ECS_TRACE=<csv>` (or attach `ecs::diag::ScheduleTrace` in any harness), then
 
 ```sh
-python3 tools/schedule_report_html.py trace.csv report.html
+PYTHONPATH=tools/schedule_report python3 -m schedule_report trace.csv -o report.html
 ```
 
 renders a self-contained HTML report — headline tick stats, per-wave wall/flush

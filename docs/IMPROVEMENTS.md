@@ -325,7 +325,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    barrier prepare/finish hook durations, so a kernel whose finish fold
    costs as much as its dispatch flags itself in `ScheduleReport`'s
    prep/fin columns, in `ScheduleTrace`'s CSV, and in the HTML report
-   (`tools/schedule_report_html.py`).
+   (`tools/schedule_report`).
 
    **Data layout as the missing precondition — spatial/key sorting
    (in prototype).** The grid shape loses above because work items are
