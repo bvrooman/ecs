@@ -13,6 +13,7 @@
 
 #include "access.hpp" // SystemId
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <variant>
 
@@ -29,13 +30,37 @@ namespace sched_event {
     };
     struct WaveEnd {
         std::size_t level;
+        // The command-flush portion of the wave (the flush runs at the barrier,
+        // inside the WaveBegin/WaveEnd interval). 0 when the schedule has no
+        // observers (timing is skipped entirely, not measured-as-zero).
+        double flush_us = 0;
     };
+    // Wall-clock bracketing of ONE system running alone in its wave (the only
+    // case where a per-system wall interval exists -- a multi-system wave runs
+    // every system's work items interleaved across the pool's lanes in one
+    // dispatch, so fanned waves emit no SystemBegin/SystemEnd at all).
     struct SystemBegin {
         SystemId id;
         std::string_view name;
     };
     struct SystemEnd {
         SystemId id;
+    };
+    // Measured work for one system in one wave -- emitted for EVERY system,
+    // lone or fanned, after the wave's barrier hooks and before its flush.
+    // busy_us is the sum of the system's work-item durations across all lanes
+    // (CPU time, not wall: a fanned wave's busy times legitimately sum past
+    // the wave's wall duration); prepare_us/finish_us bracket the system's
+    // single-threaded barrier hooks (Reduce folds, Extract pre-sizing...), so
+    // a kernel whose finish fold rivals its dispatch is visible directly.
+    // All fields 0 when the schedule has no observers.
+    struct SystemWork {
+        SystemId id;
+        std::string_view name;
+        double busy_us      = 0;
+        double prepare_us   = 0;
+        double finish_us    = 0;
+        std::uint32_t items = 0; // work items this wave (1 for imperative)
     };
     // Emitted instead of the remaining SystemEnd/WaveEnd/TickEnd when a system
     // throws and the run unwinds, so observers with open Begin/End pairs can
@@ -52,6 +77,7 @@ using ScheduleEvent = std::variant<sched_event::TickBegin,
                                    sched_event::WaveEnd,
                                    sched_event::SystemBegin,
                                    sched_event::SystemEnd,
+                                   sched_event::SystemWork,
                                    sched_event::TickAbort>;
 
 } // namespace ecs

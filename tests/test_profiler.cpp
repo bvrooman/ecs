@@ -10,6 +10,7 @@
 #include "setup.hpp"
 #include "sink.hpp"
 
+#include <algorithm>
 #include <functional> // std::ref
 #include <string>
 #include <string_view>
@@ -96,10 +97,76 @@ static void trace_writes_one_row_per_system_per_tick() {
     trace.flush();
 
     CHECK(!rows.empty());
-    CHECK(rows.front() == "tick,wave,system,us"); // header on construction
+    CHECK(rows.front() == "tick,wave,system,busy_us,prepare_us,finish_us,items,"
+                          "wave_us,flush_us,tick_us"); // header on construction
     CHECK(rows.size() == 1 + std::size_t(kTicks) * 2);
     CHECK((rows[1].find(",integrate,") != std::string::npos ||
            rows[1].find(",render,") != std::string::npos));
+    // Every measurement column is numeric: the row parses into 10 fields with
+    // no gaps (CSV sinks feed tools/schedule_report_html.py directly).
+    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 9);
+    // Lone-wave systems: busy time is the item's real duration, so the wave's
+    // wall time (wave_us) must be >= its one system's busy time. Field 3 is
+    // busy_us, field 7 is wave_us.
+    {
+        std::vector<std::string> f;
+        std::size_t pos = 0;
+        for (std::size_t c = rows[1].find(','); ;
+             pos = c + 1, c = rows[1].find(',', pos)) {
+            f.emplace_back(rows[1].substr(pos, c - pos));
+            if (c == std::string::npos)
+                break;
+        }
+        CHECK(f.size() == 10);
+        CHECK(std::stod(f[3]) > 0.0);              // busy was measured
+        CHECK(std::stod(f[7]) >= std::stod(f[3])); // wave wall >= lone busy
+        CHECK(std::stod(f[9]) >= std::stod(f[7])); // tick >= wave
+        CHECK(std::stod(f[6]) >= 1.0);             // items
+    }
+}
+
+// A fanned wave (two non-conflicting systems flattened into one dispatch) has
+// no per-system wall interval -- but SystemWork carries each system's REAL
+// measured busy time, which is the regression this event exists to fix (the
+// old balanced Begin/End pairs reported ~0 for every fanned system).
+static void fanned_wave_reports_real_busy_time() {
+    World w;
+    setup(w, [](Commands& c) {
+        for (int i = 0; i < 30'000; ++i)
+            c.spawn(Position {float(i), 0}, Velocity {1, 1});
+    });
+    Schedule sched;
+    // Disjoint access -> one wave, two systems, flattened items.
+    sched.add_kernel("move", [](Query<Position> q) {
+        q.for_each_serial([](auto& p) { p.x += 0.5f; });
+    });
+    sched.add_kernel("drag", [](Query<Velocity> q) {
+        q.for_each_serial([](auto& v) { v.dx *= 0.999f; });
+    });
+    CHECK(sched.level_count() == 1);
+
+    std::vector<std::string> rows;
+    diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
+    sched.events().add(std::ref(trace));
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t)
+        sched.run(w, pool);
+    trace.flush();
+
+    CHECK(rows.size() == 1 + 3 * 2); // header + 2 systems x 3 ticks
+    auto busy_of = [&](std::string_view name) {
+        double total = 0;
+        for (auto const& r : rows) {
+            auto const key = "," + std::string(name) + ",";
+            if (auto const at = r.find(key); at != std::string::npos) {
+                auto const rest = r.substr(at + key.size());
+                total += std::stod(rest.substr(0, rest.find(',')));
+            }
+        }
+        return total;
+    };
+    CHECK(busy_of("move") > 0.0); // real measurements, not balanced-pair zeros
+    CHECK(busy_of("drag") > 0.0);
 }
 
 // Both observers can drive the same schedule at once (report + trace).
@@ -131,6 +198,7 @@ static void report_and_trace_compose() {
 int main() {
     RUN_SUITE(report_summarizes_systems);
     RUN_SUITE(trace_writes_one_row_per_system_per_tick);
+    RUN_SUITE(fanned_wave_reports_real_busy_time);
     RUN_SUITE(report_and_trace_compose);
     return REPORT();
 }

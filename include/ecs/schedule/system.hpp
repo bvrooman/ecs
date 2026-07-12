@@ -18,6 +18,7 @@
 #include "../query.hpp"
 #include "../world.hpp"
 #include "access.hpp"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -210,6 +211,12 @@ struct query_param_traits<Query<Cs...>> {
 // The whole-parameter-list declare/invoke drivers live with the parameter
 // protocols: schedule/params/local.hpp for imperative systems (which adds the
 // stateful Local<T> face), schedule/params/protocol.hpp for kernel systems.
+
+// Timing shorthand shared by the schedule/executor instrumentation.
+using sched_clock = std::chrono::steady_clock;
+inline double elapsed_us(sched_clock::time_point const t0) {
+    return std::chrono::duration<double, std::micro>(sched_clock::now() - t0).count();
+}
 
 // Identity a wave hands to stateful kernel parameters' prepare hooks: which
 // system is preparing and which schedule tick this is. Random derives its

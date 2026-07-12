@@ -71,3 +71,4 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+profiler_trace.csv
