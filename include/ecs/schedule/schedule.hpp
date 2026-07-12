@@ -106,75 +106,7 @@ public:
     // can reach a nested dispatch.
     template <class Fn, int P = 0>
     SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
-        static_assert(detail::IntrospectableSystem<Fn>,
-                      "a system must be a plain function or a functor with exactly "
-                      "one non-template call operator -- a generic (auto-parameter) "
-                      "lambda cannot work here, because the parameter TYPES are what "
-                      "declare the system's access");
-        if constexpr (detail::IntrospectableSystem<Fn>) {
-            using Args = detail::system_args_t<Fn>;
-            static_assert(detail::query_info<Args>::count == 1,
-                          "add_kernel: the system must take exactly ONE Query<Cs...> "
-                          "parameter -- it is the iteration the executor slices into "
-                          "work items (use add() for zero or several queries)");
-            static_assert(!detail::any_res_mut_v<Args>,
-                          "add_kernel: ResMut<T> is not allowed in a kernel system -- "
-                          "its work items run concurrently, so writes through ResMut "
-                          "would race. Read resources via Res<T>; fold shared state "
-                          "with Reduce<T, Op>, write gather-shaped output with "
-                          "Extract<T> (see schedule/params/)");
-            static_assert(detail::kernel_params_info<Args>::all_allowed,
-                          "add_kernel: unsupported kernel parameter type -- a kernel "
-                          "system may take one Query<Cs...>, plus Res<T>, Commands&, "
-                          "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
-                          "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
-                          "Random (Local<T> is imperative-only: per-system state has "
-                          "no race-free meaning across a kernel's concurrent items)");
-            if constexpr (detail::query_info<Args>::count == 1 &&
-                          !detail::any_res_mut_v<Args> &&
-                          detail::kernel_params_info<Args>::all_allowed) {
-                constexpr auto QI = detail::query_info<Args>::index;
-                constexpr auto N  = std::tuple_size_v<Args>;
-                using Q           = std::tuple_element_t<QI, Args>;
-                using Info        = detail::kernel_params_info<Args>;
-                using Seq         = std::make_index_sequence<N>;
-                System sys;
-                sys.name  = std::move(name);
-                sys.phase = P;
-                detail::kernel_declare<Args>(sys.access, Seq {});
-                sys.query_sig = detail::query_param_traits<Q>::signature();
-
-                // Per-item slot state for stateful parameters (Reduce/Extract),
-                // shared between the item bind and the barrier hooks; persists
-                // for the system's lifetime so slot capacity is retained.
-                auto states   = std::make_shared<typename Info::states>();
-                sys.run_range = [fn = std::forward<Fn>(fn),
-                                 states](World& w,
-                                         Commands& cmds,
-                                         std::uint32_t ai,
-                                         std::size_t b,
-                                         std::size_t e,
-                                         std::uint32_t ord) mutable {
-                    detail::kernel_invoke<Args, QI>(fn, *states, w, cmds, ai, b, e,
-                                                    ord, Seq {});
-                };
-                if constexpr (Info::any_stateful) {
-                    sys.prepare_items = [states](World& w,
-                                                 std::span<std::uint32_t const> rows,
-                                                 detail::KernelWaveContext const& ctx) {
-                        detail::kernel_prepare_all<Args>(*states, w, rows, ctx, Seq {});
-                    };
-                    sys.finish_items = [states](World& w) {
-                        detail::kernel_finish_all<Args>(*states, w, Seq {});
-                    };
-                }
-                return register_system(std::move(sys));
-            } else {
-                return SystemId {0}; // unreachable: a static_assert above fired
-            }
-        } else {
-            return SystemId {0}; // unreachable: the static_assert above fired
-        }
+        return emplace_kernel(std::move(name), std::forward<Fn>(fn), P);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -302,6 +234,18 @@ private:
         return id;
     }
 
+    // The bodies behind add/add_once and add_kernel. Both follow the same
+    // diagnostic pattern: each requirement is a static_assert with a
+    // deliberate message, and the SAME condition guards the body as an
+    // `if constexpr` -- not redundancy, load-bearing: a failed static_assert
+    // does not stop the compiler from instantiating the rest of the function,
+    // and the body hard-errors on exactly the inputs the asserts reject
+    // (system_args_t of a generic lambda, system_param<P> of a non-parameter,
+    // tuple_element of a missing Query), which would bury the message under a
+    // cascade. The guard makes the assert's message the ONLY diagnostic; the
+    // lone fallback return below the guard exists so the already-ill-formed
+    // instantiation doesn't add a missing-return error on top.
+
     template <class Fn>
     SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase) {
         static_assert(detail::IntrospectableSystem<Fn>,
@@ -347,12 +291,82 @@ private:
                     };
                 }
                 return register_system(std::move(sys));
-            } else {
-                return SystemId {0}; // unreachable: the static_assert above fired
             }
-        } else {
-            return SystemId {0}; // unreachable: the static_assert above fired
         }
+        return SystemId {0}; // reached only when a static_assert above fired
+    }
+
+    template <class Fn>
+    SystemId emplace_kernel(std::string name, Fn&& fn, int const phase) {
+        static_assert(detail::IntrospectableSystem<Fn>,
+                      "a system must be a plain function or a functor with exactly "
+                      "one non-template call operator -- a generic (auto-parameter) "
+                      "lambda cannot work here, because the parameter TYPES are what "
+                      "declare the system's access");
+        if constexpr (detail::IntrospectableSystem<Fn>) {
+            using Args = detail::system_args_t<Fn>;
+            static_assert(detail::query_info<Args>::count == 1,
+                          "add_kernel: the system must take exactly ONE Query<Cs...> "
+                          "parameter -- it is the iteration the executor slices into "
+                          "work items (use add() for zero or several queries)");
+            static_assert(!detail::any_res_mut_v<Args>,
+                          "add_kernel: ResMut<T> is not allowed in a kernel system -- "
+                          "its work items run concurrently, so writes through ResMut "
+                          "would race. Read resources via Res<T>; fold shared state "
+                          "with Reduce<T, Op>, write gather-shaped output with "
+                          "Extract<T> (see schedule/params/)");
+            // `|| any_res_mut` so a ResMut (which also fails all_allowed)
+            // fires only its own, more specific assert above.
+            static_assert(detail::kernel_params_info<Args>::all_allowed ||
+                              detail::any_res_mut_v<Args>,
+                          "add_kernel: unsupported kernel parameter type -- a kernel "
+                          "system may take one Query<Cs...>, plus Res<T>, Commands&, "
+                          "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
+                          "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
+                          "Random (Local<T> is imperative-only: per-system state has "
+                          "no race-free meaning across a kernel's concurrent items)");
+            if constexpr (detail::query_info<Args>::count == 1 &&
+                          !detail::any_res_mut_v<Args> &&
+                          detail::kernel_params_info<Args>::all_allowed) {
+                constexpr auto QI = detail::query_info<Args>::index;
+                constexpr auto N  = std::tuple_size_v<Args>;
+                using Q           = std::tuple_element_t<QI, Args>;
+                using Info        = detail::kernel_params_info<Args>;
+                using Seq         = std::make_index_sequence<N>;
+                System sys;
+                sys.name  = std::move(name);
+                sys.phase = phase;
+                detail::kernel_declare<Args>(sys.access, Seq {});
+                sys.query_sig = detail::query_param_traits<Q>::signature();
+
+                // Per-item slot state for stateful parameters (Reduce/Extract),
+                // shared between the item bind and the barrier hooks; persists
+                // for the system's lifetime so slot capacity is retained.
+                auto states   = std::make_shared<typename Info::states>();
+                sys.run_range = [fn = std::forward<Fn>(fn),
+                                 states](World& w,
+                                         Commands& cmds,
+                                         std::uint32_t ai,
+                                         std::size_t b,
+                                         std::size_t e,
+                                         std::uint32_t ord) mutable {
+                    detail::kernel_invoke<Args, QI>(fn, *states, w, cmds, ai, b, e,
+                                                    ord, Seq {});
+                };
+                if constexpr (Info::any_stateful) {
+                    sys.prepare_items = [states](World& w,
+                                                 std::span<std::uint32_t const> rows,
+                                                 detail::KernelWaveContext const& ctx) {
+                        detail::kernel_prepare_all<Args>(*states, w, rows, ctx, Seq {});
+                    };
+                    sys.finish_items = [states](World& w) {
+                        detail::kernel_finish_all<Args>(*states, w, Seq {});
+                    };
+                }
+                return register_system(std::move(sys));
+            }
+        }
+        return SystemId {0}; // reached only when a static_assert above fired
     }
 
     // Build and execute one wave's item list; on a throw, discard the aborted
