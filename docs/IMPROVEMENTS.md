@@ -319,9 +319,13 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      neither compress nor come cheap; keep it serial.
    The A/B is safe by construction — `add` ↔ `add_kernel` is a one-word,
    behavior-preserving switch (identical results at any lane count), so
-   measure with `ScheduleReport` and believe the numbers. Tooling roadmap: the
-   profiler should surface per-system barrier-hook time so a kernel whose
-   finish fold costs as much as its dispatch flags itself.
+   measure with `ScheduleReport` and believe the numbers. **[done]** The
+   profiler surfaces exactly this: each system emits a `SystemWork` event
+   with measured busy time (per-item timing summed across lanes) plus its
+   barrier prepare/finish hook durations, so a kernel whose finish fold
+   costs as much as its dispatch flags itself in `ScheduleReport`'s
+   prep/fin columns, in `ScheduleTrace`'s CSV, and in the HTML report
+   (`tools/schedule_report_html.py`).
 
    **Data layout as the missing precondition — spatial/key sorting
    (in prototype).** The grid shape loses above because work items are

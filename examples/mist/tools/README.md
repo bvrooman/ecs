@@ -34,6 +34,17 @@ The demo (`examples/mist`) exposes these env-gated hooks (zero cost when unset):
 | `ECS_CAPTURE=<bmp>` / `ECS_CAPTURE_AT=<s>` | grab one frame at a time |
 | steering weights | `ECS_CRUISE ECS_GOALSEEK ECS_COHESION ECS_ALIGN ECS_SEPARATION ECS_SOFTCAP ECS_WANDER` — override at runtime, no recompile |
 
+For **schedule timing** (as opposed to flock behaviour): run the GL demo with
+`ECS_TRACE=<csv>` (or attach `ecs::diag::ScheduleTrace` in any harness), then
+
+```sh
+python3 tools/schedule_report_html.py trace.csv report.html
+```
+
+renders a self-contained HTML report — headline tick stats, per-wave wall/flush
+split, and a card per system with its busy-time distribution, time series, and
+barrier-hook costs (`busy` = work-item time summed across lanes).
+
 Metrics columns: `t, com_sx, com_sy, com_z, goal_sx, goal_sy, follow_err, spread, coherence`
 where **follow_err** = screen distance from the flock centre to the cursor/goal
 (0 = on it; a non-decaying oscillation = the undamped wheel), **spread** = RMS
