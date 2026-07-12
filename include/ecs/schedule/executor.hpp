@@ -33,28 +33,41 @@
 namespace ecs::detail {
 
 // One unit of claimable work: a row-range of one kernel system's matched
-// archetype, or (archetype == kImperative) an entire opaque system.
+// archetype, or (archetype == kImperative) an entire opaque system. `ordinal`
+// is the item's index within ITS SYSTEM in generation order (archetypes
+// ascending, rows ascending -- the serial-walk order); it survives the LPT
+// sort and indexes the per-item slots of stateful kernel parameters, and
+// barrier-time folds walk ordinals so results are canonical-ordered no matter
+// which lane ran what.
 struct WorkItem {
     std::uint32_t system;    // index into the schedule's system list
     std::uint32_t archetype; // world archetype index, or kImperative
     std::uint32_t begin, end;
+    std::uint32_t ordinal;
 };
 inline constexpr std::uint32_t kImperative = 0xFFFF'FFFFu;
 // A slice below this many rows is not worth a separate claim.
 inline constexpr std::size_t kMinItemRows = 1024;
+// Target item count per kernel system. Deliberately a CONSTANT, not a
+// function of the pool's lane count: identical slicing at every lane count is
+// what makes barrier-time folds (Reduce) bitwise-reproducible whether a
+// schedule runs on 1 lane or N -- float partials get the same boundaries
+// everywhere. 64 gives ample claim-granularity oversubscription for the pool
+// sizes this library targets, and a 1-lane pool just claims the items in
+// order (the per-item cost is one fetch_add).
+inline constexpr std::size_t kTargetItemsPerKernel = 64;
 
 // Flatten one wave into `items` (capacity retained by the caller across waves
 // and ticks: no steady-state allocation) and sort it into claim order.
 inline void build_wave_items(std::vector<WorkItem>& items,
                              std::span<std::size_t const> wave,
                              std::span<SystemRecord> systems,
-                             World const& world,
-                             unsigned lanes) {
+                             World const& world) {
     items.clear();
     for (auto const idx : wave) {
         auto& s = systems[idx];
         if (!s.is_kernel()) {
-            items.push_back({std::uint32_t(idx), kImperative, 0, 0});
+            items.push_back({std::uint32_t(idx), kImperative, 0, 0, 0});
             continue;
         }
         auto const& matches = s.match.resolve(world, s.query_sig);
@@ -63,21 +76,24 @@ inline void build_wave_items(std::vector<WorkItem>& items,
             total += world.archetypes()[ai]->size();
         if (total == 0)
             continue;
-        // ~lanes x 8 items per kernel system: enough oversubscription for
-        // dynamic claiming to balance differing per-row kernel costs, with a
-        // floor so an item always amortizes its claim. (An archetype smaller
-        // than the grain still yields its own item -- a claim is one
-        // fetch_add, far cheaper than the alternative bookkeeping.)
+        // ~kTargetItemsPerKernel items per kernel system: enough
+        // oversubscription for dynamic claiming to balance differing per-row
+        // kernel costs, with a floor so an item always amortizes its claim.
+        // (An archetype smaller than the grain still yields its own item -- a
+        // claim is one fetch_add, far cheaper than the alternative
+        // bookkeeping.)
         std::size_t const grain =
-            lanes <= 1
-                ? total
-                : std::max<std::size_t>(kMinItemRows, total / (std::size_t {lanes} * 8));
+            std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
+        std::uint32_t ordinal = 0; // generation order == serial-walk order
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();
             for (std::size_t b = 0; b < n; b += grain) {
                 auto const e = std::min(n, b + grain);
-                items.push_back(
-                    {std::uint32_t(idx), ai, std::uint32_t(b), std::uint32_t(e)});
+                items.push_back({std::uint32_t(idx),
+                                 ai,
+                                 std::uint32_t(b),
+                                 std::uint32_t(e),
+                                 ordinal++});
             }
         }
     }
@@ -109,7 +125,7 @@ inline void run_work_item(WorkItem const& it,
     if (it.archetype == kImperative)
         s.run(world, cmds, pool);
     else
-        s.run_range(world, cmds, it.archetype, it.begin, it.end);
+        s.run_range(world, cmds, it.archetype, it.begin, it.end, it.ordinal);
 }
 
 // Execute a built item list. A lone item runs inline on the caller (an

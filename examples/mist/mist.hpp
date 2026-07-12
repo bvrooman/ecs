@@ -51,6 +51,19 @@ struct GpuParticle {
 };
 using RenderSnapshot = std::vector<GpuParticle>;
 
+// Whole-flock aggregates for the metrics logger (ECS_METRICS), rebuilt each
+// tick by a Reduce over every bird: position/velocity sums, per-bird speed
+// sum, and the summed squared radius (spread falls out of E[|p|^2] - |mean|^2
+// in one pass). Doubles: 85k floats summed serially were fine, but the fold
+// tree should not show up in a diagnostic.
+struct FlockStats {
+    double x = 0, y = 0, z = 0;    // position sum
+    double vx = 0, vy = 0, vz = 0; // velocity sum
+    double speed = 0;              // sum of per-bird |v|
+    double r2    = 0;              // sum of per-bird |p|^2
+    std::uint64_t n = 0;           // bird count
+};
+
 // --- simulation tuning ------------------------------------------------------
 namespace cfg {
 // 30 Hz fixed step. The motion animates in wall time (Clock advances kDt/tick),

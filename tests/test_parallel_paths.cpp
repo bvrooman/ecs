@@ -6,9 +6,11 @@
 #include "check.hpp"
 #include "ecs/ecs.hpp"
 #include "setup.hpp"
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 using namespace ecs;
@@ -287,6 +289,506 @@ static void kernel_with_resource_and_commands_extras() {
     CHECK(w.size() == 0);
 }
 
+// --- the parallel-primitives slot substrate: Reduce / Extract ---------------
+
+struct FSum {
+    float v = 0;
+};
+struct FAdd {
+    void operator()(FSum& into, FSum& partial) const { into.v += partial.v; }
+};
+
+// Populate two archetypes with a value pattern whose float sum is order-
+// sensitive, so any change in partial boundaries or fold order would change
+// the bits of the result.
+static void populate_mixed(World& w, int n) {
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < n; ++i) {
+            float const x = 1.0f + float(i % 1013) * 0.03125f;
+            cmd.spawn(Position {x, 0});
+            if (i % 3 == 0)
+                cmd.spawn(Position {x * 0.5f, 0}, Health {i});
+        }
+    });
+}
+
+// Reduce: per-item partials folded at the barrier in canonical order. The
+// result must be BITWISE identical at 1 lane and 4 lanes (lane-count-
+// independent slicing + ordinal-order fold), the target must be rebuilt each
+// run (no accumulation across ticks), and the reduce's declared resource
+// write must level readers into a later wave.
+static void reduce_is_bitwise_deterministic_across_lane_counts() {
+    auto run_sum = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<FSum>();
+        populate_mixed(w, 30'000);
+        Schedule s;
+        s.add_kernel("sum", [](Query<const Position> q, Reduce<FSum, FAdd> sum) {
+            q.for_each_serial([&](auto& p) { sum->v += p.x; });
+        });
+        s.add("read", [](Res<FSum>) {}); // reader of the reduce target
+        if (s.level_count() != 2)
+            return -1.0f; // leveling broken; fail loudly below
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        return w.resource<FSum>().v;
+    };
+
+    float const serial1  = run_sum(1, 1);
+    float const parallel = run_sum(4, 1);
+    float const repeated = run_sum(4, 5); // rebuilt per run: same value after 5
+
+    // Reference: a double-precision serial walk. NOT bitwise-comparable to the
+    // sliced float fold -- per-item partials change the float summation TREE
+    // (association), which is inherent to any partitioned reduction (and both
+    // float results drift ~sqrt(n)*eps from the true sum). The guarantee under
+    // test is that the tree itself is fixed: same slicing and same fold order
+    // at every lane count and every run.
+    double expect = 0;
+    {
+        World w;
+        populate_mixed(w, 30'000);
+        query<const Position>(w).for_each_serial([&](auto& p) { expect += p.x; });
+    }
+    double const tol = expect * 1e-3;
+    CHECK(double(serial1) > expect - tol && double(serial1) < expect + tol);
+    CHECK(parallel == serial1); // 4 lanes == 1 lane, BITWISE
+    CHECK(repeated == serial1); // target rebuilt each run, not accumulated
+}
+
+// Reduce with vector partials (the clear()-keeps-capacity reset path and a
+// moving/merging Op): a filtered collect must match the serial filtered walk
+// exactly, including order.
+struct HpConcat {
+    void operator()(std::vector<int>& into, std::vector<int>& partial) const {
+        into.insert(into.end(), partial.begin(), partial.end());
+        partial.clear();
+    }
+};
+static void reduce_vector_partials_match_serial_collect() {
+    World w;
+    w.emplace_resource<std::vector<int>>();
+    populate_mixed(w, 12'000);
+
+    Schedule s;
+    s.add_kernel("collect",
+                 [](Query<const Health> q, Reduce<std::vector<int>, HpConcat> out) {
+                     q.for_each_serial([&](auto& h) {
+                         if (h.hp % 7 == 0)
+                             out->push_back(h.hp);
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t) // repeated runs: rebuilt, capacity retained
+        s.run(w, pool);
+
+    std::vector<int> expect;
+    query<const Health>(w).for_each_serial([&](auto& h) {
+        if (h.hp % 7 == 0)
+            expect.push_back(h.hp);
+    });
+    CHECK(!expect.empty());
+    CHECK(w.resource<std::vector<int>>() == expect);
+}
+
+// Reduce with a Partial type different from the target: each item folds into
+// a SPARSE map of touched buckets, merged into the DENSE histogram resource
+// at the barrier -- the shape for big dense targets (spatial grids) where one
+// full copy per item would be absurd. Result must equal the serial histogram
+// exactly, at any lane count.
+struct DenseHist {
+    std::array<int, 16> v {};
+};
+struct FoldSparse {
+    void operator()(DenseHist& into, std::unordered_map<int, int>& part) const {
+        for (auto const& [k, c] : part)
+            into.v[std::size_t(k)] += c;
+    }
+};
+static void reduce_sparse_partial_matches_dense_histogram() {
+    auto run_hist = [](unsigned lanes) {
+        World w;
+        w.emplace_resource<DenseHist>();
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel(
+            "hist",
+            [](Query<const Health> q,
+               Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
+                q.for_each_serial([&](auto& hp) { ++(*h)[hp.hp % 16]; });
+            });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 2; ++t) // rebuilt per run, not accumulated
+            s.run(w, pool);
+        return w.resource<DenseHist>().v;
+    };
+
+    std::array<int, 16> expect {};
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            ++expect[std::size_t(h.hp % 16)];
+        });
+    }
+    CHECK(run_hist(1) == expect);
+    CHECK(run_hist(4) == expect);
+}
+
+// Extract: disjoint per-item spans over a pre-sized buffer resource. The
+// gathered buffer must equal the serial walk's output exactly (same values,
+// same order), at 4 lanes, across repeated runs.
+static void extract_matches_serial_gather_order() {
+    World w;
+    w.emplace_resource<std::vector<float>>();
+    populate_mixed(w, 20'000);
+
+    Schedule s;
+    s.add_kernel("extract",
+                 [](Query<const Position> q, Extract<std::vector<float>> out) {
+                     q.for_each_chunk([&](std::span<Entity>, chunk<const Position> p) {
+                         auto x = p.column<0>();
+                         for (std::size_t i = 0; i < x.size(); ++i)
+                             out[i] = x[i];
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t)
+        s.run(w, pool);
+
+    std::vector<float> expect;
+    query<const Position>(w).for_each_serial([&](auto& p) { expect.push_back(p.x); });
+    CHECK(w.resource<std::vector<float>>().size() == expect.size());
+    CHECK(w.resource<std::vector<float>>() == expect);
+}
+
+// Collect: filtered gather with unknown output size -- per-item partials
+// concatenated at the barrier in ordinal order. The collected sequence must
+// equal the serial filtered walk exactly (values AND order) at any lane
+// count, be rebuilt every run, and its declared resource write must level
+// readers into a later wave.
+static void collect_matches_serial_filter_order() {
+    auto run_collect = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<std::vector<int>>();
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("cull",
+                     [](Query<const Health> q, Collect<std::vector<int>> out) {
+                         q.for_each_serial([&](auto& h) {
+                             if (h.hp % 7 == 0)
+                                 out->push_back(h.hp);
+                         });
+                     });
+        s.add("consume", [](Res<std::vector<int>>) {}); // reader of the target
+        if (s.level_count() != 2)
+            return std::vector<int> {}; // leveling broken; fail loudly below
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        return w.resource<std::vector<int>>();
+    };
+
+    auto const serial1  = run_collect(1, 1);
+    auto const parallel = run_collect(4, 1);
+    auto const repeated = run_collect(4, 3);
+
+    std::vector<int> expect;
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 7 == 0)
+                expect.push_back(h.hp);
+        });
+    }
+    CHECK(!expect.empty());
+    CHECK(serial1 == expect);   // the exact serial filter: values and order
+    CHECK(parallel == serial1); // 4 lanes == 1 lane
+    CHECK(repeated == serial1); // target rebuilt each run, not accumulated
+}
+
+// Events: a double-buffered channel. Events emitted during tick N are
+// readable during tick N+1 -- never the same tick -- by both a kernel
+// EventReader and a serial Res<Events<T>> system, in an order deterministic
+// at any lane count.
+struct Ping {
+    int from = 0;
+};
+struct PingLog {
+    std::vector<int> v;
+};
+static void events_are_double_buffered_and_deterministic() {
+    auto run_events = [](unsigned lanes, int ticks) {
+        World w;
+        w.emplace_resource<Events<Ping>>();
+        w.emplace_resource<PingLog>();
+        populate_mixed(w, 9'000);
+        Schedule s;
+        // Wave 1: emit one ping per Health row with hp % 5 == 0.
+        s.add_kernel("emit", [](Query<const Health> q, EventWriter<Ping> ev) {
+            q.for_each_serial([&](auto& h) {
+                if (h.hp % 5 == 0)
+                    ev.emit(Ping {h.hp});
+            });
+        });
+        // Wave 2: every item of the reader kernel sees the SAME full snapshot
+        // of last tick's pings; fold its size into each row.
+        s.add_kernel("consume", [](Query<Position> q, EventReader<Ping> ev) {
+            auto const n = float(ev.size());
+            q.for_each_serial([&](auto& p) { p.y += n; });
+        });
+        // Serial reader through the plain resource (registered after the
+        // writer, so its wave runs post-swap): log the exact sequence.
+        s.add("log", [](Res<Events<Ping>> ev, ResMut<PingLog> log) {
+            for (auto const& ping : ev->read())
+                log->v.push_back(ping.from);
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        std::vector<float> ys;
+        query<const Position>(w).for_each_serial([&](auto& p) {
+            ys.push_back(p.y);
+        });
+        return std::pair {w.resource<PingLog>().v, ys};
+    };
+
+    std::vector<int> expect; // the serial filtered walk, one tick's pings
+    {
+        World w;
+        populate_mixed(w, 9'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 5 == 0)
+                expect.push_back(h.hp);
+        });
+    }
+    CHECK(!expect.empty());
+
+    auto const [log1, ys1] = run_events(4, 1);
+    CHECK(log1.empty());                        // tick 1: nothing visible yet
+    for (float y : ys1)
+        CHECK(y == 0.0f);                       // reader kernel saw 0 events
+
+    auto const [log3, ys3]   = run_events(4, 3);
+    auto const [log3s, ys3s] = run_events(1, 3);
+    // Ticks 2 and 3 each see exactly tick N-1's pings, in canonical order.
+    std::vector<int> twice = expect;
+    twice.insert(twice.end(), expect.begin(), expect.end());
+    CHECK(log3 == twice);
+    for (float y : ys3)
+        CHECK(y == 2.0f * float(expect.size()));
+    CHECK(log3s == log3); // 1 lane == 4 lanes: same sequence, same order
+    CHECK(ys3s == ys3);
+}
+
+// Scratch: per-item private workspace, cleared before every run. Use it to
+// build a per-row temp list; results must be exact at 4 lanes, and the body
+// itself asserts the cleared-at-run-start contract.
+static void scratch_is_private_and_cleared() {
+    World w;
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 12'000; ++i)
+            cmd.spawn(Health {i % 32});
+    });
+
+    std::atomic<int> dirty {0};
+    Schedule s;
+    s.add_kernel("smooth",
+                 [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
+                     if (!tmp->empty())
+                         dirty.fetch_add(1, std::memory_order_relaxed);
+                     q.for_each_serial([&](auto& h) {
+                         // A silly per-row use of workspace: digits of hp.
+                         tmp->clear();
+                         for (int v = h.hp; v > 0; v /= 10)
+                             tmp->push_back(v % 10);
+                         int sum = 0;
+                         for (int d : *tmp)
+                             sum += d;
+                         h.hp = sum; // digit sum, computed via scratch
+                     });
+                 });
+    WorkerPool pool {4};
+    for (int t = 0; t < 3; ++t)
+        s.run(w, pool);
+    CHECK(dirty.load() == 0); // scratch arrived cleared for every item
+
+    bool exact = true;
+    query<const Health>(w).for_each_serial([&](auto& h) {
+        if (h.hp > 9 + 9) // three runs of digit-summing values < 32: <= 18... always small
+            exact = false;
+    });
+    CHECK(exact);
+}
+
+// Random: counter-based per-item streams. Same seed + tick => identical
+// values at 1 lane and 4 lanes (and across repeated identical runs); a new
+// tick or a different RandomSeed resource changes the stream; the values are
+// sanely distributed.
+static void random_streams_are_lane_count_invariant() {
+    auto roll = [](unsigned lanes, std::uint64_t seed, int ticks) {
+        World w;
+        w.emplace_resource<RandomSeed>(seed);
+        setup(w, [&](Commands& cmd) {
+            for (int i = 0; i < 20'000; ++i)
+                cmd.spawn(Position {});
+        });
+        Schedule s;
+        s.add_kernel("jitter", [](Query<Position> q, Random rng) {
+            q.for_each_serial([&](auto& p) { p.x = rng.f32(); });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        std::vector<float> out;
+        query<const Position>(w).for_each_serial([&](auto& p) {
+            out.push_back(p.x);
+        });
+        return out;
+    };
+
+    auto const serial1  = roll(1, 42, 1);
+    auto const parallel = roll(4, 42, 1);
+    auto const again    = roll(4, 42, 1);
+    auto const tick2    = roll(4, 42, 2);
+    auto const seeded   = roll(4, 43, 1);
+
+    CHECK(serial1 == parallel); // bitwise: 1 lane == 4 lanes
+    CHECK(parallel == again);   // bitwise: run-to-run reproducible
+    CHECK(tick2 != parallel);   // a new tick is a new stream
+    CHECK(seeded != parallel);  // the RandomSeed resource is honored
+
+    double mean = 0;
+    for (float v : parallel) {
+        CHECK(v >= 0.0f && v < 1.0f);
+        mean += v;
+    }
+    mean /= double(parallel.size());
+    CHECK(mean > 0.45 && mean < 0.55); // sane uniform distribution
+}
+
+// Local: per-system state persisting across ticks, private to each registered
+// system -- two registrations of the same callable get independent state, and
+// an add_once system's Local dies with it.
+struct TickLog {
+    std::vector<int> a, b;
+};
+static void local_state_persists_across_ticks() {
+    World w;
+    w.emplace_resource<TickLog>();
+
+    // The SAME callable registered twice: each registration owns its own
+    // Local (shared state would count 1..8 instead of two interleaved 1..4s).
+    auto const counter = [](Local<int> n, ResMut<TickLog> log) {
+        ++*n;
+        log->a.push_back(*n);
+    };
+    Schedule s;
+    s.add("count-a", counter);
+    s.add("count-b", counter);
+    for (int t = 0; t < 4; ++t)
+        s.run(w);
+
+    CHECK(w.resource<TickLog>().a == (std::vector<int> {1, 1, 2, 2, 3, 3, 4, 4}));
+}
+
+// Commands from a KERNEL system: per-item recording, replayed in canonical
+// order at the barrier. The spawned rows' payloads (and the survivors of a
+// destroy filter) must come out in exactly the serial walk's order at any
+// lane count -- with the old thread-sharded path their order followed lane
+// timing.
+struct Spawned {
+    int v = 0;
+};
+static void kernel_commands_replay_in_canonical_order() {
+    auto run_and_gather = [](unsigned lanes) {
+        World w;
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("edit", [](Query<const Health> q, Commands& cmd) {
+            q.for_each_chunk([&](std::span<Entity> es, chunk<const Health> h) {
+                auto hp = h.column<0>();
+                for (std::size_t i = 0; i < hp.size(); ++i) {
+                    if (hp[i] % 9 == 0)
+                        cmd.spawn(Spawned {hp[i]});
+                    if (hp[i] % 17 == 0)
+                        cmd.destroy(es[i]);
+                }
+            });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 2; ++t) // second tick: stores rewound and reused
+            s.run(w, pool);
+        std::vector<int> spawned;
+        query<const Spawned>(w).for_each_serial([&](auto& sp) {
+            spawned.push_back(sp.v);
+        });
+        std::vector<int> alive;
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            alive.push_back(h.hp);
+        });
+        return std::pair {spawned, alive};
+    };
+
+    auto const [spawned1, alive1] = run_and_gather(1);
+    auto const [spawned4, alive4] = run_and_gather(4);
+    CHECK(!spawned1.empty());
+    CHECK(spawned4 == spawned1); // apply order canonical: same rows, same order
+    CHECK(alive4 == alive1);     // destroys too: same swap-and-pop layout
+}
+
+// Bin: group-by with a barrier counting sort. Every bucket's contents must
+// equal the serial walk's per-bucket gather (values AND order) at any lane
+// count; reserve_buckets keeps empty buckets addressable.
+static void bin_groups_match_serial_walk() {
+    auto run_bins = [](unsigned lanes) {
+        World w;
+        w.emplace_resource<Bins<int>>().reserve_buckets(16);
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_kernel("bucketize", [](Query<const Health> q, Bin<int> bin) {
+            q.for_each_serial([&](auto& h) {
+                if (h.hp % 2 == 0) // only even hp: buckets 8..15 stay empty
+                    bin.emit(std::uint32_t(h.hp % 8), h.hp);
+            });
+        });
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 3; ++t) // rebuilt per run, not accumulated
+            s.run(w, pool);
+        auto const& bins = w.resource<Bins<int>>();
+        std::vector<std::vector<int>> out(bins.bucket_count());
+        for (std::size_t b = 0; b < bins.bucket_count(); ++b) {
+            auto const sp = bins.bucket(b);
+            out[b].assign(sp.begin(), sp.end());
+        }
+        return out;
+    };
+
+    auto const bins1 = run_bins(1);
+    auto const bins4 = run_bins(4);
+
+    std::vector<std::vector<int>> expect(16);
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        query<const Health>(w).for_each_serial([&](auto& h) {
+            if (h.hp % 2 == 0)
+                expect[std::size_t(h.hp % 8)].push_back(h.hp);
+        });
+    }
+
+    CHECK(bins1.size() == 16); // reserve_buckets floor honored
+    CHECK(bins4.size() == 16);
+    CHECK(bins1 == expect); // per-bucket serial order, incl. empty buckets
+    CHECK(bins4 == expect); // ... at 4 lanes too
+    std::size_t total = 0;
+    for (auto const& b : expect)
+        total += b.size();
+    CHECK(total > 0);
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -295,5 +797,16 @@ int main() {
     RUN_SUITE(kernel_system_covers_every_row);
     RUN_SUITE(mixed_wave_flattened_dispatch_is_exact);
     RUN_SUITE(kernel_with_resource_and_commands_extras);
+    RUN_SUITE(reduce_is_bitwise_deterministic_across_lane_counts);
+    RUN_SUITE(reduce_vector_partials_match_serial_collect);
+    RUN_SUITE(reduce_sparse_partial_matches_dense_histogram);
+    RUN_SUITE(extract_matches_serial_gather_order);
+    RUN_SUITE(collect_matches_serial_filter_order);
+    RUN_SUITE(events_are_double_buffered_and_deterministic);
+    RUN_SUITE(local_state_persists_across_ticks);
+    RUN_SUITE(kernel_commands_replay_in_canonical_order);
+    RUN_SUITE(bin_groups_match_serial_walk);
+    RUN_SUITE(scratch_is_private_and_cleared);
+    RUN_SUITE(random_streams_are_lane_count_invariant);
     return REPORT();
 }

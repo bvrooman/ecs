@@ -14,9 +14,11 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <concepts>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <ranges>
 #include <type_traits>
 #include <unordered_map>
@@ -41,6 +43,12 @@ namespace detail {
                              are_distinct<Ts...>::value> {};
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
+
+    // The kernel-parameter protocol (schedule/params/protocol.hpp), forward-
+    // declared so Commands can befriend its Commands& specialization (per-item
+    // command recording for kernel systems).
+    template <class P>
+    struct kernel_param;
 } // namespace detail
 
 // Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
@@ -79,6 +87,92 @@ public:
     // allocation optimization for bulk setup (per-archetype component storage
     // is pre-grown separately via Archetype::reserve).
     void reserve_entities(std::size_t n) { records_.reserve(n); }
+
+    // --- maintenance: row sorting ------------------------------------------
+    // Stable-sort the rows of every archetype containing C by key(component
+    // value) -- a data-LAYOUT operation. Work items and chunk splits slice
+    // contiguous ROW ranges, so making row order correlate with the key a
+    // kernel scatters by (e.g. a spatial cell index) is what lets per-item
+    // partials compress (see docs/IMPROVEMENTS.md, parallel-primitives
+    // section); neighborhood-reading kernels gain cache locality as a bonus.
+    //
+    // Entity handles remain valid (their records are patched); what changes
+    // is iteration/serial-walk order -- deterministically: a stable sort by a
+    // canonical key is the same permutation at any lane count, so schedule
+    // results stay bitwise reproducible across sorts. Rows drift back out of
+    // order via swap-and-pop churn; re-sort every N ticks (key coherence
+    // decays slowly, the sort amortizes -- see Schedule::add_maintenance).
+    // Structural, like the *_now primitives: call it OUTSIDE run() or from a
+    // maintenance hook, never from inside a system.
+    //
+    // `min_disorder` skips archetypes that are still nearly in order: the
+    // disorder of an archetype is its fraction of adjacent key DESCENTS
+    // (0 = sorted, ~1 = reversed; drift from churn accumulates it slowly),
+    // and the sort runs only when disorder > min_disorder. The default 0
+    // sorts whenever any pair is out of order.
+    //
+    // Integral keys with a compact range (a grid-cell index; range up to a
+    // few times the row count) take a counting sort -- measured ~60x cheaper
+    // than the comparison sort on 40k rows -- and fall back to stable_sort
+    // otherwise; both are stable, so both produce the same canonical
+    // permutation.
+    template <class C, class KeyFn>
+    void sort_rows(KeyFn key, double const min_disorder = 0.0) {
+        std::vector<std::uint32_t> perm;
+        for (auto const& arch_ptr : archetypes_) {
+            auto& arch = *arch_ptr;
+            if (!arch.has(component_id<C>) || arch.size() < 2)
+                continue;
+            auto const& store = arch.template column<C>().store;
+            auto const n      = arch.size();
+            using Key         = decltype(key(store.gather(0)));
+
+            // One pass: gather keys, count adjacent descents, track range.
+            std::vector<Key> keys(n);
+            std::size_t descents = 0;
+            keys[0]              = key(store.gather(0));
+            Key lo = keys[0], hi = keys[0];
+            for (std::size_t r = 1; r < n; ++r) {
+                keys[r] = key(store.gather(r));
+                if (keys[r] < keys[r - 1])
+                    ++descents;
+                lo = std::min(lo, keys[r]);
+                hi = std::max(hi, keys[r]);
+            }
+            if (descents == 0) // already in key order
+                continue;
+            if (double(descents) / double(n - 1) <= min_disorder)
+                continue; // still coherent enough to not be worth a permute
+
+            perm.resize(n);
+            bool counted = false;
+            if constexpr (std::integral<Key>) {
+                // Counting sort when the bucket table stays proportionate to
+                // the work (covers the grid-cell case with lots of headroom).
+                auto const range = std::uint64_t(hi) - std::uint64_t(lo) + 1;
+                if (range <= std::max<std::uint64_t>(4 * n, 1024)) {
+                    std::vector<std::uint32_t> starts(range + 1, 0);
+                    for (auto const k : keys)
+                        ++starts[std::uint64_t(k) - std::uint64_t(lo) + 1];
+                    for (std::size_t b = 1; b <= range; ++b)
+                        starts[b] += starts[b - 1];
+                    for (std::uint32_t r = 0; r < n; ++r)
+                        perm[starts[std::uint64_t(keys[r]) - std::uint64_t(lo)]++] =
+                            r; // ascending r per bucket: stable
+                    counted = true;
+                }
+            }
+            if (!counted) {
+                std::ranges::iota(perm, 0u);
+                std::ranges::stable_sort(perm, {}, [&](std::uint32_t const r) {
+                    return keys[r];
+                });
+            }
+            arch.permute_rows(perm);
+            for (std::uint32_t r = 0; r < n; ++r)
+                records_[arch.entities[r].index].row = r;
+        }
+    }
 
     // --- reads ------------------------------------------------------------
     template <class C>
@@ -517,7 +611,7 @@ public:
     template <class... Cs>
     Entity spawn(Cs&&... comps) {
         Entity const e = world_.reserve();
-        world_.commands_.record(
+        record(
             [e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
                 w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
             });
@@ -525,7 +619,7 @@ public:
     }
 
     void destroy(Entity e) {
-        world_.commands_.record([e](World& w) { w.destroy_now(e); });
+        record([e](World& w) { w.destroy_now(e); });
     }
 
     // Add component C to an entity (moving it to the matching archetype). If
@@ -533,7 +627,7 @@ public:
     // dead.
     template <class C>
     void add(Entity e, C&& value) {
-        world_.commands_.record([e, value = std::forward<C>(value)](World& w) mutable {
+        record([e, value = std::forward<C>(value)](World& w) mutable {
             if (w.alive(e))
                 w.add_now<std::decay_t<C>>(e, std::move(value));
         });
@@ -541,7 +635,7 @@ public:
 
     template <class C>
     void remove(Entity e) {
-        world_.commands_.record([e](World& w) {
+        record([e](World& w) {
             if (w.alive(e))
                 w.remove_now<C>(e);
         });
@@ -551,7 +645,7 @@ public:
     // not currently have C (so a stale target never throws at flush time).
     template <class C>
     void set(Entity e, C&& value) {
-        world_.commands_.record([e, value = std::forward<C>(value)](World& w) mutable {
+        record([e, value = std::forward<C>(value)](World& w) mutable {
             using D = std::decay_t<C>;
             if (w.alive(e) && w.has<D>(e))
                 w.set_now<D>(e, std::move(value));
@@ -560,9 +654,33 @@ public:
 
 private:
     friend class Schedule; // constructs Commands during run
+    template <class P>
+    friend struct detail::kernel_param; // per-item recording for kernel systems
     explicit Commands(World& w)
         : world_(w) {}
+    // A kernel work item's Commands records into its own private store (no
+    // lock, deterministic replay order) instead of the world's thread-sharded
+    // buffer; kernel_param<Commands&> owns the stores and enqueues them at
+    // the wave barrier (see schedule/params/commands.hpp).
+    Commands(World& w, CommandStore& local)
+        : world_(w)
+        , local_(&local) {}
+    template <class F>
+    void record(F&& f) {
+        if (local_)
+            local_->record(std::forward<F>(f));
+        else
+            world_.commands_.record(std::forward<F>(f));
+    }
+    // Barrier-time (single-threaded): splice this item's recorded commands
+    // into the wave's flush by enqueueing one replay command that drains the
+    // private store in record order. Enqueued from one thread in ordinal
+    // order, so kernel-recorded edits apply in canonical order.
+    void enqueue_local() {
+        world_.commands_.record([s = local_](World& w) { s->apply(w); });
+    }
     World& world_;
+    CommandStore* local_ = nullptr;
 };
 
 // Typed resource access for system parameters: Res<T> is a read of resource T,

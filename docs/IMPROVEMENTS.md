@@ -219,10 +219,12 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    is a nullable per-archetype chunk.
 2. Change detection — coarse per-(archetype, column) ticks bumped at dispatch
    time for non-const query components unlock `Changed<C>`/`Added<C>`.
-3. Frame-buffered gameplay events — `Events<T>` resource, double-buffered per
-   `run()`, writer side sharded like `CommandBuffer`, declared via
-   `EventReader<T>`/`EventWriter<T>` system params so conflict analysis covers
-   them (`event::Emitter` is a synchronous instrumentation bus, not this).
+3. Frame-buffered gameplay events — **done** (see item 7): `Events<T>`
+   channel resource, double-buffered per `run()`, written through per-item
+   slots (not shards — deterministic order), declared via
+   `EventReader<T>`/`EventWriter<T>` kernel params so conflict analysis
+   covers them (`event::Emitter` is a synchronous instrumentation bus, not
+   this).
 4. `run_if` conditions and explicit `before/after` ordering (today only
    registration order and `phase<N>`).
 5. Immediate edits for exclusive systems — an `ExclusiveWorld` param exposing
@@ -230,71 +232,155 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    outright — unanalyzable access is not a system parameter; `ExclusiveWorld`
    is the roadmap replacement for genuinely exclusive work.)
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
-   spike), `Local<T>` per-system state, per-dispatch grain hints, a thin
-   `App`/fixed-timestep layer; larger: structural-change hooks, entity
-   relationships.
-7. **`Reduce<T, Op>`: contention-free reductions for kernel systems.**
-   `ResMut<T>` is rejected in `add_kernel` because a system's own work items
-   run concurrently — so today every reduction (sum the kinetic energy, build
-   the flock grid, find a bounding box) is an `add()` system pinned to
-   `for_each_serial`, single-threaded (mist's `grid` system is the canonical
-   example). Atomics are the wrong fix: per-row `fetch_add` from every lane
-   ping-pongs one cache line — the exact contention this library's layout
-   exists to avoid. The right fix is per-item partial accumulation with a
-   barrier-time fold:
+   spike), ~~`Local<T>` per-system state~~ (**done** — see item 7),
+   per-dispatch grain hints, a thin `App`/fixed-timestep layer; larger:
+   structural-change hooks, entity relationships.
+7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a
+   kernel system needs is ONE mechanism — per-item private slots plus an
+   optional deterministic barrier-time merge — wearing different typed faces.
+   Organized by where per-item state lives, whether output size is known, and
+   how it merges:
 
-   ```cpp
-   // Sketch. Reduce<T, Op> is a kernel-only system parameter.
-   struct Energy { double j = 0; };                     // resource: the target
+   | primitive | shape | output size | merge | status |
+   |---|---|---|---|---|
+   | kernel map | write own components in place | — | none (disjoint rows) | done |
+   | `Commands&` | structural edits | unknown | kernel systems: per-item stores enqueued at the barrier in ordinal order (canonical replay); imperative systems: sharded flush | **done** |
+   | `Reduce<T, Op, Partial = T>` | fold state (sums, bounds, grids); `Partial` may differ from the target — e.g. a sparse map of touched cells folded into a big dense grid | small | barrier fold, canonical order | **done** |
+   | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
+   | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
+   | `EventWriter/Reader<T>` | messages between systems (item 3 above; `Events<T>` channel resource, tick-keyed buffer swap, serial systems participate via `Res`/`ResMut<Events<T>>`) | unknown | barrier concat into double-buffered channel, swap once per tick | **done** — same slot plumbing as Collect |
+   | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | **done** |
+   | `Random` | per-item deterministic RNG stream (counter-based PCG32, seeded by `RandomSeed` resource/tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | **done** |
+   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only — rejected in `add_kernel`, where per-item state is `Scratch` and merging state is `Reduce`/`Collect`) | — | none | **done** |
+   | `Bin<V>` / group-by | (bucket, value) emission into contiguous per-bucket spans of a `Bins<V>` resource (spatial hashing) | buckets | barrier counting sort: count → prefix-sum → ordinal-order scatter | **done** |
 
-   sched.add_kernel("energy",
-       [](Query<const Velocity, const Mass> q, Reduce<Energy, EnergyAdd> sum) {
-           q.for_each_serial([&](auto& v, auto& m) {
-               sum->j += 0.5 * m.kg * (v.x * v.x + v.y * v.y);
-           });                                          // sum-> is THIS ITEM's
-       });                                              // private partial: no
-                                                        // atomics, no sharing
-   ```
+   **The unifying prize — lane-count invariance.** Every primitive merges in
+   canonical world order, so a schedule's observable results are bitwise
+   identical at 1 lane and N lanes (including float reductions) — the property
+   lockstep/replay systems need and per-row atomics can never give. The
+   capstone landed too: kernel-recorded `Commands` route through per-item
+   stores enqueued at the barrier in ordinal order, so kernel structural
+   edits *apply* in canonical order (same rows, same swap-and-pop layout at
+   any lane count). What remains nondeterministic, deliberately documented:
+   `spawn()` reserves its Entity handle at record time (the API returns a
+   usable handle immediately), so the *IDs* still follow cross-lane
+   reservation timing — canonical IDs need barrier-time reservation, an
+   API-visible change left for when something actually needs it — and
+   commands from *imperative* systems keep the thread-sharded path with its
+   unspecified cross-shard order.
 
-   Mechanics sketch:
-   - **Declare**: contributes a resource WRITE on `T` to the derived access —
-     same-wave readers of `T` level after the system, exactly as if it took
-     `ResMut<T>`; the actual write happens at the barrier (single-threaded).
-   - **Bind**: the executor owns a per-wave slot array, one `T` per work item
-     (item-indexed, so no two items share a slot; slots are written once at
-     item completion, so no false sharing in the loop). `Reduce::operator->`
-     exposes this item's private partial, default-initialized per item.
-   - **Fold**: at the item-list join (before the command flush), the executor
-     folds the slots into the `T` resource with `Op` in ITEM ORDER. Item
-     contents and order are already deterministic (the LPT sort has a total
-     tie-break), so the fold is **bitwise deterministic for floats across
-     runs and across lane counts** — a property per-row atomics can never
-     give. `Op` is any `void(T& into, T const& partial)` callable.
-   - **Cost**: one `T` per item (~lanes × 8 per system), one `Op` per item at
-     the barrier; zero contention during iteration.
-   - This is the mechanism that lets mist's `grid` reduction (spatial-hash
-     build) go parallel: `Op` = bucket-list merge, partials = per-item grids.
+   **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
+   branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
+   (2) `Random` + `Scratch` — done, this branch (`KernelWaveContext` threads
+   the system id + schedule tick into the prepare hooks for stream seeding);
+   (3) `Collect`, then Events on the same plumbing — done, this branch
+   (events readable exactly one tick after emission, deterministic order at
+   any lane count); (4) `Local<T>` — done, this branch (with the
+   imperative-parameter protocol mirroring `kernel_param`, so `add()` and
+   `add_kernel()` now compile against the same protocol shape); (5) `Bin` and
+   deterministic kernel Commands — done, this branch (canonical replay order;
+   record-time ID reservation is the documented residual).
+   Deliberately out: parallel sort (a utility over an Extract'd buffer),
+   previous-value components (a storage feature), and any atomic/`Shared<T>`
+   wrapper (the suite exists precisely so nobody needs one).
 
-   Refinements settled in design discussion:
-   - **Fold in canonical world order**, (archetype, begin) ascending — not in
-     the LPT claim order. The fold is single-threaded at the barrier, so the
-     walk order is free to choose; canonical order makes an extraction-shaped
-     reduce reproduce exactly what a serial `for_each_serial` gather produces.
-   - **Slots persist per system and are reset, not reconstructed**, so
-     vector-like partials keep their heap capacity across ticks (preserves
-     zero-alloc-per-tick); `Op` may move out of the partial.
-   - **Sibling primitive `Extract<T>` for gather-shaped output** (snapshot /
-     render-buffer extraction): a reduction writes every element twice
-     (partial, then fold), which is fine for small partials but a full extra
-     pass for a 100k-entry snapshot. The executor already knows each item's
-     global row offset when it slices (prefix sums), so `Extract<T>` instead
-     binds each item a span over its DISJOINT slice of a pre-sized buffer
-     resource — one write per element, no fold, leveling via a declared
-     resource write, disjointness by the same argument as chunk slices. Rule
-     of thumb: `Reduce` for fold-shaped state (sums, grids, bounds),
-     `Extract` for gather-shaped output (mist: `grid` → Reduce, `extract` →
-     Extract; the TripleBuffer `publish()` stays a one-line next-wave
-     system).
+   Design notes settled in discussion (implemented for Reduce/Extract):
+   - **Fold in canonical world order** — item generation order (archetype
+     ascending, rows ascending), not LPT claim order: an extraction-shaped
+     reduce reproduces exactly what a serial `for_each_serial` gather
+     produces, and float folds are reproducible at any lane count.
+   - **Slots persist per system and are reset, not reconstructed** (`clear()`
+     when the type has one, else assign `T{}`), so vector-like partials keep
+     heap capacity across ticks — zero-alloc-per-tick holds. `Op` may move
+     out of the partial. A `Reduce` target resource is REBUILT each run
+     (reset at wave prepare), like the serial rebuild-every-tick systems it
+     replaces.
+   - **`Extract<T>`** avoids the reduction's double write for gather-shaped
+     output: the executor knows each item's global row offset when it slices
+     (prefix sums), pre-sizes the vector-like target resource once before
+     dispatch, and binds each item a span over its DISJOINT slice — one write
+     per element, no fold; leveling via a declared resource write. The
+     `TripleBuffer::publish()` stays a one-line next-wave system.
+
+   **Choosing between a kernel primitive and a serial system** (the rule the
+   mist `grid` measurement produced). A partial+merge primitive costs
+   *(per-row work / lanes) + a serial merge of everything the partials hold*,
+   so ask: **how big is one item's partial at the barrier, relative to the
+   rows it consumed?**
+   - Partial is O(1) or O(few buckets) — sums, bounds, means, small
+     histograms: the fold compresses; the kernel wins as soon as per-row work
+     is nontrivial.
+   - Partial is O(rows) — every row emits an entry (`Collect`, `Bin`): the
+     merge re-does O(n) serially, so the kernel wins only when *producing*
+     each entry costs real compute. (`Extract` escapes this: disjoint spans,
+     no merge at all.)
+   - The losing shape: per-row work ≈ zero AND keys uncorrelated with row
+     order (mist's grid — a cheap scatter-add over many cells). Partials
+     neither compress nor come cheap; keep it serial.
+   The A/B is safe by construction — `add` ↔ `add_kernel` is a one-word,
+   behavior-preserving switch (identical results at any lane count), so
+   measure with `ScheduleReport` and believe the numbers. Tooling roadmap: the
+   profiler should surface per-system barrier-hook time so a kernel whose
+   finish fold costs as much as its dispatch flags itself.
+
+   **Data layout as the missing precondition — spatial/key sorting
+   (in prototype).** The grid shape loses above because work items are
+   contiguous ROW ranges while its keys are spatially random, so partials
+   can't compress. Periodically reordering an archetype's rows so row order
+   correlates with the key (sort by cell index every N ticks; coherence
+   decays slowly, the sort amortizes) fixes the precondition instead of
+   retiring the tool: each item then touches a compact key range, the same
+   `Reduce<Grid, Op, SparsePartial>` compresses, and neighborhood-reading
+   kernels (mist's `steer`) gain cache locality on top. Pieces:
+   - **[done — this branch]** `Archetype::permute_rows(perm)` /
+     `IColumn::apply_permutation`: apply a permutation to every column
+     (described and dynamic) plus the row→entity table, then fix up the
+     entity records — bulk swap-and-pop-family bookkeeping, structural, so it
+     runs outside `run()` like other maintenance.
+   - **[done — this branch]** `World::sort_rows<C>(key)`: stable sort of every
+     archetype containing C by a key of C's value — stable + canonical keys
+     ⇒ the permutation is identical at every lane count, so the determinism
+     guarantee survives sorting.
+   - Measured (mist grid shape, 40k rows, 4-core container): sorting flips
+     the kernel Reduce grid from a 2× LOSS to a 2× WIN in isolation
+     (~250-300µs serial → 125µs kernel-over-sorted at 4 lanes), and the
+     bitwise lane-invariance checks pass with sorting on.
+   - **[done — this branch]** The sort's constant, cut 6×: integral keys with
+     a compact range (grid cells) take a counting sort (stable, same
+     canonical permutation; 5.4ms → 0.88ms per 40k rows — the comparison
+     sort was 4.7ms of the 5.4), and a keys-pass early exit skips
+     already-sorted archetypes (1.85ms → 0.24ms) plus a `min_disorder`
+     threshold (fraction of adjacent key descents) to leave nearly-coherent
+     layouts alone.
+   - **[done — this branch]** `Schedule::add_maintenance(name, every_n, fn)`:
+     the hook runs single-threaded at the start of every n-th `run()`, before
+     any wave, world quiescent — the sanctioned home for `sort_rows` cadences
+     and other structural upkeep without leaving the tick loop.
+   - End-to-end (mist, grid flipped to the kernel Reduce + a 64-tick sort
+     cadence): 4-lane tick 0.83 → 0.77 ms at 40k, 1.63 → 1.54 ms at 85k
+     (lane-scaling 2.6-2.8× → 3.1-3.3×), at the documented cost of ~10% at
+     1 lane — the kernel registration is a bet on lanes. A lanes × birds
+     sweep (1-4 lanes × 10k-170k birds, 4-core container) shows the same
+     shape at every scale: ~8-10% behind at 1 lane, parity at 2, ahead from
+     3 lanes up (to ~10% at 4 lanes / 170k), with the crossover pinned
+     between 2 and 3 lanes independent of flock size. Determinism checks
+     stay bitwise-green with the maintenance sort on. (Both variants
+     collapse identically under oversubscription — 5 lanes on 4 cores is
+     ~25× worse; the always-spin pool's rule stands: lanes ≤ cores minus
+     the other hot threads.)
+   - Roadmap: sort-by-entity/multi-component keys; in-place permutation if a
+     workload ever makes the gather scratch matter.
+
+   **Parallel two-pass `Bin` (roadmap)** — the deterministic answer for
+   scatter shapes that sorting can't fix (keys genuinely uncorrelated,
+   many-core targets, where engines reach for atomic containers and give up
+   reproducibility): today `Bin`'s count → prefix-sum → scatter runs serially
+   in the finish hook; both passes parallelize deterministically — parallel
+   per-(item, key) count, barrier prefix-sum into DISJOINT precomputed
+   ranges, parallel scatter into them (no atomics, canonical within-bucket
+   order preserved), plus a parallel per-bucket fold for aggregation-shaped
+   uses. Covers most of the "atomic container territory" without forfeiting
+   bitwise invariance; build it when a profiled workload asks.
 
 ## 7. Tests, benchmarks, CI
 

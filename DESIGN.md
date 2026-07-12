@@ -225,14 +225,22 @@ is flattened into one list of items and executed with a single fork-join
 dispatch on the `WorkerPool`. A **kernel system** — `add_kernel(name, fn)`,
 same signature rules as `add()` but with exactly ONE `Query<Cs...>` parameter —
 contributes one item per row-range slice of each archetype that query matches
-(about `lanes × 8` slices, floored at 1024 rows): its iteration is *visible* to
+(a fixed target of ~64 slices, floored at 1024 rows — deliberately independent
+of the lane count, so the slicing and therefore every barrier-time fold is
+identical whether the schedule runs on 1 lane or N): its iteration is *visible* to
 the scheduler, which invokes the body once per item with the Query restricted
 to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters
-(`Res<T>`, `Commands&`, `WorldView`) bind per item and fold into the derived
-access, so a components-plus-resources system (read the clock, chase a goal,
-record spawns) keeps slicing — and an imperative system with independent
-per-row work becomes a kernel system by changing one word:
+(`Res<T>`, `Commands&`, `WorldView`, and the per-item primitives — `Reduce<T,
+Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
+a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
+`EventWriter<T>`/`EventReader<T>` over a double-buffered `Events<T>` channel,
+`Bin<V>` group-by counting-sorted into per-bucket spans of a `Bins<V>`
+resource, `Scratch<T>` private workspace, `Random` deterministic
+per-item streams) bind per item and fold into the derived access, so a
+components-plus-resources system (read the clock, chase a goal, record
+spawns, jitter an emitter) keeps slicing — and an imperative system with
+independent per-row work becomes a kernel system by changing one word:
 
 ```cpp
 sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
@@ -244,11 +252,13 @@ The body must be independent per-row work — it runs concurrently with the
 system's own other items. `ResMut<T>` is therefore rejected in a kernel (the
 conflict analysis serializes *other* systems against a resource writer, but a
 system's own items run concurrently, so writes through `ResMut` would race
-between them); a system that writes a resource is a *reduction*, and
-reductions and ordered iteration belong in `add()` systems — until the
-per-item `Reduce` parameter lands (see `docs/IMPROVEMENTS.md`). An
+between them); a system that writes a resource is a *reduction* — spelled
+`Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a kernel, with
+the shared-target writes confined to the single-threaded barrier hooks.
+Genuinely ordered iteration still belongs in `add()` systems. An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
-may take `Commands&`, resources, `WorldView`, do reductions or ordered work)
+may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
+persisting across ticks, do reductions or ordered work)
 contributes itself as a single item; inside a multi-item wave it is bound to a
 1-lane pool, so its queries iterate inline on the lane that claimed it (the
 common single-system wave instead runs inline on the caller with the full pool,
@@ -258,7 +268,14 @@ straggler) and claimed by the lanes from an atomic cursor, so a heavy kernel
 system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
-1-lane pool claims in list order and is fully deterministic). `run(world)` is
+1-lane pool claims in list order and is fully deterministic). Commands recorded
+by kernel systems are insulated from that timing: each item records into a
+private per-item store, and the barrier enqueues the stores into the wave's
+flush in ordinal order, so kernel structural edits *apply* in canonical
+serial-walk order at any lane count (`spawn()` still reserves its Entity handle
+at record time, so the IDs themselves — not the resulting layout — remain
+timing-dependent; imperative systems' commands keep the thread-sharded buffer
+with its unspecified cross-shard order). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
 with the heavy system registered as a kernel, because an opaque heavy system is

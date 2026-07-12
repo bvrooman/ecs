@@ -4,6 +4,20 @@ target_link_libraries(nbody PRIVATE ecs::ecs)
 target_compile_options(nbody PRIVATE $<$<CONFIG:Release>:-O2>)
 
 # ---------------------------------------------------------------------------
+# mist-headless: the murmuration simulation without the renderer. Runs the
+# kernel schedule at 1 lane and 4 lanes with the same seed and verifies the
+# flock evolves BITWISE identically (the parallel-primitives determinism
+# claim), then reports tick timing. No GLFW: builds and runs everywhere the
+# library does, unlike the OpenGL demo below.
+# ---------------------------------------------------------------------------
+add_executable(mist-headless
+  mist/tools/headless.cpp
+  mist/simulation.cpp)
+target_include_directories(mist-headless PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/mist)
+target_link_libraries(mist-headless PRIVATE ecs::ecs)
+target_compile_options(mist-headless PRIVATE $<$<CONFIG:Release>:-O3>)
+
+# ---------------------------------------------------------------------------
 # particles: a minimal OpenGL particle effect driven by the ECS.
 # Needs GLFW (brew install glfw) and the macOS OpenGL framework, so it is built
 # only when both are available -- other platforms/CI just skip it.
