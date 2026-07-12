@@ -16,4 +16,4 @@ schedule-report = "schedule_report.__main__:main"
 include = ["schedule_report*"]
 
 [tool.setuptools.package-data]
-schedule_report = ["templates/*.j2", "static/*"]
+schedule_report = ["templates/**/*.j2", "static/*"]

@@ -72,3 +72,5 @@ vcpkg_installed/
 Testing/
 .cache/
 profiler_trace.csv
+__pycache__/
+*.pyc

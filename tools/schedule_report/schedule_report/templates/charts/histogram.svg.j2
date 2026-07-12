@@ -1,0 +1,11 @@
+<svg viewBox="0 0 {{ w }} {{ h }}" class="chart" role="img" preserveAspectRatio="none">
+  {%- for g in grid %}
+  <line class="grid" x1="{{ padl }}" y1="{{ g.y }}" x2="{{ w - padr }}" y2="{{ g.y }}"/>
+  <text class="tick" x="{{ padl - 6 }}" y="{{ g.ty }}" text-anchor="end">{{ g.label }}</text>
+  {%- endfor %}
+  {%- for b in bars %}
+  <path class="bar" data-hist="{{ id }}" data-i="{{ b.i }}" d="{{ b.d }}"/>
+  {%- endfor %}
+  <text class="tick" x="{{ padl }}" y="{{ h - 6 }}">{{ x_first }}</text>
+  <text class="tick" x="{{ w - padr }}" y="{{ h - 6 }}" text-anchor="end">{{ x_last }}</text>
+</svg>

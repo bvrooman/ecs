@@ -1,0 +1,17 @@
+<svg viewBox="0 0 {{ w }} {{ h }}" class="chart" role="img" preserveAspectRatio="none">
+  {%- for g in grid %}
+  <line class="grid" x1="{{ padl }}" y1="{{ g.y }}" x2="{{ w - padr }}" y2="{{ g.y }}"/>
+  <text class="tick" x="{{ padl - 6 }}" y="{{ g.ty }}" text-anchor="end">{{ g.label }}</text>
+  {%- endfor %}
+  {%- if band %}
+  <polygon class="band" points="{{ band }}"/>
+  {%- endif %}
+  <polyline class="line" points="{{ line }}"/>
+  <text class="tick" x="{{ padl }}" y="{{ h - 6 }}">{{ x_first }}</text>
+  <text class="tick" x="{{ w - padr }}" y="{{ h - 6 }}" text-anchor="end">{{ x_last }}</text>
+  <line class="xhair" id="{{ id }}-xh" y1="{{ padt }}" y2="{{ h - padb }}" visibility="hidden"/>
+  <circle class="xdot" id="{{ id }}-dot" r="4" visibility="hidden"/>
+  <rect class="hover" data-line="{{ id }}" x="{{ padl }}" y="{{ padt }}"
+        width="{{ w - padl - padr }}" height="{{ h - padt - padb }}"
+        fill="none" pointer-events="all"/>
+</svg>
