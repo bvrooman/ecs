@@ -30,9 +30,8 @@ namespace sched_event {
     };
     struct WaveEnd {
         std::size_t level;
-        // The command-flush portion of the wave (the flush runs at the barrier,
-        // inside the WaveBegin/WaveEnd interval). 0 when the schedule has no
-        // observers (timing is skipped entirely, not measured-as-zero).
+        // The command-flush portion of the wave (the flush runs at the
+        // barrier, inside the WaveBegin/WaveEnd interval).
         double flush_us = 0;
     };
     // Wall-clock bracketing of ONE system running alone in its wave (the only
@@ -53,7 +52,6 @@ namespace sched_event {
     // the wave's wall duration); prepare_us/finish_us bracket the system's
     // single-threaded barrier hooks (Reduce folds, Extract pre-sizing...), so
     // a kernel whose finish fold rivals its dispatch is visible directly.
-    // All fields 0 when the schedule has no observers.
     struct SystemWork {
         SystemId id;
         std::string_view name;

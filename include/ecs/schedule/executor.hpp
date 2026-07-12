@@ -46,9 +46,8 @@ struct WorkItem {
     std::uint32_t begin, end;
     std::uint32_t ordinal;
     // Measured execution time of this item, written by the lane that ran it
-    // (disjoint per item: no cross-lane contention) when the schedule has
-    // observers; the Schedule rolls items up per system into a SystemWork
-    // event. Stays 0 on the untimed path.
+    // (disjoint per item: no cross-lane contention); the Schedule rolls
+    // items up per system into a SystemWork event.
     double busy_us = 0;
 };
 inline constexpr std::uint32_t kImperative = 0xFFFF'FFFFu;
@@ -142,19 +141,16 @@ inline void run_work_item(WorkItem const& it,
 // (from a system body or a kernel item) propagate out of the dispatch join;
 // the caller owns abort policy.
 //
-// `timed`: bracket each item with clock reads, recording into item.busy_us
-// (two steady_clock reads per >=kMinItemRows-row item: noise). The Schedule
-// passes observer-presence here so unobserved schedules pay nothing.
+// Each item is bracketed with clock reads into item.busy_us -- two
+// steady_clock reads per >=kMinItemRows-row item, measured within run-to-run
+// noise, so the timing is unconditional rather than plumbed behind a flag.
 inline void run_wave_items(std::vector<WorkItem>& items,
                            std::span<SystemRecord> systems,
                            World& world,
                            Commands& cmds,
-                           WorkerPool& pool,
-                           bool const timed) {
+                           WorkerPool& pool) {
     using clock  = std::chrono::steady_clock;
     auto run_one = [&](WorkItem& it, WorkerPool& p) {
-        if (!timed)
-            return run_work_item(it, systems, world, cmds, p);
         auto const t0 = clock::now();
         run_work_item(it, systems, world, cmds, p);
         it.busy_us =

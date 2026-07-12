@@ -196,8 +196,7 @@ public:
     // per-system wall interval -- their items interleave across the lanes --
     // so every system instead reports MEASURED work via a SystemWork event:
     // busy time summed over its items (recorded by the claiming lanes) plus
-    // its barrier prepare/finish hook durations. Timing is skipped entirely
-    // when no observer is attached.
+    // its barrier prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
     // is not. Commands recorded by KERNEL systems replay in canonical order
@@ -223,22 +222,17 @@ public:
             if (tick_ % m.every == 0)
                 m.fn(world);
         using namespace sched_event;
-        // Timing (work items, barrier hooks, flushes) only when someone is
-        // listening: an unobserved schedule reads no clocks.
-        bool const timed = events_.observer_count() > 0;
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
         std::size_t lvl = 0;
         for (auto const& wave : waves_) {
             events_.emit(WaveBegin {lvl, wave.size()});
-            run_wave(wave, world, cmds, pool, lvl, timed);
+            run_wave(wave, world, cmds, pool, lvl);
             double flush_us = 0;
             try {
-                auto const t0 = timed ? detail::sched_clock::now()
-                                      : detail::sched_clock::time_point {};
+                auto const t0 = detail::sched_clock::now();
                 world.apply_commands(); // cleans up its own pending commands on throw
-                if (timed)
-                    flush_us = detail::elapsed_us(t0);
+                flush_us = detail::elapsed_us(t0);
             } catch (...) {
                 events_.emit(TickAbort {lvl, SystemId {0}});
                 throw;
@@ -411,22 +405,24 @@ private:
     // interval to bracket, so none is invented). Every system, lone or
     // fanned, instead gets a SystemWork event after the barrier hooks with
     // its measured busy time (sum of its items across lanes) and its
-    // prepare/finish hook durations -- all zeros when unobserved (`timed`).
+    // prepare/finish hook durations. Timing is unconditional -- measured at
+    // ~2 clock reads per >=1024-row item plus a handful per wave, it is
+    // within run-to-run noise even on an unobserved schedule, and the
+    // constant plumbing keeps every path identical.
     void run_wave(std::vector<std::size_t> const& wave,
                   World& world,
                   Commands& cmds,
                   WorkerPool& pool,
-                  std::size_t lvl,
-                  bool const timed) {
+                  std::size_t lvl) {
         using namespace sched_event;
         detail::build_wave_items(items_, wave, systems_, world);
-        prepare_hooks(wave, world, timed);
+        prepare_hooks(wave, world);
         finish_us_.assign(wave.size(), 0.0);
         auto const lone = wave.size() == 1;
         if (lone)
             events_.emit(SystemBegin {systems_[wave[0]].id, systems_[wave[0]].name});
         try {
-            detail::run_wave_items(items_, systems_, world, cmds, pool, timed);
+            detail::run_wave_items(items_, systems_, world, cmds, pool);
             // Barrier folds (Reduce et al.) run after the join and before the
             // command flush, single-threaded, in wave (registration) order;
             // skipped when the dispatch aborted.
@@ -434,11 +430,9 @@ private:
                 auto& s = systems_[wave[wi]];
                 if (!s.finish_items)
                     continue;
-                auto const t0 = timed ? detail::sched_clock::now()
-                                      : detail::sched_clock::time_point {};
+                auto const t0 = detail::sched_clock::now();
                 s.finish_items(world);
-                if (timed)
-                    finish_us_[wi] = detail::elapsed_us(t0);
+                finish_us_[wi] = detail::elapsed_us(t0);
             }
         } catch (...) {
             world.discard_commands();
@@ -471,9 +465,7 @@ private:
     // pre-sizing, prefix sums). Single-threaded, before the wave's dispatch.
     // A hooked system with zero items still prepares (its reduce target must
     // reset to "empty reduction", its extract target resize to 0).
-    void prepare_hooks(std::vector<std::size_t> const& wave,
-                       World& world,
-                       bool const timed) {
+    void prepare_hooks(std::vector<std::size_t> const& wave, World& world) {
         prepare_us_.assign(wave.size(), 0.0);
         for (std::size_t wi = 0; wi < wave.size(); ++wi) {
             auto& s = systems_[wave[wi]];
@@ -486,13 +478,11 @@ private:
                         rows_scratch_.resize(it.ordinal + 1);
                     rows_scratch_[it.ordinal] = it.end - it.begin;
                 }
-            auto const t0 = timed ? detail::sched_clock::now()
-                                  : detail::sched_clock::time_point {};
+            auto const t0 = detail::sched_clock::now();
             s.prepare_items(world,
                             rows_scratch_,
                             detail::KernelWaveContext {s.id, tick_});
-            if (timed)
-                prepare_us_[wi] = detail::elapsed_us(t0);
+            prepare_us_[wi] = detail::elapsed_us(t0);
         }
     }
 
