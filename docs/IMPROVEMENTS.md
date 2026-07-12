@@ -359,8 +359,15 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    - End-to-end (mist, grid flipped to the kernel Reduce + a 64-tick sort
      cadence): 4-lane tick 0.83 → 0.77 ms at 40k, 1.63 → 1.54 ms at 85k
      (lane-scaling 2.6-2.8× → 3.1-3.3×), at the documented cost of ~10% at
-     1 lane — the kernel registration is a bet on lanes. Determinism checks
-     stay bitwise-green with the maintenance sort on.
+     1 lane — the kernel registration is a bet on lanes. A lanes × birds
+     sweep (1-4 lanes × 10k-170k birds, 4-core container) shows the same
+     shape at every scale: ~8-10% behind at 1 lane, parity at 2, ahead from
+     3 lanes up (to ~10% at 4 lanes / 170k), with the crossover pinned
+     between 2 and 3 lanes independent of flock size. Determinism checks
+     stay bitwise-green with the maintenance sort on. (Both variants
+     collapse identically under oversubscription — 5 lanes on 4 cores is
+     ~25× worse; the always-spin pool's rule stands: lanes ≤ cores minus
+     the other hot threads.)
    - Roadmap: sort-by-entity/multi-component keys; in-place permutation if a
      workload ever makes the gather scratch matter.
 
