@@ -109,6 +109,22 @@ public:
         return emplace_kernel(std::move(name), std::forward<Fn>(fn), P);
     }
 
+    // Register a MAINTENANCE hook: `fn(World&)` runs single-threaded on the
+    // calling thread at the START of every `every_n`-th run(), BEFORE any
+    // wave, while the world is quiescent. This is the sanctioned place for
+    // work that is structural and therefore cannot be a system -- the
+    // canonical use is data-layout upkeep like World::sort_rows every N
+    // ticks (see docs/IMPROVEMENTS.md, parallel-primitives section), or
+    // capacity trims. Hooks run in registration order, emit no schedule
+    // events, and a throwing hook propagates out of run() before the tick
+    // does any work.
+    template <class Fn>
+    void add_maintenance(std::string name, std::uint64_t const every_n, Fn&& fn) {
+        maintenance_.push_back(Maintenance {std::move(name),
+                                            std::max<std::uint64_t>(1, every_n),
+                                            std::forward<Fn>(fn)});
+    }
+
     // Register a system whose access is *declared* (a runtime SystemAccess)
     // rather than derived from C++ parameter types -- the entry point for a
     // JS-defined system. `run` is the type-erased body (typically a runtime query
@@ -197,6 +213,11 @@ public:
     void run(World& world, WorkerPool& pool) {
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
+        // Maintenance hooks: world quiescent, before any wave (see
+        // add_maintenance).
+        for (auto& m : maintenance_)
+            if (tick_ % m.every == 0)
+                m.fn(world);
         using namespace sched_event;
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
@@ -473,8 +494,15 @@ private:
         dirty_ = false;
     }
 
+    struct Maintenance {
+        std::string name;
+        std::uint64_t every = 1;
+        detail::move_only_function<void(World&)> fn;
+    };
+
     event::Emitter<ScheduleEvent> events_;
     std::vector<System> systems_;
+    std::vector<Maintenance> maintenance_;
     std::vector<std::vector<std::size_t>> waves_;
     std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused

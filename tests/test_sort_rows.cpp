@@ -145,6 +145,141 @@ static void sort_after_churn() {
             CHECK(w.get<Health>(es[i]).hp == int(i));
 }
 
+// Integral keys take the counting-sort path (compact range) or fall back to
+// the comparison sort (spread range); both must be stable and produce the
+// same canonical order. Negative keys exercise the offset-by-min bucket math.
+static void integral_keys_sort_correctly_on_both_paths() {
+    auto check_sorted_stable = [](auto key) {
+        World w;
+        setup(w, [&](Commands& cmd) {
+            for (int i = 0; i < 500; ++i)
+                cmd.spawn(Position {scrambled(i), 0}, Health {i});
+        });
+        w.sort_rows<Position>(key);
+        auto prev_key = key(Position {});
+        int prev_hp   = -1;
+        bool first    = true;
+        bool ok       = true;
+        query<Position const, Health const>(w).for_each_serial(
+            [&](Position const& p, Health const& h) {
+                auto const k = key(p);
+                if (!first) {
+                    if (k < prev_key)
+                        ok = false; // keys ascend
+                    if (k == prev_key && h.hp <= prev_hp)
+                        ok = false; // stability within a key
+                }
+                first    = false;
+                prev_key = k;
+                prev_hp  = h.hp;
+            });
+        CHECK(ok);
+    };
+    // Compact range incl. negatives (range 41 << 4n): counting path.
+    check_sorted_stable([](Position const& p) { return int(p.x) % 21 - 10; });
+    // Spread range (steps of 1e6 >> 4n): stable_sort fallback.
+    check_sorted_stable([](Position const& p) { return int(p.x) * 1'000'000; });
+}
+
+// min_disorder: small drift is left alone (a re-sort would not pay for
+// itself), real disorder still sorts.
+static void min_disorder_skips_small_drift() {
+    World w;
+    std::vector<Entity> es;
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 1'000; ++i)
+            es.push_back(cmd.spawn(Position {scrambled(i), 0}, Health {i}));
+    });
+    auto const key = [](Position const& p) { return int(p.x); };
+    w.sort_rows<Position>(key);
+
+    // Perturb slightly: destroying a few rows swap-and-pops tail rows into
+    // the holes -- a handful of descents out of ~1000 pairs.
+    setup(w, [&](Commands& cmd) {
+        for (std::size_t i = 100; i < 106; ++i)
+            cmd.destroy(es[i]);
+    });
+    auto descents = [&] {
+        int prev = -1, d = 0;
+        query<Position const>(w).for_each_serial([&](Position const& p) {
+            if (int(p.x) < prev)
+                ++d;
+            prev = int(p.x);
+        });
+        return d;
+    };
+    int const drift = descents();
+    CHECK(drift > 0); // the perturbation actually disordered something
+
+    w.sort_rows<Position>(key, 0.05); // ~6 descents / 993 pairs < 5%: skipped
+    CHECK(descents() == drift);       // untouched
+
+    w.sort_rows<Position>(key); // default threshold: sorts
+    CHECK(descents() == 0);
+}
+
+// Schedule::add_maintenance: fires every N runs, before any wave, with the
+// world quiescent -- shown by sorting from the hook while kernels run every
+// tick, with churn re-disordering rows in between; the schedule's results
+// stay bitwise lane-count-invariant with the hook on.
+static void maintenance_hook_fires_on_cadence_and_sorts() {
+    int fired = 0;
+    {
+        World w;
+        Schedule s;
+        s.add_maintenance("count", 3, [&](World&) { ++fired; });
+        s.add("noop", [](Res<int>) {});
+        w.emplace_resource<int>(0);
+        for (int t = 0; t < 9; ++t)
+            s.run(w);
+    }
+    CHECK(fired == 3); // ticks 3, 6, 9
+
+    auto run = [](unsigned lanes) {
+        World w;
+        w.emplace_resource<std::vector<float>>();
+        setup(w, [&](Commands& cmd) {
+            for (int i = 0; i < 10'000; ++i)
+                cmd.spawn(Position {scrambled(i), 0}, Health {i});
+        });
+        Schedule s;
+        s.add_maintenance("sort", 4, [](World& world) {
+            world.sort_rows<Position>([](Position const& p) { return int(p.x); });
+        });
+        // Churn: cull a band each tick (swap-and-pop disorders the tail)...
+        s.add_kernel("cull", [](Query<Health const> q, Commands& cmd) {
+            q.for_each_chunk([&](std::span<Entity> es, chunk<Health const> h) {
+                auto const hp = h.column<0>();
+                for (std::size_t i = 0; i < hp.size(); ++i)
+                    if (hp[i] % 97 == 3)
+                        cmd.destroy(es[i]);
+            });
+        });
+        // ...and gather the walk order every tick.
+        s.add_kernel("gather",
+                     [](Query<Position const> q, Extract<std::vector<float>> out) {
+                         q.for_each_chunk([&](std::span<Entity>,
+                                              chunk<Position const> p) {
+                             auto const x = p.column<0>();
+                             for (std::size_t i = 0; i < x.size(); ++i)
+                                 out[i] = x[i];
+                         });
+                     });
+        WorkerPool pool {lanes};
+        std::vector<float> log;
+        for (int t = 0; t < 12; ++t) {
+            s.run(w, pool);
+            auto const& snap = w.resource<std::vector<float>>();
+            log.insert(log.end(), snap.begin(), snap.end());
+        }
+        return log;
+    };
+    auto const serial   = run(1);
+    auto const parallel = run(4);
+    CHECK(!serial.empty());
+    CHECK(serial == parallel); // maintenance + churn + kernels: still bitwise
+}
+
 // The point of sorting: schedule results over the sorted layout remain
 // bitwise identical at 1 lane and 4 lanes (the permutation is canonical, so
 // the determinism guarantee composes with it).
@@ -218,6 +353,9 @@ int main() {
     RUN_SUITE(sort_orders_rows_and_preserves_handles);
     RUN_SUITE(sort_is_stable);
     RUN_SUITE(sort_after_churn);
+    RUN_SUITE(integral_keys_sort_correctly_on_both_paths);
+    RUN_SUITE(min_disorder_skips_small_drift);
+    RUN_SUITE(maintenance_hook_fires_on_cadence_and_sorts);
     RUN_SUITE(sorted_layout_stays_lane_count_invariant);
     RUN_SUITE(dynamic_column_applies_permutation);
     return REPORT();

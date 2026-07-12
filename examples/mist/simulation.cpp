@@ -5,8 +5,9 @@
 // is derived from each system's parameter types and leveled into waves
 // automatically:
 //
+//   maintenance (every 64 ticks): sort-rows by grid cell (world quiescent)
 //   phase -1: scatter                (one-shot imperative: seed the flock)
-//   wave 0:   input | clock | grid
+//   wave 0:   input | clock | grid   (grid = kernel Reduce, sparse partials)
 //   wave 1:   goal                   (after input's Cursor + clock's Clock)
 //   wave 2:   steer                  (kernel: boids + goal -> Velocity)
 //   wave 3:   integrate              (kernel: Velocity -> Position)
@@ -14,24 +15,28 @@
 //   wave 5:   publish [| metrics-write]
 //
 // The division of labour the port demonstrates: per-bird data-parallel work
-// (`steer`, `integrate`, `extract`, `metrics`) is registered with add_kernel,
-// so the executor slices each system's rows into work items and overlaps
-// everything in a wave across the pool's lanes -- while the small ORDERED
-// resource writers (`input`, `clock`, `goal`, `publish`), the one-shot
-// Commands setup (`scatter`), and the one shape that measured FASTER serial
-// (`grid` -- see its comment) stay imperative add() systems. Where a serial
-// system gathered shared output, the kernels use the barrier-merged
+// (`grid`, `steer`, `integrate`, `extract`, `metrics`) is registered with
+// add_kernel, so the executor slices each system's rows into work items and
+// overlaps everything in a wave across the pool's lanes -- while the small
+// ORDERED resource writers (`input`, `clock`, `goal`, `publish`) and the
+// one-shot Commands setup (`scatter`) stay imperative add() systems. Where a
+// serial system gathered shared output, the kernels use the barrier-merged
 // primitives instead:
 //
+//   grid     Reduce<FlockGrid, MergeCells, CellAccum>: sparse touched-cells
+//            partials folded into the dense grid at the barrier -- viable
+//            only because the sort-rows maintenance hook keeps rows
+//            key-coherent (see the `grid` comment for the measured story).
 //   extract  Extract<SnapshotTarget>: disjoint per-item spans write the GPU
 //            vertices straight into the triple buffer's back buffer (the
 //            old serial gather, minus the serialization and the copy).
 //   metrics  Reduce<FlockStats, AddStats>: one pass over every bird instead
 //            of the old two serial passes.
 //
-// Because every merge folds in canonical order and the row slicing is
-// lane-count independent, the simulation's evolution is IDENTICAL at 1 lane
-// and N -- same seed, same flock, bit for bit.
+// Because every merge folds in canonical order, the row slicing is
+// lane-count independent, and the maintenance sort is stable over a
+// canonical key, the simulation's evolution is IDENTICAL at 1 lane and N --
+// same seed, same flock, bit for bit.
 //
 // `grid` reduces every bird into a FlockGrid resource (per-cell density + sums
 // of position and velocity); `steer` (the compute-bound, data-parallel per-bird
@@ -114,6 +119,49 @@ inline Tuning read_tuning() {
                    env("ECS_WANDER", cfg::kWander),
                    env("ECS_DIVE", cfg::kDiveAmp)};
 }
+
+// The grid kernel's per-item partial: entries for only the cells this item's
+// birds touch, plus a cell -> entry index so each bird's add is ONE array
+// lookup (a full dense FlockGrid per item would be cfg::kGridDim^3 cells,
+// megabytes each; a hash map measured slower than the serial rebuild). Both
+// structures persist per item; clear() re-zeroes only the touched index
+// slots. This partial compresses -- and the kernel wins -- ONLY because the
+// sort-rows maintenance hook keeps row order correlated with cell index; see
+// the `grid` registration below for the measured story.
+struct CellAccum {
+    std::vector<int> idx; // cell -> entry index + 1; 0 = untouched
+    std::vector<std::pair<int, Cell>> entries;
+
+    Cell& at(int const c) {
+        if (idx.empty())
+            idx.assign(std::size_t(FlockGrid::cells), 0);
+        int& slot = idx[std::size_t(c)];
+        if (slot == 0) {
+            entries.emplace_back(c, Cell {});
+            slot = int(entries.size());
+        }
+        return entries[std::size_t(slot - 1)].second;
+    }
+    void clear() {
+        for (auto const& [c, agg] : entries)
+            idx[std::size_t(c)] = 0;
+        entries.clear();
+    }
+};
+struct MergeCells {
+    void operator()(FlockGrid& into, CellAccum& part) const {
+        for (auto const& [c, agg] : part.entries) {
+            auto& d = into.cell[std::size_t(c)];
+            d.count += agg.count;
+            d.sx += agg.sx;
+            d.sy += agg.sy;
+            d.sz += agg.sz;
+            d.vx += agg.vx;
+            d.vy += agg.vy;
+            d.vz += agg.vz;
+        }
+    }
+};
 
 // Fold for the metrics reduction: plain field-wise sums.
 struct AddStats {
@@ -211,35 +259,54 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
         go->z         = gz;
     });
 
+    // sort-rows maintenance: every 64 ticks, re-sort birds by grid cell so
+    // row order stays correlated with the spatial key (swap-and-pop churn
+    // and flight both decay it slowly). This is the data-layout precondition
+    // that makes the grid KERNEL below pay: work items slice contiguous row
+    // ranges, so key-coherent rows are what let its per-item partials
+    // compress. Stable sort, canonical key: the permutation is identical at
+    // every lane count, so the sim stays bitwise reproducible (mist-headless
+    // asserts it). Counting-sort path: ~0.9ms per 40k birds, ~14us/tick
+    // amortized at this cadence.
+    schedule.add_maintenance("sort-rows", 64, [](World& w) {
+        w.sort_rows<Position>([](Position const& p) {
+            return FlockGrid::index(FlockGrid::axis(p.x),
+                                    FlockGrid::axis(p.y),
+                                    FlockGrid::axis(p.z));
+        });
+    });
+
     // grid: reduce every bird into the spatial grid (per-cell count + position
-    // and velocity sums). DELIBERATELY still a serial imperative system, and
-    // the port's one instructive counter-example: this is a low-arithmetic
-    // scatter-add whose keys (cells) are spatially UNCORRELATED with row
-    // order, so per-item Reduce partials do not compress -- once the flock
-    // spreads, nearly every bird in an item touches its own cell, the barrier
-    // fold re-does ~n adds serially, and the per-bird indirection is pure
-    // overhead. Measured as Reduce<FlockGrid, ..., sparse-partial>: ~2x the
-    // serial rebuild at 1 lane, ~1.2x at 4 lanes -- never a win. Partial+merge
-    // pays when items compress their keys (sums, bounds, histograms over few
-    // buckets) or the per-row work dominates (steer); a cheap scatter over
-    // many keys is the shape that stays serial.
-    schedule.add("grid",
-                 [](Query<Position const, Velocity const> q, ResMut<FlockGrid> g) {
-                     g->clear();
-                     q.for_each_serial([&](auto& p, auto& v) {
-                         int const c = FlockGrid::index(FlockGrid::axis(p.x),
-                                                        FlockGrid::axis(p.y),
-                                                        FlockGrid::axis(p.z));
-                         auto& [count, sx, sy, sz, vx, vy, vz] = g->cell[c];
-                         count += 1;
-                         sx += p.x;
-                         sy += p.y;
-                         sz += p.z;
-                         vx += v.x;
-                         vy += v.y;
-                         vz += v.z;
-                     });
-                 });
+    // and velocity sums). A KERNEL whose Reduce partial is a sparse
+    // touched-cells accumulator -- the shape that LOSES on uncorrelated rows
+    // (measured ~2x the serial rebuild at 1 lane: partials don't compress, so
+    // the barrier fold re-did ~n adds serially) and WINS once the maintenance
+    // sort above keeps rows key-coherent (measured ~2x FASTER than the serial
+    // rebuild at 4 lanes: each item touches a compact cell range, the fold
+    // shrinks to a few thousand entries, and the accumulation parallelizes).
+    // The general rule lives in docs/IMPROVEMENTS.md: partial+merge pays when
+    // partials compress or per-row work dominates; sorting is how a cheap
+    // scatter-add is MADE to compress. The registration is a bet on lanes:
+    // at 1 lane the indirection still costs ~10% of the tick vs the serial
+    // rebuild; at 4 lanes the whole tick is ~7% faster and scales further.
+    schedule.add_kernel(
+        "grid",
+        [](Query<Position const, Velocity const> q,
+           Reduce<FlockGrid, MergeCells, CellAccum> g) {
+            q.for_each_serial([&](auto& p, auto& v) {
+                int const c = FlockGrid::index(FlockGrid::axis(p.x),
+                                               FlockGrid::axis(p.y),
+                                               FlockGrid::axis(p.z));
+                auto& [count, sx, sy, sz, vx, vy, vz] = g->at(c);
+                count += 1;
+                sx += p.x;
+                sy += p.y;
+                sz += p.z;
+                vx += v.x;
+                vy += v.y;
+                vz += v.z;
+            });
+        });
 
     // steer: turn each bird. Accumulate the boids rules + goal into a steering
     // acceleration, apply it, then pull speed back to the cruise. (The cursor

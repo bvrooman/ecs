@@ -344,16 +344,25 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    - Measured (mist grid shape, 40k rows, 4-core container): sorting flips
      the kernel Reduce grid from a 2× LOSS to a 2× WIN in isolation
      (~250-300µs serial → 125µs kernel-over-sorted at 4 lanes), and the
-     bitwise lane-invariance checks pass with sorting on
-     (`ECS_SORT_EVERY=64 mist-headless`). End-to-end mist lands at PARITY on
-     4 cores: the prototype sort costs ~5ms/40k rows (gather-allocates fresh
-     buffers per column) and its amortized cost eats the per-tick saving —
-     though the lane-scaling ratio improves (2.8× → 3.1×), so wider machines
-     tip net-positive.
-   - Roadmap: cut the sort's constant (in-place cycle permutation or retained
-     scratch buffers; skip when disorder is below a threshold), a
-     schedule-integrated maintenance hook (sort every N ticks without leaving
-     the tick loop), and sort-by-entity/multi-component keys.
+     bitwise lane-invariance checks pass with sorting on.
+   - **[done — this branch]** The sort's constant, cut 6×: integral keys with
+     a compact range (grid cells) take a counting sort (stable, same
+     canonical permutation; 5.4ms → 0.88ms per 40k rows — the comparison
+     sort was 4.7ms of the 5.4), and a keys-pass early exit skips
+     already-sorted archetypes (1.85ms → 0.24ms) plus a `min_disorder`
+     threshold (fraction of adjacent key descents) to leave nearly-coherent
+     layouts alone.
+   - **[done — this branch]** `Schedule::add_maintenance(name, every_n, fn)`:
+     the hook runs single-threaded at the start of every n-th `run()`, before
+     any wave, world quiescent — the sanctioned home for `sort_rows` cadences
+     and other structural upkeep without leaving the tick loop.
+   - End-to-end (mist, grid flipped to the kernel Reduce + a 64-tick sort
+     cadence): 4-lane tick 0.83 → 0.77 ms at 40k, 1.63 → 1.54 ms at 85k
+     (lane-scaling 2.6-2.8× → 3.1-3.3×), at the documented cost of ~10% at
+     1 lane — the kernel registration is a bet on lanes. Determinism checks
+     stay bitwise-green with the maintenance sort on.
+   - Roadmap: sort-by-entity/multi-component keys; in-place permutation if a
+     workload ever makes the gather scratch matter.
 
    **Parallel two-pass `Bin` (roadmap)** — the deterministic answer for
    scatter shapes that sorting can't fix (keys genuinely uncorrelated,
