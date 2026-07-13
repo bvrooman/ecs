@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schedule compare — {{ label_a }} vs {{ label_b }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<main>
+  <h1>Schedule compare</h1>
+  <div class="meta">
+    <span class="sw" style="background:var(--accent-soft)"></span>{{ label_a }}
+    &nbsp;{{ source_a }} &middot; {{ "{:,}".format(n_ticks_a) }} ticks<br>
+    <span class="sw" style="background:var(--accent)"></span>{{ label_b }}
+    &nbsp;{{ source_b }} &middot; {{ "{:,}".format(n_ticks_b) }} ticks
+  </div>
+
+  <div class="tiles">
+    {% for t in tiles %}
+    <div class="tile"><div class="k">{{ t.label }}</div>
+      <div class="v">{{ t.head }}</div>
+      <div class="d"><span class="from">{{ t.base }} &rarr;</span>
+        <span class="delta {{ t.cls }}">{{ t.delta }}</span></div></div>
+    {% endfor %}
+  </div>
+
+  {% if verdicts %}
+  <div class="verdicts">
+    {% for v in verdicts %}<span class="pill {{ v.cls }}">{{ v.text }}</span>{% endfor %}
+  </div>
+  {% endif %}
+
+  <h2>Tick wall time</h2>
+  <div class="card">
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent-soft)"></span>{{ label_a }}</span>
+      <span><span class="sw" style="background:var(--accent)"></span>{{ label_b }}</span>
+    </div>
+    {{ tick_svg }}
+  </div>
+
+  <h2>Systems: mean busy per tick</h2>
+  <div class="card">
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent-soft)"></span>{{ label_a }}</span>
+      <span><span class="sw" style="background:var(--accent)"></span>{{ label_b }}</span>
+    </div>
+    <div class="sub">significant changes first (Welch 3&times;SE on 5%-trimmed
+      per-tick samples, &ge;{{ threshold }}% of the base mean, and &ge;1&thinsp;&micro;s);
+      the rest by magnitude{% if pairs_skipped %}.
+      {{ pairs_skipped | join(", ") }}: one-shot (too few samples to compare;
+      see the table){% endif %}.
+      <span class="hint" data-hint="busy is CPU time summed across all lanes; deltas compare each system's own mean, so lane utilization changes show up here too">busy semantics</span></div>
+    {{ pairs_svg }}
+  </div>
+
+  <h2>All numbers</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>system</th><th>verdict</th>
+        <th>{{ label_a }} mean</th><th>{{ label_b }} mean</th><th>&Delta;</th>
+        <th>{{ label_a }} p99</th><th>{{ label_b }} p99</th>
+        <th>prep &Delta;</th><th>finish &Delta;</th></tr></thead>
+      <tbody>
+        {% for r in table %}
+        <tr class="{{ r.row_cls }}"><td>{{ r.name }}</td>
+          <td><span class="delta {{ r.cls }}">{{ r.verdict }}</span></td>
+          <td>{{ r.base_mean }}</td><td>{{ r.head_mean }}</td>
+          <td><span class="delta {{ r.cls }}">{{ r.delta }}</span></td>
+          <td>{{ r.base_p99 }}</td><td>{{ r.head_p99 }}</td>
+          <td>{{ r.prep }}</td><td>{{ r.fin }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+<div id="tip"></div>
+<script type="application/json" id="data">{{ payload }}</script>
+<script>{{ js }}</script>
+</body>
+</html>

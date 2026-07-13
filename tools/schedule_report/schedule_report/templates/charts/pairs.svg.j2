@@ -1,0 +1,10 @@
+<svg viewBox="0 0 {{ w }} {{ h }}" class="chart" role="img" preserveAspectRatio="none">
+  {%- for r in rows %}
+  <text class="lab" x="{{ label_w - 8 }}" y="{{ r.ly }}" text-anchor="end">{{ r.label }}</text>
+  {%- for b in r.bars %}
+  <path class="{{ b.cls }}" data-pair="{{ id }}" data-i="{{ b.i }}" d="{{ b.d }}"/>
+  {%- endfor %}
+  <text class="val" x="{{ r.vx }}" y="{{ r.vy }}">{{ r.value }}
+    <tspan class="delta {{ r.delta_cls }}">{{ r.delta }}</tspan></text>
+  {%- endfor %}
+</svg>

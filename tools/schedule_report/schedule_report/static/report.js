@@ -90,6 +90,19 @@
             const rows = [[d.label + ' \u2014 tick ' + d.xs[best], fmt(d.ys[best])]];
             if (d.lo) rows.push(['min\u2026max in bucket',
                 fmt(d.lo[best]) + ' \u2026 ' + fmt(d.hi[best])]);
+            if (d.xs2) {
+                // second (base) series: snap to ITS nearest x -- the two
+                // series may have different tick counts
+                let b2 = 0, e2 = Infinity;
+                d.xs2.forEach((x, i) => {
+                    const e = Math.abs(x - d.xs[best]);
+                    if (e < e2) {
+                        e2 = e;
+                        b2 = i;
+                    }
+                });
+                rows.push([d.label2 + ' \u2014 tick ' + d.xs2[b2], fmt(d.ys2[b2])]);
+            }
             show(evt, rows);
         });
         r.addEventListener('pointerleave', () => {
@@ -104,6 +117,16 @@
         b.addEventListener('pointermove', evt => show(evt, [
             [d.label, d.counts[i] + ' ticks'],
             ['range', fmt(d.edges[i]) + ' \u2013 ' + fmt(d.edges[i + 1])],
+        ]));
+        b.addEventListener('pointerleave', hide);
+    });
+
+    document.querySelectorAll('[data-pair]').forEach(b => {
+        const d = D.pairs[b.dataset.pair][+b.dataset.i];
+        b.addEventListener('pointermove', evt => show(evt, [
+            [d.label, d.delta],
+            [d.label_a, fmt(d.base)],
+            [d.label_b, fmt(d.head)],
         ]));
         b.addEventListener('pointerleave', hide);
     });

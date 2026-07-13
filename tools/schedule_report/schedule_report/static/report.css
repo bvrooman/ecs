@@ -8,6 +8,10 @@
     --accent: #2a78d6;
     --accent-soft: #86b6ef;
     --band: rgba(42, 120, 214, .10);
+    /* status pair for compare deltas; a sign or verdict word always
+       accompanies the color, so color is never the only channel */
+    --good: #0ca30c;
+    --bad: #d03b3b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -21,6 +25,8 @@
         --accent: #3987e5;
         --accent-soft: #1c5cab;
         --band: rgba(57, 135, 229, .14);
+        --good: #0ca30c;
+        --bad: #d03b3b;
     }
 }
 
@@ -150,6 +156,10 @@ svg.chart {
     stroke-linecap: round;
 }
 
+.line2 {
+    stroke: var(--accent-soft);
+}
+
 .band {
     fill: var(--band);
 }
@@ -214,6 +224,75 @@ svg.chart {
 }
 
 #tip .tk {
+    color: var(--ink-2);
+}
+
+/* --- compare view ------------------------------------------------------- */
+
+.delta {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.delta.up {
+    fill: var(--bad);
+    color: var(--bad);
+}
+
+.delta.down {
+    fill: var(--good);
+    color: var(--good);
+}
+
+.delta.flat {
+    fill: var(--ink-3);
+    color: var(--ink-3);
+    font-weight: 400;
+}
+
+.tile .d {
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.tile .d .from {
+    color: var(--ink-2);
+}
+
+.verdicts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 12px 0 4px;
+}
+
+.pill {
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--ink-2);
+}
+
+.pill.bad {
+    color: var(--bad);
+    border-color: var(--bad);
+}
+
+.pill.good {
+    color: var(--good);
+    border-color: var(--good);
+}
+
+.meta .sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    margin-right: 4px;
+}
+
+tr.dim td {
     color: var(--ink-2);
 }
 

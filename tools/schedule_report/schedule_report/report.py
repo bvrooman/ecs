@@ -17,6 +17,7 @@ from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup
 
 from . import charts
+from . import compare as cmp
 from .trace import downsample, fmt_us, load, stats
 
 _PKG = pathlib.Path(__file__).resolve().parent
@@ -143,3 +144,128 @@ def render(trace_path, out_path):
     with open(out_path, "w") as f:
         f.write(doc)
     return dict(bytes=len(doc), ticks=n_ticks, systems=len(systems))
+
+
+# --- compare view ------------------------------------------------------------
+
+# The delta annotation always carries its sign, so color (status green/red)
+# is never the only channel. "lower is better" throughout: busy and tick wall
+# are costs.
+def _delta_txt(pct):
+    return f"{pct:+.1f}%"
+
+
+def _delta_cls(verdict):
+    return {cmp.REGRESSION: "up", cmp.IMPROVEMENT: "down"}.get(verdict, "flat")
+
+
+MAX_PAIR_ROWS = 40  # keep the paired chart readable; the table has everything
+
+
+def render_compare(base_path, head_path, out_path, label_a="base",
+                   label_b="head", threshold_pct=2.0):
+    env = _env()
+
+    def chart(kind, ctx):
+        return Markup(env.get_template(f"charts/{kind}.svg.j2").render(ctx))
+
+    model = cmp.compare(base_path, head_path, threshold_pct)
+    t = model["ticks"]
+    payload = {"lines": {}, "hists": {}, "hbars": {}, "pairs": {}}
+
+    # headline tiles: head value large, base -> delta beneath
+    def tile(label, key, pct):
+        return dict(label=label, head=fmt_us(t["head"][key]),
+                    base=fmt_us(t["base"][key]), delta=_delta_txt(pct),
+                    cls="up" if pct > threshold_pct
+                        else "down" if pct < -threshold_pct else "flat")
+
+    tiles = [
+        tile("mean tick", "mean", t["mean_delta_pct"]),
+        tile("p50 tick", "p50", t["p50_delta_pct"]),
+        tile("p99 tick", "p99", t["p99_delta_pct"]),
+    ]
+
+    counts = {}
+    for s in model["systems"]:
+        counts[s["verdict"]] = counts.get(s["verdict"], 0) + 1
+    verdicts = [
+        dict(cls={"regression": "bad", "improvement": "good"}.get(v, "flat"),
+             text=f"{n} {v}{'s' if n != 1 and v not in ('unchanged',) else ''}")
+        for v, n in counts.items()
+    ]
+
+    # overlaid tick series: head over base, shared scales. The y scale clips
+    # at the joint p99.5 -- one 20x descheduled tick would otherwise flatten
+    # both lines to the baseline (tooltips still report true values).
+    both = sorted(model["base_ticks"] + model["head_ticks"])
+    cap = both[min(len(both) - 1, int(0.995 * len(both)))]
+    bx, by, _, _ = downsample(model["base_tick_ids"], model["base_ticks"])
+    hx, hy, _, _ = downsample(model["head_tick_ids"], model["head_ticks"])
+    ctx, data = charts.line_chart(hx, hy, None, None, "tick", xs2=bx, ys2=by,
+                                  ymax_cap=cap)
+    data["label"] = f"{label_b} tick wall"
+    data["label2"] = f"{label_a} tick wall"
+    payload["lines"]["tick"] = data
+    tick_svg = chart("line", ctx)
+
+    # paired bars, model order (significant first). One-shot systems (fewer
+    # than MIN_N samples a side) sit out: they can never be significant, and
+    # a setup system's one 18ms tick would crush every per-tick bar.
+    rows = []
+    skipped = []
+    for s in model["systems"]:
+        if s["verdict"] in (cmp.ADDED, cmp.REMOVED):
+            continue
+        if s["base"]["n"] < cmp.MIN_N or s["head"]["n"] < cmp.MIN_N:
+            skipped.append(s["name"])
+            continue
+        rows.append((s["name"], s["base"]["mean"], s["head"]["mean"],
+                     _delta_txt(s["delta_pct"]) if s["verdict"] != cmp.UNCHANGED
+                     else "·",
+                     _delta_cls(s["verdict"])))
+    if len(rows) > MAX_PAIR_ROWS:
+        print(f"note: paired chart shows the top {MAX_PAIR_ROWS} of "
+              f"{len(rows)} systems; the table has all of them")
+        rows = rows[:MAX_PAIR_ROWS]
+    ctx, data = charts.paired_hbars(rows, "sys")
+    for d in data:
+        d["label_a"], d["label_b"] = label_a, label_b
+    payload["pairs"]["sys"] = data
+    pairs_svg = chart("pairs", ctx)
+
+    table = []
+    for s in model["systems"]:
+        a, b = s["base"], s["head"]
+        prep_d = s["prepare"][1] - s["prepare"][0]
+        fin_d = s["finish"][1] - s["finish"][0]
+        table.append(dict(
+            name=s["name"], verdict=s["verdict"],
+            cls={"regression": "up", "improvement": "down",
+                 "added": "up", "removed": "flat"}.get(s["verdict"], "flat"),
+            row_cls="dim" if s["verdict"] == cmp.UNCHANGED else "",
+            base_mean=fmt_us(a["mean"]) if a else "—",
+            head_mean=fmt_us(b["mean"]) if b else "—",
+            delta=_delta_txt(s["delta_pct"])
+                  if s["verdict"] in (cmp.REGRESSION, cmp.IMPROVEMENT,
+                                      cmp.UNCHANGED) else "—",
+            base_p99=fmt_us(a["p99"]) if a else "—",
+            head_p99=fmt_us(b["p99"]) if b else "—",
+            prep=f"{prep_d:+.2f} µs" if a and b else "—",
+            fin=f"{fin_d:+.2f} µs" if a and b else "—",
+        ))
+
+    doc = env.get_template("compare.html.j2").render(
+        source_a=str(base_path), source_b=str(head_path),
+        label_a=label_a, label_b=label_b,
+        n_ticks_a=t["base"]["n"], n_ticks_b=t["head"]["n"],
+        threshold=f"{threshold_pct:g}", pairs_skipped=skipped,
+        tiles=tiles, verdicts=verdicts,
+        tick_svg=tick_svg, pairs_svg=pairs_svg, table=table,
+        css=Markup((_PKG / "static" / "report.css").read_text()),
+        js=Markup((_PKG / "static" / "report.js").read_text()),
+        payload=Markup(json.dumps(payload)),
+    )
+    with open(out_path, "w") as f:
+        f.write(doc)
+    return model
