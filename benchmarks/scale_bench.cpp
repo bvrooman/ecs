@@ -21,21 +21,32 @@ using namespace ecs;
 using clk = std::chrono::steady_clock;
 
 // The per-entity hot path only: a fixed population, no spawning/reaping.
+// Registered as KERNELS (add_kernel), so the executor slices each system's
+// rows across lanes -- which is what makes "where the pool pays off" a
+// meaningful question. An imperative add() is one opaque work item over all
+// rows: the pool cannot split it, so it would only overlap the two
+// disjoint-write systems (gravity/age) in one wave and pay a fork-join
+// barrier + cross-core cache traffic on every wave -- pure overhead, slower
+// at every N. The systems still fall into the same conflict waves
+// ({gravity,age} -> integrate -> extract); the difference is that each
+// system's rows now fan out. Below the executor's slice threshold (small N)
+// a kernel stays a single item, so the small-N rows honestly show ~no
+// speedup rather than a fabricated one.
 static void build_steady(Schedule& s) {
-    s.add("gravity", [](Query<Velocity> q, Res<Gravity> g) {
+    s.add_kernel("gravity", [](Query<Velocity> q, Res<Gravity> g) {
         float const a = g->accel;
         q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> v) {
             for (auto& vy : v.column<1>())
                 vy += a * cfg::kDt;
         });
     });
-    s.add("age", [](Query<Age> q) {
+    s.add_kernel("age", [](Query<Age> q) {
         q.for_each_chunk([](std::span<Entity>, chunk<Age> a) {
             for (auto& t : a.column<0>())
                 t += cfg::kDt;
         });
     });
-    s.add("integrate", [](Query<Position, Velocity const> q) {
+    s.add_kernel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> p,
                             chunk<Velocity const> v) {
@@ -49,22 +60,33 @@ static void build_steady(Schedule& s) {
             }
         });
     });
-    s.add("extract",
-          [](Query<Position const, Color const, Age const> q,
-             ResMut<TripleBuffer<RenderSnapshot>> ch) {
-              RenderSnapshot& out = ch->back();
-              out.clear();
-              q.for_each_serial([&](auto& p, auto& c, auto&) {
-                  out.push_back(GpuParticle {p.x, p.y, c.r, c.g, c.b, 1.0f});
-              });
-              ch->publish();
-          });
+    // Gather a draw-ready snapshot. The Extract primitive pre-sizes the target
+    // once at the barrier and each item writes its disjoint span, so the
+    // gather parallelizes too (vs the old serial push_back into a TripleBuffer,
+    // which forced this system serial and capped the whole sweep's speedup).
+    s.add_kernel("extract",
+                 [](Query<Position const, Color const, Age const> q,
+                    Extract<RenderSnapshot> out) {
+                     q.for_each_chunk([&](std::span<Entity>,
+                                          chunk<Position const> p,
+                                          chunk<Color const> c,
+                                          chunk<Age const>) {
+                         auto px = p.column<0>();
+                         auto py = p.column<1>();
+                         auto cr = c.column<0>();
+                         auto cg = c.column<1>();
+                         auto cb = c.column<2>();
+                         for (std::size_t i = 0; i < px.size(); ++i)
+                             out[i] = GpuParticle {px[i], py[i],
+                                                   cr[i], cg[i], cb[i], 1.0f};
+                     });
+                 });
 }
 
 static void setup(World& w) {
     w.emplace_resource<Gravity>(cfg::kGravity);
     w.emplace_resource<Rng>(Rng {std::mt19937 {1u}});
-    w.emplace_resource<TripleBuffer<RenderSnapshot>>();
+    w.emplace_resource<RenderSnapshot>(); // Extract target (was a TripleBuffer)
 }
 
 static void spawn_n(World& w, int n) {
