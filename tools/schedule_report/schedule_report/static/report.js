@@ -29,6 +29,26 @@
   }
   const hide = () => { tip.style.display = 'none'; };
 
+  // Plain-text hints (e.g. the busy-value explanation) ride the same styled
+  // tooltip layer as the charts -- native title tooltips are delayed and
+  // inconsistent across browsers.
+  function showText(evt, text) {
+    tip.replaceChildren();
+    const d = document.createElement('div');
+    d.className = 'tk'; d.textContent = text;
+    tip.append(d);
+    tip.style.display = 'block';
+    const pad = 14, tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x = evt.clientX + pad, y = evt.clientY + pad;
+    if (x + tw > innerWidth - 8) x = evt.clientX - tw - pad;
+    if (y + th > innerHeight - 8) y = evt.clientY - th - pad;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+  document.querySelectorAll('.hint[data-hint]').forEach(el => {
+    el.addEventListener('pointermove', evt => showText(evt, el.dataset.hint));
+    el.addEventListener('pointerleave', hide);
+  });
+
   document.querySelectorAll('rect.hover[data-line]').forEach(r => {
     const id = r.dataset.line, d = D.lines[id];
     const svg = r.closest('svg');

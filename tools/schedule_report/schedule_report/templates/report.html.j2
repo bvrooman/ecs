@@ -56,10 +56,7 @@
     <h3>{{ c.name }}</h3>
     <div class="sub">wave {{ c.wave }} &middot;
       {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
-      <span class="hint" title="busy is CPU time summed across all lanes, so
-a system whose work items run on several lanes at once can exceed 100% of
-the tick's wall clock">busy = {{ c.share }}% of mean tick
-      wall</span>{% if c.ran_partial %} &middot;
+      <span class="hint" data-hint="busy is CPU time summed across all lanes, so a system whose work items run on several lanes at once can exceed 100% of the tick's wall clock">busy = {{ c.share }}% of mean tick wall</span>{% if c.ran_partial %} &middot;
       ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
