@@ -28,3 +28,19 @@ target_include_directories(schedule_bench
 ecs_add_benchmark(scale_bench scale_bench.cpp)
 target_include_directories(scale_bench
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples/particles)
+
+# churn_bench: structural costs -- spawn/despawn/add/remove throughput and an
+# emitter/reaper steady state with the allocation counter.
+ecs_add_benchmark(churn_bench churn_bench.cpp)
+
+# primitives_bench: the kernel parallel primitives (Reduce/Extract/Collect/
+# Bin/Events) against hand-rolled imperative baselines at 1 and hw lanes.
+ecs_add_benchmark(primitives_bench primitives_bench.cpp)
+
+# sort_bench: World::sort_rows mechanics -- early exit, full counting sort,
+# and the min_disorder skip under realistic churn drift.
+ecs_add_benchmark(sort_bench sort_bench.cpp)
+
+# access_bench: per-handle access (get/alive) and query matching across a
+# fragmented archetype set.
+ecs_add_benchmark(access_bench access_bench.cpp)

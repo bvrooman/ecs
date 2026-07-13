@@ -8,6 +8,7 @@
 //
 //   schedule_bench [measured_ticks]      (default 5000)
 #include "bench.hpp"
+#include "bench_alloc.hpp"
 #include "ecs/ecs.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
@@ -22,41 +23,8 @@
 #include <thread>
 #include <vector>
 
-// --- global allocation counter -------------------------------------------
-static std::atomic<long> g_allocs {0};
-void* operator new(std::size_t n) {
-    g_allocs.fetch_add(1, std::memory_order_relaxed);
-    if (void* p = std::malloc(n ? n : 1))
-        return p;
-    throw std::bad_alloc {};
-}
-void* operator new[](std::size_t n) { return operator new(n); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-
 using namespace ecs;
-using clk = std::chrono::steady_clock;
-
-struct Stats {
-    double mean = 0, p50 = 0, p99 = 0, mx = 0;
-    static Stats of(std::vector<double> v) {
-        std::sort(v.begin(), v.end());
-        Stats s;
-        s.mx       = v.back();
-        double sum = 0;
-        for (double x : v)
-            sum += x;
-        s.mean   = sum / v.size();
-        auto pct = [&](double p) {
-            return v[std::min(v.size() - 1, std::size_t(p * v.size()))];
-        };
-        s.p50 = pct(0.50);
-        s.p99 = pct(0.99);
-        return s;
-    }
-};
+using Stats = bench::Dist; // shared tick-distribution type (bench.hpp)
 
 static void setup(World& w) {
     w.emplace_resource<Gravity>(cfg::kGravity);
@@ -85,15 +53,12 @@ report(char const* executor, unsigned lanes, Stats s, double allocs_per_tick) {
                 allocs_per_tick);
 }
 
-// The machine-readable mirror of report(): the tick distribution + allocation
-// rate as (metric, value) rows for the ECS_BENCH_OUT sink.
+// The machine-readable mirror of report(): the shared distribution rows plus
+// the allocation rate.
 static void emit_stats(char const* name, unsigned lanes, Stats const& s,
                        double allocs_per_tick, std::size_t entities,
                        std::size_t ticks) {
-    bench::emit(name, "mean_us_per_tick", s.mean, "us", "lower", entities, lanes, ticks);
-    bench::emit(name, "p50_us_per_tick", s.p50, "us", "lower", entities, lanes, ticks);
-    bench::emit(name, "p99_us_per_tick", s.p99, "us", "lower", entities, lanes, ticks);
-    bench::emit(name, "max_us_per_tick", s.mx, "us", "lower", entities, lanes, ticks);
+    bench::emit_dist(name, lanes, s, entities, ticks);
     bench::emit(name, "allocs_per_tick", allocs_per_tick, "1", "lower", entities,
                 lanes, ticks);
 }
@@ -102,18 +67,10 @@ static void emit_stats(char const* name, unsigned lanes, Stats const& s,
 // allocations counted during the measured window.
 template <class RunOne>
 static std::pair<Stats, double> measure(int warm, int n, RunOne&& run_one) {
-    for (int i = 0; i < warm; ++i)
-        run_one();
-    std::vector<double> us;
-    us.reserve(n);
-    long const a0 = g_allocs.load(std::memory_order_relaxed);
-    for (int i = 0; i < n; ++i) {
-        auto t0 = clk::now();
-        run_one();
-        us.push_back(std::chrono::duration<double, std::micro>(clk::now() - t0).count());
-    }
-    double const allocs = double(g_allocs.load(std::memory_order_relaxed) - a0) / n;
-    return {Stats::of(std::move(us)), allocs};
+    Stats st;
+    double const allocs = bench::count_allocs(
+        n, [&] { st = bench::measure_ticks(warm, n, run_one); });
+    return {st, allocs};
 }
 
 // --- imperative vs kernel systems (the work-item executor) -----------------
@@ -191,7 +148,8 @@ inline void populate(ecs::World& w, std::size_t n) {
 
 int main(int argc, char** argv) {
     bench::set_suite("schedule");
-    int const measured = argc > 1 ? std::atoi(argv[1]) : 5000;
+    int const measured = argc > 1 ? std::atoi(argv[1])
+                                  : int(bench::env_long("ECS_TICKS", 5000));
     int const warm     = 800;
     unsigned const hw  = std::max(2u, std::thread::hardware_concurrency());
 

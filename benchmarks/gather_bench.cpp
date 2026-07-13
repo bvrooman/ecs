@@ -100,8 +100,8 @@ static void sparse(char const* label, std::size_t N, int R) {
 
 int main() {
     bench::set_suite("gather");
-    std::size_t const N = 200'000;
-    int const R         = 250;
+    std::size_t const N = bench::env_size("ECS_ENTITIES", 200'000);
+    int const R         = int(bench::env_long("ECS_REPEATS", 250));
 #if ECS_USE_P2996
     std::printf("gather_bench -- P2996 backend (for_each_parallel = row PROXIES)\n");
 #else

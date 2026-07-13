@@ -62,7 +62,10 @@ inline static float heavy(float a, float b, float c) {
 
 int main(int argc, char** argv) {
     bench::set_suite("soa");
-    std::size_t const N = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
+    std::size_t const N = argc > 1 ? std::strtoull(argv[1], nullptr, 10)
+                                   : bench::env_size("ECS_ENTITIES", 1'000'000);
+    bench::g_iters   = int(bench::env_long("ECS_ITERS", bench::g_iters));
+    bench::g_repeats = int(bench::env_long("ECS_REPEATS", bench::g_repeats));
     if (argc > 2)
         bench::g_iters = std::atoi(argv[2]);
     if (argc > 3)

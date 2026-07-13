@@ -81,12 +81,7 @@ static void spawn_n(World& w, int n) {
 
 template <class RunOne>
 static double mean_us(int warm, int n, RunOne&& run_one) {
-    for (int i = 0; i < warm; ++i)
-        run_one();
-    auto t0 = clk::now();
-    for (int i = 0; i < n; ++i)
-        run_one();
-    return std::chrono::duration<double, std::micro>(clk::now() - t0).count() / n;
+    return bench::measure_ticks(warm, n, run_one).mean;
 }
 
 int main() {

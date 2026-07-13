@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -31,10 +32,27 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace bench {
 
 using clock_type = std::chrono::steady_clock;
+
+// --- configuration ----------------------------------------------------------
+// Every suite reads its knobs from ECS_* env vars (ECS_ENTITIES, ECS_TICKS,
+// ECS_ITERS, ECS_REPEATS -- same convention as the demos), so sweep scripts
+// and the A/B driver configure all of them uniformly. Positional args, where
+// a suite historically took them, still win over the env.
+
+inline long env_long(char const* key, long const dflt) {
+  if (char const* v = std::getenv(key))
+    if (long n = std::atol(v); n > 0) return n;
+  return dflt;
+}
+
+inline std::size_t env_size(char const* key, std::size_t const dflt) {
+  return static_cast<std::size_t>(env_long(key, static_cast<long>(dflt)));
+}
 
 // Defeat dead-code elimination: force `v` to be treated as observed/clobbered.
 // "+r,m" (read-write) rather than the old input-only "r,m" form: an input-only
@@ -222,6 +240,68 @@ double min_ns_per(std::size_t n, int repeats, Body&& body) {
   return best;
 }
 
+// Best-of-`repeats` ns per element for a STRUCTURAL one-shot (spawn a
+// population, sort rows, ...): `setup()` rebuilds the precondition untimed
+// before each timed `op()`. The one-sweep cousin of min_ns_per for operations
+// that consume their input.
+template <class Setup, class Op>
+double best_ns_of(std::size_t n, int repeats, Setup&& setup, Op&& op) {
+  double best = 1e300;
+  for (int r = 0; r < repeats; ++r) {
+    setup();
+    const auto t0 = clock_type::now();
+    op();
+    const auto t1 = clock_type::now();
+    best = std::min(
+        best, std::chrono::duration<double, std::nano>(t1 - t0).count() /
+                  static_cast<double>(n));
+  }
+  return best;
+}
+
+// --- per-tick distributions -------------------------------------------------
+// The shared distribution type for tick-loop suites (schedule_bench, churn,
+// primitives): jitter and tails, not best-case.
+struct Dist {
+  double mean = 0, sd = 0, p50 = 0, p99 = 0, mx = 0;
+  std::size_t n = 0;
+
+  static Dist of(std::vector<double> v) {
+    Dist s;
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    s.n  = v.size();
+    s.mx = v.back();
+    double sum = 0;
+    for (double x : v) sum += x;
+    s.mean     = sum / static_cast<double>(v.size());
+    double var = 0;
+    for (double x : v) var += (x - s.mean) * (x - s.mean);
+    s.sd     = std::sqrt(var / static_cast<double>(v.size()));
+    auto pct = [&](double p) {
+      return v[std::min(v.size() - 1, std::size_t(p * v.size()))];
+    };
+    s.p50 = pct(0.50);
+    s.p99 = pct(0.99);
+    return s;
+  }
+};
+
+// Warm to steady state untimed, then time `n` runs of `run_one`, in us.
+template <class RunOne>
+Dist measure_ticks(int warm, int n, RunOne&& run_one) {
+  for (int i = 0; i < warm; ++i) run_one();
+  std::vector<double> us;
+  us.reserve(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const auto t0 = clock_type::now();
+    run_one();
+    const auto t1 = clock_type::now();
+    us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+  }
+  return Dist::of(std::move(us));
+}
+
 template <class Body>
 void run(const char* name, std::size_t entities, Body&& body) {
   double best_ms = 1e300;
@@ -237,6 +317,16 @@ void run(const char* name, std::size_t entities, Body&& body) {
               ns_per, best_ms, g_iters);
   emit(name, "ns_per_entity", ns_per, "ns", "lower", entities, 1,
        static_cast<std::size_t>(g_repeats));
+}
+
+// The machine-readable mirror of a per-tick distribution report line: the
+// standard metric rows every tick-loop suite shares.
+inline void emit_dist(std::string_view name, unsigned lanes, Dist const& d,
+                      std::size_t entities, std::size_t ticks) {
+  emit(name, "mean_us_per_tick", d.mean, "us", "lower", entities, lanes, ticks);
+  emit(name, "p50_us_per_tick", d.p50, "us", "lower", entities, lanes, ticks);
+  emit(name, "p99_us_per_tick", d.p99, "us", "lower", entities, lanes, ticks);
+  emit(name, "max_us_per_tick", d.mx, "us", "lower", entities, lanes, ticks);
 }
 
 } // namespace bench
