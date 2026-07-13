@@ -94,22 +94,23 @@ def render(trace_path, out_path):
         st = stats(s["busy"])
         prep = sum(s["prep"]) / len(s["prep"])
         fin = sum(s["fin"]) / len(s["fin"])
-        # busy vs the tick's WALL time, as a ratio: CPU summed across lanes,
-        # so a well-parallelized system legitimately exceeds 1x.
-        ratio = st["mean"] / ts["mean"] if ts["mean"] else 0
+        # busy vs the tick's WALL time: CPU summed across lanes, so a
+        # well-parallelized system legitimately exceeds 100% (the hover on
+        # the value explains this in the page).
+        share = 100.0 * st["mean"] / ts["mean"] if ts["mean"] else 0
         # Dominant wave placement; one-shot phases shift indices on the ticks
-        # they run (mist's scatter bumps every wave by one on tick 0).
+        # they run (mist's scatter bumps every wave by one on tick 0), and
+        # the Waves section's note + run-count tooltips carry that story.
         wave_mode, _ = s["waves"].most_common(1)[0]
-        shifted = sum(c for w, c in s["waves"].items() if w != wave_mode)
         ctx, hdata = charts.histogram(s["busy"], f"h-s{idx}")
         hdata["label"] = name
         payload["hists"][f"h-s{idx}"] = hdata
         series_svg, _ = line_section(*downsample(s["ticks"], s["busy"]),
                                      f"l-s{idx}", f"{name} busy")
         cards.append(dict(
-            name=name, wave=wave_mode, shifted=shifted,
+            name=name, wave=wave_mode,
             n_items=s["items"], n=st["n"],
-            ratio=f"{ratio:.2f}",
+            share=f"{share:.1f}",
             ran_partial=st["n"] < n_ticks,
             stats=[("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
                    ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
@@ -120,7 +121,7 @@ def render(trace_path, out_path):
         table.append([name, wave_mode, s["items"], st["n"],
                       fmt_us(st["mean"]), fmt_us(st["sd"]), fmt_us(st["p50"]),
                       fmt_us(st["p99"]), fmt_us(st["mx"]), fmt_us(prep),
-                      fmt_us(fin), f"{ratio:.2f}×"])
+                      fmt_us(fin), f"{share:.1f}%"])
 
     doc = env.get_template("report.html.j2").render(
         source=str(trace_path),

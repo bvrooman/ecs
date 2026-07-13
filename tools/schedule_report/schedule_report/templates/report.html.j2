@@ -54,12 +54,12 @@
   {% for c in cards %}
   <div class="card">
     <h3>{{ c.name }}</h3>
-    <div class="sub">wave {{ c.wave }}{% if c.shifted %} (shifted on
-      {{ c.shifted }} tick{{ "s" if c.shifted != 1 }} by a one-shot
-      phase){% endif %} &middot;
+    <div class="sub">wave {{ c.wave }} &middot;
       {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
-      busy = {{ c.ratio }}&times; mean tick wall (CPU summed across lanes
-      &mdash; parallel systems exceed 1&times;){% if c.ran_partial %} &middot;
+      <span class="hint" title="busy is CPU time summed across all lanes, so
+a system whose work items run on several lanes at once can exceed 100% of
+the tick's wall clock">busy = {{ c.share }}% of mean tick
+      wall</span>{% if c.ran_partial %} &middot;
       ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
@@ -76,7 +76,7 @@
     <table>
       <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
         <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
-        <th>prepare</th><th>finish</th><th>busy / tick</th></tr></thead>
+        <th>prepare</th><th>finish</th><th>% of tick</th></tr></thead>
       <tbody>
         {% for row in table %}
         <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>

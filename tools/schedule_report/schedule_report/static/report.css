@@ -31,6 +31,8 @@ h2 { font-size: 15px; margin: 28px 0 10px; }
   font-size: 12px; margin: 6px 0 10px; }
 .statrow b { color: var(--ink); font-weight: 600; font-size: 13px;
   font-variant-numeric: tabular-nums; }
+.hint { text-decoration: underline dotted; text-underline-offset: 2px;
+  cursor: help; }
 svg.chart { width: 100%; height: auto; display: block; }
 .grid { stroke: var(--hairline); stroke-width: 1; }
 .tick, .lab, .val { font: 11px system-ui, sans-serif; fill: var(--ink-2); }
