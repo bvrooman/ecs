@@ -13,13 +13,11 @@
 #include "particles.hpp"
 #include "simulation.hpp"
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <new>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -67,9 +65,11 @@ static void emit_stats(char const* name, unsigned lanes, Stats const& s,
 // allocations counted during the measured window.
 template <class RunOne>
 static std::pair<Stats, double> measure(int warm, int n, RunOne&& run_one) {
+    bench::warmup(warm, run_one); // untimed AND uncounted: warmup churn must
+                                  // not inflate the steady-state allocs/tick
     Stats st;
-    double const allocs = bench::count_allocs(
-        n, [&] { st = bench::measure_ticks(warm, n, run_one); });
+    double const allocs =
+        bench::count_allocs(n, [&] { st = bench::measure_ticks(0, n, run_one); });
     return {st, allocs};
 }
 
@@ -172,8 +172,10 @@ int main(int argc, char** argv) {
                     particles);
     }
 
-    // WorkerPool lane sweep (x1 = serial: one lane, no worker threads).
-    for (unsigned t : {1u, 2u, 4u, 8u, hw}) {
+    // WorkerPool lane sweep (x1 = serial: one lane, no worker threads). A
+    // std::set dedups hw when it coincides with a fixed step (e.g. hw==4
+    // would otherwise emit the lanes=4 row twice) and keeps them ascending.
+    for (unsigned t : std::set<unsigned> {1u, 2u, 4u, 8u, hw}) {
         World w;
         setup(w);
         Schedule s;

@@ -187,12 +187,11 @@ int main() {
             });
         });
 
+        bench::warmup(std::max(50, ticks / 10), [&] { s.run(w); });
         bench::Dist st;
-        double const allocs = bench::count_allocs(
-            ticks, [&] {
-                st = bench::measure_ticks(std::max(50, ticks / 10), ticks,
-                                          [&] { s.run(w); });
-            });
+        double const allocs = bench::count_allocs(ticks, [&] {
+            st = bench::measure_ticks(0, ticks, [&] { s.run(w); });
+        });
         std::printf("  steady churn (K=%zu/tick)      mean %7.1f  p50 %7.1f  "
                     "p99 %8.1f us | %5.1f alloc/tick\n",
                     K, st.mean, st.p50, st.p99, allocs);

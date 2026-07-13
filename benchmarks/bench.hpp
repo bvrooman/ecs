@@ -287,6 +287,14 @@ struct Dist {
   }
 };
 
+// Run `run_one` `n` times untimed (reach steady state before measuring, and
+// before counting allocations -- warmup churn must not land in a steady-state
+// allocs/tick number).
+template <class RunOne>
+void warmup(int n, RunOne&& run_one) {
+  for (int i = 0; i < n; ++i) run_one();
+}
+
 // Warm to steady state untimed, then time `n` runs of `run_one`, in us.
 template <class RunOne>
 Dist measure_ticks(int warm, int n, RunOne&& run_one) {
