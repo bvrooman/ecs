@@ -83,8 +83,8 @@ def build_side(tree: pathlib.Path, cmake_args, suites):
 
 def run_suite(bdir, suite, out_csv, commit, extra_env):
     exe = bdir / SUITES[suite]
-    env = dict(os.environ, ECS_BENCH_OUT=str(out_csv), ECS_GIT_COMMIT=commit,
-               **FAST_ENV.get(suite, {}), **extra_env)
+    env = {**os.environ, "ECS_BENCH_OUT": str(out_csv),
+           "ECS_GIT_COMMIT": commit, **FAST_ENV.get(suite, {}), **extra_env}
     r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"error: {exe} exited {r.returncode}\n{r.stdout}\n{r.stderr}")
@@ -102,8 +102,13 @@ def load_samples(path):
     return out
 
 
+# Two-sided 99% Student-t quantiles by df (n-1 paired diffs): with 3-5
+# rounds a fixed "3 sigma" is wildly anti-conservative and flags noise.
+T99 = {2: 9.92, 3: 5.84, 4: 4.60, 5: 4.03, 6: 3.71, 7: 3.50, 8: 3.36, 9: 3.25}
+
+
 def verdict(a, b, better, threshold_pct):
-    """Paired comparison of per-round samples a vs b."""
+    """Paired t-comparison of per-round samples a vs b."""
     n = min(len(a), len(b))
     ma = sum(a[:n]) / n
     mb = sum(b[:n]) / n
@@ -114,9 +119,10 @@ def verdict(a, b, better, threshold_pct):
         return "unchanged", pct  # too few rounds for any claim
     diffs = [y - x for x, y in zip(a[:n], b[:n])]
     md = sum(diffs) / n
-    var = sum((d - md) ** 2 for d in diffs) / n
+    var = sum((d - md) ** 2 for d in diffs) / (n - 1)
     se = math.sqrt(var / n)
-    if abs(pct) < threshold_pct or abs(md) <= 3 * se:
+    t = T99.get(n - 1, 3.0)
+    if abs(pct) < threshold_pct or abs(md) <= t * se:
         return "unchanged", pct
     worse = md > 0 if better == "lower" else md < 0
     return ("regression" if worse else "improvement"), pct
@@ -131,7 +137,11 @@ def main():
     p.add_argument("--suites", default=DEFAULT_SUITES,
                    help=f"comma list from: {','.join(SUITES)} "
                         f"(default {DEFAULT_SUITES})")
-    p.add_argument("--threshold", type=float, default=2.0, metavar="PCT")
+    p.add_argument("--threshold", type=float, default=5.0, metavar="PCT",
+                   help="relative change below this is never significant "
+                        "(default 5%%; micro ns/op numbers carry a few "
+                        "percent of build-layout variance even between "
+                        "identical sources -- calibrate with --base HEAD)")
     p.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="extra env for every suite run (repeatable)")
     p.add_argument("--cmake-arg", action="append", default=[], metavar="ARG",

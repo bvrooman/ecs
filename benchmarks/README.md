@@ -1,18 +1,27 @@
 # benchmarks
 
-Four suites, each answering one question. All build by default
+Eight suites, each answering one question. All build by default
 (`ECS_BUILD_BENCHMARKS=ON`) with `-O3 -DNDEBUG -march=native` forced, so the
-numbers are meaningful regardless of the tree's `CMAKE_BUILD_TYPE`.
+numbers are meaningful regardless of the tree's `CMAKE_BUILD_TYPE`. Every
+suite reads its knobs from env vars (`ECS_ENTITIES`, `ECS_TICKS`,
+`ECS_ITERS`, `ECS_REPEATS`; historical positional args still win), so sweep
+scripts and the A/B driver configure them uniformly.
 
-| suite | question | knobs |
-|---|---|---|
-| `soa_bench` | SoA storage vs AoS baseline; `for_each_serial` vs `for_each_chunk` | `[entities] [iters] [repeats]` |
-| `gather_bench` | `for_each_parallel`'s gather/scatter cost vs component width (contrast a portable vs P2996 build) | — |
-| `scale_bench` | per-tick cost vs population size; where the pool pays off | — |
-| `schedule_bench` | tick distribution + allocs/tick of the particle schedule; lane sweep; imperative vs kernel registration | `[measured_ticks]` |
+| suite | question |
+|---|---|
+| `soa_bench` | SoA storage vs AoS baseline; `for_each_serial` vs `for_each_chunk` |
+| `gather_bench` | `for_each_parallel`'s gather/scatter cost vs component width (contrast a portable vs P2996 build) |
+| `scale_bench` | per-tick cost vs population size; where the pool pays off |
+| `schedule_bench` | tick distribution + allocs/tick of the particle schedule; lane sweep; imperative vs kernel registration |
+| `churn_bench` | structural throughput: spawn/despawn/add/remove ns/op + an emitter/reaper steady state with allocs/tick |
+| `primitives_bench` | Reduce/Extract/Collect/Bin/Events vs hand-rolled imperative baselines, at 1 lane (overhead) and hw lanes (payoff) |
+| `sort_bench` | `sort_rows` mechanics: early exit, full counting sort, `min_disorder` skip under 5% churn drift |
+| `access_bench` | `get<C>(entity)` sequential vs random, `alive`, query over 1 vs 64 archetypes (fragmentation) |
 
 `examples/mist-headless` doubles as the macro benchmark: the deterministic
 fixed-seed flock at 1 and 4 lanes, with bitwise-reproducibility checks.
+CI runs a tiny-size smoke of every suite (rows emitted, envelope intact —
+never gating on shared-runner timings).
 
 ## Machine-readable results (`ECS_BENCH_OUT`)
 
@@ -45,15 +54,30 @@ The file is append-mode with a header only when it starts empty, so one
 results CSV can collect a whole run of suites — or accumulate runs across
 commits for trend analysis.
 
-## Comparing runs
+## Comparing runs: the A/B driver
 
 Wall-clock benchmarks are only trustworthy compared *within one machine and
-session*. To A/B a change: run the suites on the base commit and on your
-change **interleaved** (base, head, base, head — not all-base then all-head),
-each appending to its own `ECS_BENCH_OUT` file, and compare per
-(suite,name,metric,entities,lanes) key. For schedule-level attribution
-(*which system* regressed), trace a deterministic run instead and diff the
-traces:
+session*, interleaved. `ab.py` does the whole workflow — builds the base ref
+into a git worktree and the working tree as head, runs the suites
+round-robin (A B A B …, order flipped each round), and compares the paired
+per-round samples per (suite, name, metric, entities, lanes) key with a
+paired t-test (99%) plus a relative threshold:
+
+```sh
+python3 benchmarks/ab.py --base main --fail-on-regression
+python3 benchmarks/ab.py --base HEAD~1 --rounds 7 --suites churn,sort \
+    --env ECS_ENTITIES=100000 --cmake-arg=-DCMAKE_CXX_COMPILER=clang++
+```
+
+(`--cmake-arg` values that start with `-D` need the `=` form.) Calibrate on
+your machine first with a same-vs-same run — `--base HEAD` on a clean tree —
+and raise `--threshold` (default 5%) if it flags anything: micro ns/op
+numbers carry a few percent of code-layout variance even between identical
+sources, and only interleaving + rounds beats scheduler drift, not
+statistics.
+
+For schedule-level attribution (*which system* regressed), trace a
+deterministic run and diff the traces instead:
 
 ```sh
 ECS_TRACE=base.csv ./build/examples/mist-headless        # on the base commit

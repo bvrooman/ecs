@@ -401,10 +401,11 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
   `std::string` fields through relocation under ASAN; throwing
   observer/missing-resource paths; tag components through the full archetype
   path; doctest (or extend `check.hpp` with variadic `CHECK`, value-printing
-  `CHECK_EQ`, per-case ctest registration); dispersion + `--csv` in
-  benchmarks; `-march=native` as an option; structural churn / fragmentation /
-  random-access benchmark dimensions; optional EnTT/flecs comparison; a wasm
-  CI leg running `web/test/smoke.cpp` under node.
+  `CHECK_EQ`, per-case ctest registration); `-march=native` as an option;
+  optional EnTT/flecs comparison; a wasm CI leg running `web/test/smoke.cpp`
+  under node. **[done]** structural churn / fragmentation / random-access
+  benchmark dimensions (churn/access suites), machine-readable results
+  (`ECS_BENCH_OUT`), per-suite dispersion via the shared `bench::Dist`.
 
 ### Benchmark-informed development workflow (roadmap)
 
@@ -424,16 +425,21 @@ the microbenchmarks (inner loop), deterministic `mist-headless` +
    + console/CSV deltas per system (busy/prepare/finish), noise-aware
    significance from the per-tick distributions, `--fail-on-regression` for
    gating.
-3. Interleaved A/B driver: a script that builds two refs into separate build
-   dirs and runs the suites interleaved (A B A B …, not AAA BBB — cancels
-   thermal drift and frequency scaling), then compares per
-   (suite,name,metric,entities,lanes) key with a
-   `max(2%, ~3× cross-repeat spread)` criterion. Wall time is only
-   trustworthy relative, same machine, same session.
-4. CI wiring: label-triggered or nightly job running the A/B driver (base
-   and head in the *same job* — never compare against stored absolute
-   numbers from other runners), PR comment with the delta table, HTML
-   reports as artifacts. Allocations/tick gates hard (noise-free). Later:
+3. **[done]** Interleaved A/B driver (`benchmarks/ab.py`): builds the base
+   ref in a git worktree + the working tree as head, runs the suites
+   round-robin with the order flipped each round, and compares paired
+   per-round samples per (suite,name,metric,entities,lanes) key — paired
+   t-test at 99% (a fixed 3σ is anti-conservative at 3–7 rounds) plus a
+   relative threshold (default 5%). Validated both ways: same-vs-same runs
+   clean; a planted `get<C>` pessimization is caught (+200%) with nothing
+   else flagged. Wall time is only trustworthy relative, same machine,
+   same session.
+4. CI wiring beyond the smoke leg **[smoke done]** (tiny-size run of every
+   suite on the Release legs asserts rows + envelope, never timings):
+   label-triggered or nightly job running the A/B driver (base and head in
+   the *same job* — never compare against stored absolute numbers from
+   other runners), PR comment with the delta table, HTML reports as
+   artifacts. Allocations/tick gates hard (noise-free). Later:
    instructions-retired counters (perf/cachegrind) for de-noised per-PR
    gating on shared runners.
 5. Longitudinal dashboard: nightly full suite + sweeps on one consistent

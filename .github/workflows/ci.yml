@@ -49,6 +49,38 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      # Tiny-size run of every suite: catches bit-rot in the benchmarks and
+      # the ECS_BENCH_OUT emit paths. Numbers from shared runners are NOT
+      # gated -- only that every suite runs and emits its rows.
+      - name: Benchmark smoke (Release only)
+        if: matrix.build_type == 'Release'
+        run: |
+          export ECS_BENCH_OUT=$PWD/bench-smoke.csv
+          export ECS_GIT_COMMIT=${GITHUB_SHA::7}
+          export ECS_ENTITIES=20000 ECS_ITERS=3 ECS_REPEATS=2 ECS_TICKS=50
+          for b in soa gather schedule churn primitives sort access; do
+            ./build/benchmarks/${b}_bench
+          done
+          ECS_PARTICLES=5000 ECS_TICKS=40 ./build/examples/mist-headless
+          python3 - <<'EOF'
+          import collections, csv, sys
+          rows = list(csv.DictReader(open("bench-smoke.csv")))
+          suites = collections.Counter(r["suite"] for r in rows)
+          print(dict(suites), f"{len(rows)} rows")
+          expect = {"soa", "gather", "schedule", "churn", "primitives",
+                    "sort", "access", "mist"}
+          missing = expect - set(suites)
+          if missing:
+              sys.exit(f"suites emitted no rows: {sorted(missing)}")
+          if any(r["commit"] == "unknown" for r in rows):
+              sys.exit("envelope missing commit")
+          EOF
+      - name: Upload smoke results
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-smoke-${{ matrix.name }}
+          path: bench-smoke.csv
 
   # The library's core claims -- lock-free handoff, spin/park pool, sharded
   # command recording -- are exactly what the sanitizers exist to check.
