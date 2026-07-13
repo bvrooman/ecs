@@ -84,13 +84,19 @@ double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup,
 
 void report(char const* name, std::size_t n, int ticks, double base1,
             double k1, double khw, unsigned hw) {
+    // Both bracketed numbers are SPEEDUP vs the imperative baseline
+    // (imperative_time / kernel_time), same direction as the CSV's
+    // kernel_speedup: >1 = the kernel is faster, <1 = slower. The x1 column
+    // is thus the primitive's raw overhead (how much the slot/partial/barrier
+    // machinery costs before any lanes help); the x%u column is the payoff.
     std::printf("  %-10s imperative %8.1f us | kernel x1 %8.1f us (%.2fx) | "
                 "kernel x%u %8.1f us (%.2fx)\n",
-                name, base1, k1, k1 / base1, hw, khw, base1 / khw);
+                name, base1, k1, base1 / k1, hw, khw, base1 / khw);
     auto const t = std::size_t(ticks);
     bench::emit(name, "imperative_us_per_tick", base1, "us", "lower", n, 1, t);
     bench::emit(name, "kernel_us_per_tick", k1, "us", "lower", n, 1, t);
     bench::emit(name, "kernel_us_per_tick", khw, "us", "lower", n, hw, t);
+    bench::emit(name, "kernel_speedup", base1 / k1, "x", "higher", n, 1, t);
     bench::emit(name, "kernel_speedup", base1 / khw, "x", "higher", n, hw, t);
 }
 
