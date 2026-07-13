@@ -406,6 +406,40 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
   random-access benchmark dimensions; optional EnTT/flecs comparison; a wasm
   CI leg running `web/test/smoke.cpp` under node.
 
+### Benchmark-informed development workflow (roadmap)
+
+The goal: never guess about the impact of a change — identify regressions
+across reproducible runs and configurations, with per-system attribution.
+Three cadences, matched to the measurement layers that already exist:
+the microbenchmarks (inner loop), deterministic `mist-headless` +
+`ScheduleTrace` (per-PR attribution), and the lanes×population sweeps
+(longitudinal trends).
+
+1. **[done]** Machine-readable results: every suite (+ `mist-headless`)
+   appends `(suite,name,metric,value,unit,better,config…)` rows wrapped in a
+   run-metadata envelope (timestamp/commit/build/compiler/cpu) to
+   `ECS_BENCH_OUT=<csv>`; `mist-headless` gained `ECS_TRACE` so deterministic
+   macro runs produce comparable schedule traces. See `benchmarks/README.md`.
+2. **[done]** `schedule-report compare base.csv head.csv`: side-by-side HTML
+   + console/CSV deltas per system (busy/prepare/finish), noise-aware
+   significance from the per-tick distributions, `--fail-on-regression` for
+   gating.
+3. Interleaved A/B driver: a script that builds two refs into separate build
+   dirs and runs the suites interleaved (A B A B …, not AAA BBB — cancels
+   thermal drift and frequency scaling), then compares per
+   (suite,name,metric,entities,lanes) key with a
+   `max(2%, ~3× cross-repeat spread)` criterion. Wall time is only
+   trustworthy relative, same machine, same session.
+4. CI wiring: label-triggered or nightly job running the A/B driver (base
+   and head in the *same job* — never compare against stored absolute
+   numbers from other runners), PR comment with the delta table, HTML
+   reports as artifacts. Allocations/tick gates hard (noise-free). Later:
+   instructions-retired counters (perf/cachegrind) for de-noised per-PR
+   gating on shared runners.
+5. Longitudinal dashboard: nightly full suite + sweeps on one consistent
+   machine appended to a data branch; trend page over the accumulated
+   results CSV (the envelope columns make rows self-describing).
+
 ## 8. Wasm & JS interop
 
 - **[rejected]** Idle-lane parking under Emscripten (see §2) — the Worker

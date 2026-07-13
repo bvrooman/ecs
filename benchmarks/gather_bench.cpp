@@ -55,12 +55,16 @@ void populate(World& w, Fn fn) {
 // Timing uses the shared bench::min_ns_per (bench.hpp) -- same estimator
 // as every other benchmark here.
 using bench::min_ns_per;
-void report(char const* label, double ch, double par) {
+void report(char const* label, std::size_t n, int repeats, double ch, double par) {
     std::printf("  %-42s chunk %8.3f ns   parallel %9.3f ns   %7.2fx\n",
                 label,
                 ch,
                 par,
                 par / ch);
+    auto const r = std::size_t(repeats);
+    bench::emit(label, "chunk_ns_per_entity", ch, "ns", "lower", n, 1, r);
+    bench::emit(label, "parallel_ns_per_entity", par, "ns", "lower", n, 1, r);
+    bench::emit(label, "parallel_over_chunk", par / ch, "x", "lower", n, 1, r);
 }
 } // namespace
 
@@ -91,10 +95,11 @@ static void sparse(char const* label, std::size_t N, int R) {
             p.a += v.x;
         });
     });
-    report(label, ch, par);
+    report(label, N, R, ch, par);
 }
 
 int main() {
+    bench::set_suite("gather");
     std::size_t const N = 200'000;
     int const R         = 250;
 #if ECS_USE_P2996
@@ -150,7 +155,7 @@ int main() {
                 p.p += v.x;
             });
         });
-        report("W16  (16 fields, touch ALL 16)", ch, par);
+        report("W16  (16 fields, touch ALL 16)", N, R, ch, par);
     }
 
     // Non-trivially-copyable field: a heap std::string the kernel never touches.
@@ -178,7 +183,7 @@ int main() {
                 p.v += v.x;
             });
         });
-        report("Named{std::string,float} (touch float)", ch, par);
+        report("Named{std::string,float} (touch float)", N, R, ch, par);
     }
     return 0;
 }

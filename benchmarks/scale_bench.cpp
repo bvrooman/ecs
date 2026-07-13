@@ -8,6 +8,7 @@
 // rise at large N means the working set spilled out of cache.
 //
 //   scale_bench
+#include "bench.hpp"
 #include "ecs/ecs.hpp"
 #include "particles.hpp"
 #include <chrono>
@@ -89,13 +90,14 @@ static double mean_us(int warm, int n, RunOne&& run_one) {
 }
 
 int main() {
+    bench::set_suite("scale");
     unsigned const hw = std::max(2u, std::thread::hardware_concurrency());
     std::printf("scale_bench: per-tick cost of the 4 steady-state systems vs N\n");
     std::printf("%10s | %12s %10s | %12s %10s | %s\n",
                 "particles",
                 "inline us",
                 "ns/ent",
-                "poolx8 us",
+                "pool us",
                 "ns/ent",
                 "pool speedup");
 
@@ -131,6 +133,11 @@ int main() {
                     pl_us,
                     pl_us * 1000.0 / n,
                     in_us / pl_us);
+        auto const nn = std::size_t(n), it = std::size_t(iters);
+        bench::emit("steady_state", "us_per_tick", in_us, "us", "lower", nn, 1, it);
+        bench::emit("steady_state", "us_per_tick", pl_us, "us", "lower", nn, hw, it);
+        bench::emit("steady_state", "pool_speedup", in_us / pl_us, "x", "higher",
+                    nn, hw, it);
     }
     return 0;
 }

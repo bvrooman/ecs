@@ -61,6 +61,7 @@ inline static float heavy(float a, float b, float c) {
 }
 
 int main(int argc, char** argv) {
+    bench::set_suite("soa");
     std::size_t const N = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
     if (argc > 2)
         bench::g_iters = std::atoi(argv[2]);

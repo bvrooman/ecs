@@ -7,6 +7,7 @@
 // tail predictability, and the zero-allocation goal show up together.
 //
 //   schedule_bench [measured_ticks]      (default 5000)
+#include "bench.hpp"
 #include "ecs/ecs.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
@@ -82,6 +83,19 @@ report(char const* executor, unsigned lanes, Stats s, double allocs_per_tick) {
                 s.mx,
                 1e6 / s.mean,
                 allocs_per_tick);
+}
+
+// The machine-readable mirror of report(): the tick distribution + allocation
+// rate as (metric, value) rows for the ECS_BENCH_OUT sink.
+static void emit_stats(char const* name, unsigned lanes, Stats const& s,
+                       double allocs_per_tick, std::size_t entities,
+                       std::size_t ticks) {
+    bench::emit(name, "mean_us_per_tick", s.mean, "us", "lower", entities, lanes, ticks);
+    bench::emit(name, "p50_us_per_tick", s.p50, "us", "lower", entities, lanes, ticks);
+    bench::emit(name, "p99_us_per_tick", s.p99, "us", "lower", entities, lanes, ticks);
+    bench::emit(name, "max_us_per_tick", s.mx, "us", "lower", entities, lanes, ticks);
+    bench::emit(name, "allocs_per_tick", allocs_per_tick, "1", "lower", entities,
+                lanes, ticks);
 }
 
 // Warm to steady state, then time `n` ticks, returning the distribution and the
@@ -176,6 +190,7 @@ inline void populate(ecs::World& w, std::size_t n) {
 } // namespace shape
 
 int main(int argc, char** argv) {
+    bench::set_suite("schedule");
     int const measured = argc > 1 ? std::atoi(argv[1]) : 5000;
     int const warm     = 800;
     unsigned const hw  = std::max(2u, std::thread::hardware_concurrency());
@@ -208,6 +223,7 @@ int main(int argc, char** argv) {
         WorkerPool pool {t};
         auto [st, al] = measure(warm, measured, [&] { s.run(w, pool); });
         report("workerpool", t, st, al);
+        emit_stats("particles", t, st, al, particles, std::size_t(measured));
     }
 
     // Imperative vs kernel registration of the same 9-system wave (see shape::).
@@ -224,6 +240,8 @@ int main(int argc, char** argv) {
             auto [st, al] =
                 measure(warm / 4, shape_ticks, [&] { s.run(w, pool); });
             report(kernel ? "kernel" : "imperative", t, st, al);
+            emit_stats(kernel ? "shape_kernel" : "shape_imperative", t, st, al,
+                       40'000, std::size_t(shape_ticks));
         }
     }
     return 0;
