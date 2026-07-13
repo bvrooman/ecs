@@ -34,7 +34,10 @@
       <span><span class="sw" style="background:var(--accent)"></span>work</span>
       <span><span class="sw" style="background:var(--accent-soft)"></span>command flush</span>
     </div>
-    <div class="sub">mean wall time per tick, per wave</div>
+    <div class="sub">mean wall time per tick, per wave{% if waves_partial %}.
+      One-shot phases (setup systems pruned after their tick) shift the wave
+      indices on the ticks they run, so some waves exist for only a few ticks
+      &mdash; hover a row for its run count{% endif %}</div>
     {{ waves_svg }}
   </div>
 
@@ -51,9 +54,12 @@
   {% for c in cards %}
   <div class="card">
     <h3>{{ c.name }}</h3>
-    <div class="sub">wave {{ c.wave }} &middot;
-      {{ c.items }} work item{{ "s" if c.items != 1 }} &middot;
-      busy = {{ c.share }}% of mean tick wall{% if c.ran_partial %} &middot;
+    <div class="sub">wave {{ c.wave }}{% if c.shifted %} (shifted on
+      {{ c.shifted }} tick{{ "s" if c.shifted != 1 }} by a one-shot
+      phase){% endif %} &middot;
+      {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
+      busy = {{ c.ratio }}&times; mean tick wall (CPU summed across lanes
+      &mdash; parallel systems exceed 1&times;){% if c.ran_partial %} &middot;
       ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
@@ -70,7 +76,7 @@
     <table>
       <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
         <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
-        <th>prepare</th><th>finish</th><th>% of tick</th></tr></thead>
+        <th>prepare</th><th>finish</th><th>busy / tick</th></tr></thead>
       <tbody>
         {% for row in table %}
         <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>

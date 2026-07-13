@@ -59,14 +59,22 @@ def render(trace_path, out_path):
     tick_svg, tick_banded = line_section(
         *downsample(tick_ids, tick_vals), "tick", "tick wall")
 
-    # waves: wall vs flush ------------------------------------------------------
+    # waves: wall vs flush. One-shot phases (a setup system pruned after its
+    # tick) shift every wave index on the ticks they run, so a wave may exist
+    # for only a few ticks -- its row says so rather than leaving a wave no
+    # system claims.
     rows = []
+    ran = []
     for w in sorted(waves):
         per_tick = waves[w].values()
         wall = sum(v[0] for v in per_tick) / len(per_tick)
         flush = sum(v[1] for v in per_tick) / len(per_tick)
         rows.append((f"wave {w}", max(0.0, wall - flush), flush))
+        ran.append(len(per_tick))
     ctx, data = charts.hbars(rows, "waves", stacked=True)
+    for d, n in zip(data, ran):
+        d["ran"], d["of"] = n, n_ticks  # tooltip: "ran n of N ticks"
+    waves_partial = any(n < n_ticks for n in ran)
     waves_svg = chart("hbars", ctx)
     payload["hbars"]["waves"] = data
 
@@ -86,15 +94,22 @@ def render(trace_path, out_path):
         st = stats(s["busy"])
         prep = sum(s["prep"]) / len(s["prep"])
         fin = sum(s["fin"]) / len(s["fin"])
-        share = 100.0 * st["mean"] / ts["mean"] if ts["mean"] else 0
+        # busy vs the tick's WALL time, as a ratio: CPU summed across lanes,
+        # so a well-parallelized system legitimately exceeds 1x.
+        ratio = st["mean"] / ts["mean"] if ts["mean"] else 0
+        # Dominant wave placement; one-shot phases shift indices on the ticks
+        # they run (mist's scatter bumps every wave by one on tick 0).
+        wave_mode, _ = s["waves"].most_common(1)[0]
+        shifted = sum(c for w, c in s["waves"].items() if w != wave_mode)
         ctx, hdata = charts.histogram(s["busy"], f"h-s{idx}")
         hdata["label"] = name
         payload["hists"][f"h-s{idx}"] = hdata
         series_svg, _ = line_section(*downsample(s["ticks"], s["busy"]),
                                      f"l-s{idx}", f"{name} busy")
         cards.append(dict(
-            name=name, wave=s["wave"], items=s["items"], n=st["n"],
-            share=f"{share:.1f}",
+            name=name, wave=wave_mode, shifted=shifted,
+            n_items=s["items"], n=st["n"],
+            ratio=f"{ratio:.2f}",
             ran_partial=st["n"] < n_ticks,
             stats=[("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
                    ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
@@ -102,10 +117,10 @@ def render(trace_path, out_path):
                    ("finish", fmt_us(fin))],
             hist=chart("histogram", ctx), series=series_svg,
         ))
-        table.append([name, s["wave"], s["items"], st["n"],
+        table.append([name, wave_mode, s["items"], st["n"],
                       fmt_us(st["mean"]), fmt_us(st["sd"]), fmt_us(st["p50"]),
                       fmt_us(st["p99"]), fmt_us(st["mx"]), fmt_us(prep),
-                      fmt_us(fin), f"{share:.1f}%"])
+                      fmt_us(fin), f"{ratio:.2f}×"])
 
     doc = env.get_template("report.html.j2").render(
         source=str(trace_path),
@@ -116,6 +131,7 @@ def render(trace_path, out_path):
         tick_svg=tick_svg,
         tick_banded=tick_banded,
         waves_svg=waves_svg,
+        waves_partial=waves_partial,
         overview_svg=overview_svg,
         cards=cards,
         table=table,

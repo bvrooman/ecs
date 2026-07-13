@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import math
 import sys
+from collections import Counter
 
 COLUMNS = {"tick", "wave", "system", "busy_us", "prepare_us",
            "finish_us", "items", "wave_us", "flush_us", "tick_us"}
@@ -31,14 +32,14 @@ def load(path):
             name = row["system"]
             s = systems.setdefault(name, {
                 "busy": [], "prep": [], "fin": [], "ticks": [],
-                "items": 0, "wave": wave,
+                "items": 0, "waves": Counter(),
             })
             s["busy"].append(float(row["busy_us"]))
             s["prep"].append(float(row["prepare_us"]))
             s["fin"].append(float(row["finish_us"]))
             s["ticks"].append(tick)
             s["items"] = max(s["items"], int(row["items"]))
-            s["wave"] = wave  # last seen wave placement
+            s["waves"][wave] += 1  # one-shot phases shift placements
             ticks[tick] = float(row["tick_us"])
             waves.setdefault(wave, {})[tick] = (float(row["wave_us"]),
                                                 float(row["flush_us"]))
