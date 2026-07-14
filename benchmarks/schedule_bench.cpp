@@ -186,14 +186,23 @@ int main(int argc, char** argv) {
         emit_stats("particles", t, st, al, particles, std::size_t(measured));
     }
 
-    // Imperative vs kernel registration of the same 9-system wave (see shape::).
-    // Serial baseline + the top of the lane sweep (the shape story is about
-    // slicing the straggler, not the whole curve).
-    std::printf("\nimperative vs kernel systems: 8 small + 1 heavy, one wave, "
-                "40k entities\n");
+    // The SAME 9-system wave (8 disjoint-write "small" systems + 1 compute-
+    // bound "heavy" one) registered two ways -- all add() vs all add_kernel()
+    // (shape::build) -- each swept across the lane set. This is imperative vs
+    // kernel *registration*, not imperative-at-different-lane-counts: the two
+    // families share identical bodies and differ only in the registration
+    // word. The lane axis is the point. Imperative makes each system one
+    // opaque work item, so the heavy system is an unsliceable straggler and
+    // the wave plateaus at ~heavy-time no matter how many lanes; kernel
+    // registration slices the heavy system's rows too, so it keeps scaling.
+    // Reading the two blocks down the lanes shows imperative flattening (and,
+    // past the physical-core count, its tail blowing up) while kernel keeps
+    // dropping.
+    std::printf("\nimperative vs kernel REGISTRATION of one 9-system wave "
+                "(8 small + 1 heavy straggler), 40k entities, swept:\n");
     int const shape_ticks = std::max(200, measured / 10);
     for (bool kernel : {false, true}) {
-        for (unsigned t : {lanes.front(), lanes.back()}) {
+        for (unsigned t : lanes) {
             World w;
             shape::populate(w, 40'000);
             Schedule s;
