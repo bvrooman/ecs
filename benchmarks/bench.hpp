@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -52,6 +53,41 @@ inline long env_long(char const* key, long const dflt) {
 
 inline std::size_t env_size(char const* key, std::size_t const dflt) {
   return static_cast<std::size_t>(env_long(key, static_cast<long>(dflt)));
+}
+
+// The lane sweep for pool-scaling suites: the WorkerPool sizes to time at.
+// Parsed from ECS_LANES ("1,2,4,8" -- commas and/or spaces), deduped and
+// sorted ascending. When unset it defaults to a power-of-two ladder up to
+// hardware_concurrency() *plus hw itself*, so the sweep REACHES the
+// oversubscription point: hardware_concurrency() counts logical (SMT) cores
+// and the dispatch thread is an extra runnable thread on top of the pool, so
+// peak throughput is usually back at the physical-core count or hw-1. Sweeping
+// to hw makes that turnover show in the curve instead of hiding behind a
+// single (often past-peak) hw data point. The smallest lane in the set is the
+// speedup baseline -- keep 1 in the set to anchor it to serial.
+inline std::vector<unsigned> lane_set() {
+  std::set<unsigned> s;
+  if (char const* v = std::getenv("ECS_LANES")) {
+    unsigned n = 0;
+    bool have = false;
+    for (char const* p = v;; ++p) {
+      if (*p >= '0' && *p <= '9') {
+        n = n * 10 + unsigned(*p - '0');
+        have = true;
+      } else {
+        if (have && n > 0) s.insert(n);
+        n = 0;
+        have = false;
+        if (!*p) break;
+      }
+    }
+  }
+  if (s.empty()) {
+    unsigned const hw = std::max(2u, std::thread::hardware_concurrency());
+    for (unsigned n = 1; n < hw; n *= 2) s.insert(n);
+    s.insert(hw);
+  }
+  return {s.begin(), s.end()};
 }
 
 // Defeat dead-code elimination: force `v` to be treated as observed/clobbered.

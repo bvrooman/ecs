@@ -17,7 +17,6 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <set>
 #include <thread>
 #include <vector>
 
@@ -172,10 +171,11 @@ int main(int argc, char** argv) {
                     particles);
     }
 
-    // WorkerPool lane sweep (x1 = serial: one lane, no worker threads). A
-    // std::set dedups hw when it coincides with a fixed step (e.g. hw==4
-    // would otherwise emit the lanes=4 row twice) and keeps them ascending.
-    for (unsigned t : std::set<unsigned> {1u, 2u, 4u, 8u, hw}) {
+    // WorkerPool lane sweep (x1 = serial: one lane, no worker threads).
+    // ECS_LANES overrides; the default reaches hw so the throughput turnover
+    // is visible (see bench::lane_set).
+    auto const lanes = bench::lane_set();
+    for (unsigned t : lanes) {
         World w;
         setup(w);
         Schedule s;
@@ -187,11 +187,13 @@ int main(int argc, char** argv) {
     }
 
     // Imperative vs kernel registration of the same 9-system wave (see shape::).
+    // Serial baseline + the top of the lane sweep (the shape story is about
+    // slicing the straggler, not the whole curve).
     std::printf("\nimperative vs kernel systems: 8 small + 1 heavy, one wave, "
                 "40k entities\n");
     int const shape_ticks = std::max(200, measured / 10);
     for (bool kernel : {false, true}) {
-        for (unsigned t : {1u, hw}) {
+        for (unsigned t : {lanes.front(), lanes.back()}) {
             World w;
             shape::populate(w, 40'000);
             Schedule s;

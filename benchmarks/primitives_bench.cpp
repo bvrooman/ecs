@@ -15,18 +15,18 @@
 //   * events   -- EventWriter/Reader roundtrip (K events/tick) vs a ResMut
 //                 vector rebuilt each tick
 //
-// Every case reports mean us/tick (distribution rows in ECS_BENCH_OUT) for
-// the imperative baseline at 1 lane and the kernel at 1 and hw lanes. The
-// 1-lane kernel column IS the primitive's overhead; the hw column is the
-// payoff.
+// Every case reports mean us/tick (distribution rows in ECS_BENCH_OUT) for the
+// imperative baseline at 1 lane and the kernel swept across ECS_LANES: the
+// 1-lane kernel point is the primitive's raw overhead, and the curve across
+// lanes is the payoff -- including where it turns over past the physical-core
+// count. Default lane set is 1,2,4,...,hw (see bench::lane_set).
 //
-//   ECS_ENTITIES (200000), ECS_TICKS (300)
+//   ECS_ENTITIES (200000), ECS_TICKS (300), ECS_LANES ("1,2,4,8")
 
 #include "bench.hpp"
 #include "ecs/ecs.hpp"
 #include <cstdint>
 #include <cstdio>
-#include <thread>
 #include <vector>
 
 using namespace ecs;
@@ -54,10 +54,6 @@ struct Ping {
 
 namespace {
 
-unsigned hw_lanes() {
-    return std::max(2u, std::thread::hardware_concurrency());
-}
-
 void populate(World& w, std::size_t n) {
     Schedule s;
     s.add_once("seed", [n](Commands& cmd) {
@@ -82,22 +78,28 @@ double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup,
         .mean;
 }
 
-void report(char const* name, std::size_t n, int ticks, double base1,
-            double k1, double khw, unsigned hw) {
-    // Both bracketed numbers are SPEEDUP vs the imperative baseline
-    // (imperative_time / kernel_time), same direction as the CSV's
-    // kernel_speedup: >1 = the kernel is faster, <1 = slower. The x1 column
-    // is thus the primitive's raw overhead (how much the slot/partial/barrier
-    // machinery costs before any lanes help); the x%u column is the payoff.
-    std::printf("  %-10s imperative %8.1f us | kernel x1 %8.1f us (%.2fx) | "
-                "kernel x%u %8.1f us (%.2fx)\n",
-                name, base1, k1, base1 / k1, hw, khw, base1 / khw);
-    auto const t = std::size_t(ticks);
-    bench::emit(name, "imperative_us_per_tick", base1, "us", "lower", n, 1, t);
-    bench::emit(name, "kernel_us_per_tick", k1, "us", "lower", n, 1, t);
-    bench::emit(name, "kernel_us_per_tick", khw, "us", "lower", n, hw, t);
-    bench::emit(name, "kernel_speedup", base1 / k1, "x", "higher", n, 1, t);
-    bench::emit(name, "kernel_speedup", base1 / khw, "x", "higher", n, hw, t);
+// Imperative serial baseline + a kernel LANE SWEEP, printed and emitted. The
+// per-lane bracket is speedup vs the imperative baseline (>1 = kernel faster),
+// matching the CSV's kernel_speedup: the x1 point is the primitive's raw
+// overhead (the slot/partial/barrier machinery before any lanes help), and the
+// curve across lanes is the payoff -- including where it turns over. si/sk are
+// the setups (they differ for bin/events); imp/ker build the one-system
+// schedule.
+template <class SetupI, class Imp, class SetupK, class Ker>
+void run_primitive(char const* name, std::size_t n, int ticks,
+                   std::vector<unsigned> const& lanes, SetupI&& si, Imp&& imp,
+                   SetupK&& sk, Ker&& ker) {
+    auto const t      = std::size_t(ticks);
+    double const base = time_case(n, ticks, 1, si, imp);
+    std::printf("  %-10s imperative %8.1f us |", name, base);
+    bench::emit(name, "imperative_us_per_tick", base, "us", "lower", n, 1, t);
+    for (unsigned L : lanes) {
+        double const k = time_case(n, ticks, L, sk, ker);
+        std::printf(" x%u %7.1f (%.2fx)", L, k, base / k);
+        bench::emit(name, "kernel_us_per_tick", k, "us", "lower", n, L, t);
+        bench::emit(name, "kernel_speedup", base / k, "x", "higher", n, L, t);
+    }
+    std::printf("\n");
 }
 
 } // namespace
@@ -105,11 +107,14 @@ void report(char const* name, std::size_t n, int ticks, double base1,
 int main() {
     bench::set_suite("primitives");
     std::size_t const N = bench::env_size("ECS_ENTITIES", 200'000);
-    int const T         = int(bench::env_long("ECS_TICKS", 300));
-    unsigned const hw   = hw_lanes();
+    int const T          = int(bench::env_long("ECS_TICKS", 300));
+    auto const lanes     = bench::lane_set();
 
-    std::printf("primitives_bench: %zu entities, %d ticks/config, hw=%u\n",
-                N, T, hw);
+    std::printf("primitives_bench: %zu entities, %d ticks/config, lanes",
+                N, T);
+    for (unsigned L : lanes)
+        std::printf(" %u", L);
+    std::printf("\n");
 
     // --- reduce --------------------------------------------------------------
     {
@@ -135,9 +140,7 @@ int main() {
                 });
             });
         };
-        report("reduce", N, T, time_case(N, T, 1, setup, imperative),
-               time_case(N, T, 1, setup, kernel),
-               time_case(N, T, hw, setup, kernel), hw);
+        run_primitive("reduce", N, T, lanes, setup, imperative, setup, kernel);
     }
 
     // --- extract ---------------------------------------------------------------
@@ -161,9 +164,7 @@ int main() {
                 });
             });
         };
-        report("extract", N, T, time_case(N, T, 1, setup, imperative),
-               time_case(N, T, 1, setup, kernel),
-               time_case(N, T, hw, setup, kernel), hw);
+        run_primitive("extract", N, T, lanes, setup, imperative, setup, kernel);
     }
 
     // --- collect ---------------------------------------------------------------
@@ -186,9 +187,7 @@ int main() {
                 });
             });
         };
-        report("collect", N, T, time_case(N, T, 1, setup, imperative),
-               time_case(N, T, 1, setup, kernel),
-               time_case(N, T, hw, setup, kernel), hw);
+        run_primitive("collect", N, T, lanes, setup, imperative, setup, kernel);
     }
 
     // --- bin -------------------------------------------------------------------
@@ -220,9 +219,7 @@ int main() {
                 });
             });
         };
-        report("bin", N, T, time_case(N, T, 1, setup_imp, imperative),
-               time_case(N, T, 1, setup_k, kernel),
-               time_case(N, T, hw, setup_k, kernel), hw);
+        run_primitive("bin", N, T, lanes, setup_imp, imperative, setup_k, kernel);
     }
 
     // --- events ------------------------------------------------------------------
@@ -276,9 +273,8 @@ int main() {
                 sum->v = acc;
             });
         };
-        report("events", N, T, time_case(N, T, 1, setup_imp, imperative),
-               time_case(N, T, 1, setup_k, kernel),
-               time_case(N, T, hw, setup_k, kernel), hw);
+        run_primitive("events", N, T, lanes, setup_imp, imperative, setup_k,
+                      kernel);
     }
     return 0;
 }
