@@ -3,7 +3,11 @@
 // by templates/report.html.j2; names are inserted via textContent.
 
 (function () {
-    const D = JSON.parse(document.getElementById('data').textContent);
+    // The bench-scaling page carries no JSON payload (its dots hold their
+    // own data attributes); the trace/compare pages embed one.
+    const dataEl = document.getElementById('data');
+    const D = dataEl ? JSON.parse(dataEl.textContent)
+        : {lines: {}, hists: {}, hbars: {}, pairs: {}};
     const tip = document.getElementById('tip');
 
     function fmt(v) {
@@ -129,6 +133,14 @@
             [d.label_b, fmt(d.head)],
         ]));
         b.addEventListener('pointerleave', hide);
+    });
+
+    document.querySelectorAll('circle[data-ml]').forEach(c => {
+        c.addEventListener('pointermove', evt => show(evt, [
+            [c.dataset.label, c.dataset.spd + '× speedup'],
+            ['lanes', c.dataset.lane],
+        ]));
+        c.addEventListener('pointerleave', hide);
     });
 
     document.querySelectorAll('[data-hbar]').forEach(b => {

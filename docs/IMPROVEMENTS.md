@@ -446,6 +446,13 @@ the microbenchmarks (inner loop), deterministic `mist-headless` +
    machine appended to a data branch; trend page over the accumulated
    results CSV (the envelope columns make rows self-describing).
 
+Pool-width matrix **[done]**: the scaling suites (scale/primitives/schedule)
+sweep the lane count via `bench::lane_set()` (`ECS_LANES`, default the
+power-of-two ladder to hw) instead of timing one oversubscribing hw point;
+the results CSV's `lanes` column makes each run a lanes×metric matrix, and
+`schedule-report bench` renders speedup-vs-lanes curves against an ideal
+diagonal so the turnover past the physical-core count is a picture.
+
 ## 8. Wasm & JS interop
 
 - **[rejected]** Idle-lane parking under Emscripten (see §2) — the Worker

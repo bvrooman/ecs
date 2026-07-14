@@ -23,6 +23,22 @@ fixed-seed flock at 1 and 4 lanes, with bitwise-reproducibility checks.
 CI runs a tiny-size smoke of every suite (rows emitted, envelope intact —
 never gating on shared-runner timings).
 
+## Pool-width sweep (`ECS_LANES`)
+
+`scale_bench`, `primitives_bench`, and `schedule_bench` sweep the WorkerPool
+lane count so the throughput turnover is visible rather than hidden behind a
+single point. `hardware_concurrency()` counts logical (SMT) cores and the
+dispatch thread is extra, so timing only at `hw` oversubscribes — peak
+throughput is usually back at the physical-core count. `ECS_LANES="1,2,4,8"`
+sets the sweep; the default is a power-of-two ladder up to `hw` (plus `hw`),
+so the sweep reaches the turnover but a default run never overshoots it.
+
+```sh
+export ECS_LANES="1,2,4,8,12,16" ECS_BENCH_OUT=results.csv
+./build/benchmarks/scale_bench        # lanes x N matrix, best lane marked
+schedule-report bench results.csv -o scaling.html   # speedup-vs-lanes curves
+```
+
 ## Machine-readable results (`ECS_BENCH_OUT`)
 
 Every suite (and `mist-headless`) also appends its numbers to a CSV when

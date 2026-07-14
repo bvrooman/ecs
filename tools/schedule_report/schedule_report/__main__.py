@@ -4,6 +4,7 @@
     schedule-report compare base.csv head.csv [-o out.html]
                     [--labels A B] [--threshold PCT] [--csv deltas.csv]
                     [--fail-on-regression]
+    schedule-report bench results.csv [-o scaling.html]     # lane-sweep curves
 
 (`render` also works as an explicit first word for the single-run form.)
 """
@@ -15,7 +16,7 @@ import csv
 import sys
 
 from .compare import REGRESSION, delta_rows
-from .report import render, render_compare
+from .report import render, render_bench, render_compare
 
 
 def _render_main(argv):
@@ -85,10 +86,25 @@ def _compare_main(argv):
         sys.exit(3)
 
 
+def _bench_main(argv):
+    p = argparse.ArgumentParser(
+        prog="schedule-report bench",
+        description="Render an ECS_BENCH_OUT results CSV into speedup-vs-lanes "
+                    "scaling curves (needs a lane sweep -- ECS_LANES).")
+    p.add_argument("results", help="benchmark results CSV (ECS_BENCH_OUT)")
+    p.add_argument("-o", "--out", help="output HTML path (default: scaling.html)")
+    args = p.parse_args(argv)
+    out = args.out or "scaling.html"
+    info = render_bench(args.results, out)
+    print(f"wrote {out}: {info['suites']} suite(s) with a lane sweep")
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "compare":
         _compare_main(argv[1:])
+    elif argv and argv[0] == "bench":
+        _bench_main(argv[1:])
     elif argv and argv[0] == "render":
         _render_main(argv[1:])
     else:

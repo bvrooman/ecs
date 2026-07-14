@@ -269,3 +269,33 @@ def render_compare(base_path, head_path, out_path, label_a="base",
     with open(out_path, "w") as f:
         f.write(doc)
     return model
+
+
+# --- bench scaling view ------------------------------------------------------
+
+def render_bench(bench_csv, out_path):
+    from . import bench as bench_load
+    env = _env()
+
+    data = bench_load.load_bench(bench_csv)
+    suites = []
+    for s in data["suites"]:
+        ctx, _ = charts.multiline_chart(s["series"], s["lanes"],
+                                        f"ml-{s['suite']}", ideal=s["ideal"])
+        suites.append(dict(suite=s["suite"], lanes=s["lanes"],
+                           table=s["table"], legend=ctx["legend"],
+                           svg=Markup(env.get_template(
+                               "charts/multiline.svg.j2").render(ctx))))
+    if not suites:
+        raise SystemExit(
+            f"error: {bench_csv} has no lane sweep (a benchmark measured at "
+            ">= 2 lane counts). Run a pool-scaling suite with ECS_LANES set.")
+
+    doc = env.get_template("bench.html.j2").render(
+        source=str(bench_csv), meta=data["meta"], suites=suites,
+        css=Markup((_PKG / "static" / "report.css").read_text()),
+        js=Markup((_PKG / "static" / "report.js").read_text()),
+    )
+    with open(out_path, "w") as f:
+        f.write(doc)
+    return dict(suites=len(suites))

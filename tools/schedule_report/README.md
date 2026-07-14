@@ -58,15 +58,30 @@ the drift you see. Back-to-back process runs drift a few percent on busy
 machines — the fix is methodological (quiet machine, interleaved runs), not
 statistical.
 
+## Benchmark scaling curves
+
+```sh
+schedule-report bench results.csv -o scaling.html
+```
+
+Renders an `ECS_BENCH_OUT` results CSV (see `benchmarks/`) into
+speedup-vs-lanes curves — one line per benchmark, per suite, over the lane
+sweep, against a dashed ideal-linear reference. Where a curve peels away from
+ideal and turns back down is where extra pool lanes stop paying (dispatch +
+cache traffic, and past the physical-core count, oversubscription); ★ marks
+the best lane per benchmark. Needs a lane sweep in the CSV — run a
+pool-scaling suite with `ECS_LANES` set (`ECS_LANES="1,2,4,8" ./scale_bench`).
+
 ## Layout
 
 | file | role |
 |---|---|
-| `schedule_report/trace.py` | CSV loading, summary stats, downsampling |
+| `schedule_report/trace.py` | trace CSV loading, summary stats, downsampling |
 | `schedule_report/compare.py` | two-trace delta model + significance test |
-| `schedule_report/charts.py` | SVG chart builders (lines, histograms, bars, pairs) |
-| `schedule_report/report.py` | section assembly + Jinja2 rendering (both views) |
-| `schedule_report/templates/report.html.j2` / `compare.html.j2` | page layouts |
+| `schedule_report/bench.py` | results-CSV pivot into per-lane speedup series |
+| `schedule_report/charts.py` | SVG chart builders (lines, histograms, bars, pairs, multiline) |
+| `schedule_report/report.py` | section assembly + Jinja2 rendering (all views) |
+| `schedule_report/templates/*.html.j2` | page layouts (report / compare / bench) |
 | `schedule_report/static/report.css` / `report.js` | styling + hover layer, inlined at render |
 
 `busy_us` semantics: the sum of a system's work-item durations across all

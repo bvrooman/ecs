@@ -106,6 +106,48 @@ def line_chart(xs, ys, lo, hi, chart_id, xs2=None, ys2=None, ymax_cap=None):
     return ctx, payload
 
 
+def multiline_chart(series, lane_labels, chart_id, ideal=None):
+    """Speedup-vs-lanes scaling curves: one line per series over evenly-spaced
+    lane ticks, per-point dots, and an optional dashed ideal-linear reference.
+
+    series: list of dict(label=, ys=[speedup per lane], slot=int categorical).
+    lane_labels: the lane counts, one per point (the x tick labels).
+    ideal: optional [speedup per lane] drawn muted+dashed (perfect scaling)."""
+    n = len(lane_labels)
+    h = 240
+    # Scale to the REAL series only; the ideal diagonal is a reference, so let
+    # it run off the top (clipped by the viewBox) rather than compressing the
+    # measured curves -- with heavy oversubscription the real peak is a small
+    # fraction of ideal-at-max-lanes.
+    allys = [v for s in series for v in s["ys"]]
+    ymax = (max(allys) if allys else 1) * 1.15 or 1
+    plot_w = W - PAD_L - PAD_R
+
+    def px(i):
+        return PAD_L + (plot_w * i / (n - 1) if n > 1 else plot_w / 2)
+
+    def py(v):
+        return PAD_T + (h - PAD_T - PAD_B) * (1 - v / ymax)
+
+    lines, dots = [], []
+    for s in series:
+        lines.append(dict(slot=s["slot"], pts=" ".join(
+            f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(s["ys"]))))
+        for i, v in enumerate(s["ys"]):
+            dots.append(dict(slot=s["slot"], cx=f"{px(i):.1f}",
+                             cy=f"{py(v):.1f}", label=s["label"],
+                             lane=lane_labels[i], spd=f"{v:.2f}"))
+    ctx = dict(_frame(W, h), id=chart_id,
+               grid=_gridlines(ymax, h, lambda v: f"{v:g}x"),
+               xticks=[dict(x=f"{px(i):.1f}", label=str(l))
+                       for i, l in enumerate(lane_labels)],
+               ideal=" ".join(f"{px(i):.1f},{py(v):.1f}"
+                              for i, v in enumerate(ideal)) if ideal else None,
+               lines=lines, dots=dots,
+               legend=[dict(label=s["label"], slot=s["slot"]) for s in series])
+    return ctx, None
+
+
 def histogram(values, chart_id, bins_cap=40):
     """Distribution of one measure: columns, rounded caps, 2px gaps."""
     n = len(values)
