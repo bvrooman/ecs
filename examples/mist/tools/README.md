@@ -15,11 +15,16 @@ cmake --build build --target mist-headless
 ./build/examples/mist-headless                    # 40k birds, 240 ticks
 ECS_PARTICLES=85000 ECS_TICKS=600 ./build/examples/mist-headless
 ECS_METRICS=/tmp/m.csv ./build/examples/mist-headless   # + metrics CSV
+ECS_TRACE=/tmp/t.csv ./build/examples/mist-headless     # + schedule trace CSV
+ECS_BENCH_OUT=/tmp/b.csv ./build/examples/mist-headless # + benchmark results rows
 ```
 
-It honours `ECS_METRICS` and the steering-weight env vars below; the cursor
-stays inactive (`ECS_CURSOR_PATH` needs the GL build), and the seed is fixed
-(determinism is the point).
+It honours `ECS_METRICS`, `ECS_TRACE` (per-system schedule trace, written by
+the last — 4-lane — run; feed it to `schedule-report`, or diff two runs with
+`schedule-report compare`), `ECS_BENCH_OUT` (per-lane us/tick + speedup rows
+in the `benchmarks/bench.hpp` CSV schema), and the steering-weight env vars
+below; the cursor stays inactive (`ECS_CURSOR_PATH` needs the GL build), and
+the seed is fixed (determinism is the point).
 
 ## GL demo hooks
 

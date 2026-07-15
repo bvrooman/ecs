@@ -6,6 +6,9 @@
   {%- if band %}
   <polygon class="band" points="{{ band }}"/>
   {%- endif %}
+  {%- if line2 %}
+  <polyline class="line line2" points="{{ line2 }}"/>
+  {%- endif %}
   <polyline class="line" points="{{ line }}"/>
   <text class="tick" x="{{ padl }}" y="{{ h - 6 }}">{{ x_first }}</text>
   <text class="tick" x="{{ w - padr }}" y="{{ h - 6 }}" text-anchor="end">{{ x_last }}</text>

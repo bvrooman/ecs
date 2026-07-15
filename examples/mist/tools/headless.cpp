@@ -11,16 +11,27 @@
 //   ECS_PARTICLES=85000 ECS_TICKS=600 ./build/examples/mist-headless
 //   ECS_METRICS=/tmp/m.csv ./build/examples/mist-headless  # + metrics CSV
 //     (the CSV is written once per run(); the last of the three runs wins)
+//   ECS_TRACE=/tmp/t.csv ./build/examples/mist-headless    # + schedule trace CSV
+//     (per-system per-tick rows for tools/schedule_report; the deterministic
+//      fixed-seed run makes two traces from the same config directly
+//      comparable -- `schedule-report compare base.csv head.csv`. Written per
+//      run(); the last run -- 4 lanes -- wins, like ECS_METRICS.)
+//   ECS_BENCH_OUT=/tmp/b.csv ./build/examples/mist-headless # + results rows
+//     (per-lane us/tick + speedup in the benchmarks/bench.hpp CSV schema)
 //
 // The schedule registers its own sort-rows maintenance hook (every 64 ticks,
 // see simulation.cpp), so the bitwise checks below also prove determinism
 // composes with row sorting.
+#include "bench.hpp"
 #include "ecs/ecs.hpp"
 #include "mist.hpp"
+#include "schedule_trace.hpp"
 #include "simulation.hpp"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -58,12 +69,25 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     Schedule s;
     build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags}, count);
 
+    // Optional schedule trace, truncated per run() so the last run wins (the
+    // 4-lane rerun) -- same convention as ECS_METRICS above.
+    std::ofstream trace_file;
+    std::optional<diag::ScheduleTrace> trace;
+    std::optional<event::Emitter<ScheduleEvent>::Subscription> trace_sub;
+    if (char const* path = std::getenv("ECS_TRACE")) {
+        trace_file.open(path);
+        trace.emplace(diag::to_stream(trace_file));
+        trace_sub.emplace(s.events().subscribe(std::ref(*trace)));
+    }
+
     WorkerPool pool {lanes};
     s.run(w, pool); // tick 1: scatter + first sim tick
     auto const t0 = std::chrono::steady_clock::now();
     for (int t = 1; t < ticks; ++t)
         s.run(w, pool);
     auto const t1 = std::chrono::steady_clock::now();
+    if (trace)
+        trace->flush(); // drain the buffered tail before trace_file closes
 
     RunResult r;
     r.levels = s.level_count();
@@ -80,12 +104,21 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
 } // namespace
 
 int main() {
+    bench::set_suite("mist");
     int const ticks = env_int("ECS_TICKS", 240); // 8 s of flight at 30 Hz
     int const count = env_int("ECS_PARTICLES", 40'000);
 
     auto const serial   = run(1, ticks, count);
     auto const parallel = run(4, ticks, count);
     auto const again    = run(4, ticks, count);
+
+    auto const n = std::size_t(count), t = std::size_t(ticks - 1);
+    bench::emit("flock", "us_per_tick", serial.ms_per_tick * 1e3, "us", "lower",
+                n, 1, t);
+    bench::emit("flock", "us_per_tick", parallel.ms_per_tick * 1e3, "us",
+                "lower", n, 4, t);
+    bench::emit("flock", "pool_speedup",
+                serial.ms_per_tick / parallel.ms_per_tick, "x", "higher", n, 4, t);
 
     std::printf("mist-headless: %d birds, %d ticks, %zu schedule levels\n",
                 count,

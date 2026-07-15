@@ -3,7 +3,11 @@
 // by templates/report.html.j2; names are inserted via textContent.
 
 (function () {
-    const D = JSON.parse(document.getElementById('data').textContent);
+    // The bench-scaling page carries no JSON payload (its dots hold their
+    // own data attributes); the trace/compare pages embed one.
+    const dataEl = document.getElementById('data');
+    const D = dataEl ? JSON.parse(dataEl.textContent)
+        : {lines: {}, hists: {}, hbars: {}, pairs: {}};
     const tip = document.getElementById('tip');
 
     function fmt(v) {
@@ -90,6 +94,19 @@
             const rows = [[d.label + ' \u2014 tick ' + d.xs[best], fmt(d.ys[best])]];
             if (d.lo) rows.push(['min\u2026max in bucket',
                 fmt(d.lo[best]) + ' \u2026 ' + fmt(d.hi[best])]);
+            if (d.xs2) {
+                // second (base) series: snap to ITS nearest x -- the two
+                // series may have different tick counts
+                let b2 = 0, e2 = Infinity;
+                d.xs2.forEach((x, i) => {
+                    const e = Math.abs(x - d.xs[best]);
+                    if (e < e2) {
+                        e2 = e;
+                        b2 = i;
+                    }
+                });
+                rows.push([d.label2 + ' \u2014 tick ' + d.xs2[b2], fmt(d.ys2[b2])]);
+            }
             show(evt, rows);
         });
         r.addEventListener('pointerleave', () => {
@@ -106,6 +123,24 @@
             ['range', fmt(d.edges[i]) + ' \u2013 ' + fmt(d.edges[i + 1])],
         ]));
         b.addEventListener('pointerleave', hide);
+    });
+
+    document.querySelectorAll('[data-pair]').forEach(b => {
+        const d = D.pairs[b.dataset.pair][+b.dataset.i];
+        b.addEventListener('pointermove', evt => show(evt, [
+            [d.label, d.delta],
+            [d.label_a, fmt(d.base)],
+            [d.label_b, fmt(d.head)],
+        ]));
+        b.addEventListener('pointerleave', hide);
+    });
+
+    document.querySelectorAll('circle[data-ml]').forEach(c => {
+        c.addEventListener('pointermove', evt => show(evt, [
+            [c.dataset.label, c.dataset.spd + '× speedup'],
+            ['lanes', c.dataset.lane],
+        ]));
+        c.addEventListener('pointerleave', hide);
     });
 
     document.querySelectorAll('[data-hbar]').forEach(b => {

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Benchmark scaling — {{ source }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<main>
+  <h1>Benchmark scaling</h1>
+  <div class="meta">{{ source }} &middot; {{ meta.cpu }} &middot;
+    {{ meta.threads_hw }} hw threads &middot; {{ meta.build }} &middot;
+    {{ meta.commit }}</div>
+  <div class="sub">speedup vs the smallest lane, per pool width. The dashed
+    line is perfect scaling; where a curve peels away and turns back down is
+    where extra lanes stop paying (dispatch + cache traffic, and past the
+    physical-core count, oversubscription). &starf; marks the best lane.</div>
+
+  {% for s in suites %}
+  <h2>{{ s.suite }}</h2>
+  <div class="card">
+    <div class="legend">
+      {% for lg in s.legend %}<span><span class="sw s{{ lg.slot }}"></span>{{ lg.label }}</span>{% endfor %}
+      <span><span class="sw ideal-sw"></span>ideal</span>
+    </div>
+    {{ s.svg }}
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>benchmark</th>
+        {% for l in s.lanes %}<th>x{{ l }}</th>{% endfor %}
+        <th>best</th></tr></thead>
+      <tbody>
+        {% for r in s.table %}
+        <tr><td>{{ r.label }}</td>
+          {% for i in range(s.lanes|length) %}
+          <td{% if s.lanes[i] == r.best %} class="peak"{% endif %}>{{ r.us[i] }}
+            <span class="spd">{{ r.spd[i] }}&times;</span></td>
+          {% endfor %}
+          <td>x{{ r.best }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endfor %}
+</main>
+<div id="tip"></div>
+<script>{{ js }}</script>
+</body>
+</html>

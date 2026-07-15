@@ -8,6 +8,20 @@
     --accent: #2a78d6;
     --accent-soft: #86b6ef;
     --band: rgba(42, 120, 214, .10);
+    /* status pair for compare deltas; a sign or verdict word always
+       accompanies the color, so color is never the only channel */
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    /* categorical series (validated dataviz order); legend + direct hover
+       carry identity so color is never the only channel */
+    --s0: #2a78d6;
+    --s1: #1baf7a;
+    --s2: #eda100;
+    --s3: #008300;
+    --s4: #4a3aa7;
+    --s5: #e34948;
+    --s6: #e87ba4;
+    --s7: #eb6834;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -21,6 +35,16 @@
         --accent: #3987e5;
         --accent-soft: #1c5cab;
         --band: rgba(57, 135, 229, .14);
+        --good: #0ca30c;
+        --bad: #d03b3b;
+        --s0: #3987e5;
+        --s1: #199e70;
+        --s2: #c98500;
+        --s3: #008300;
+        --s4: #9085e9;
+        --s5: #e66767;
+        --s6: #d55181;
+        --s7: #d95926;
     }
 }
 
@@ -150,6 +174,10 @@ svg.chart {
     stroke-linecap: round;
 }
 
+.line2 {
+    stroke: var(--accent-soft);
+}
+
 .band {
     fill: var(--band);
 }
@@ -215,6 +243,139 @@ svg.chart {
 
 #tip .tk {
     color: var(--ink-2);
+}
+
+/* --- compare view ------------------------------------------------------- */
+
+.delta {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.delta.up {
+    fill: var(--bad);
+    color: var(--bad);
+}
+
+.delta.down {
+    fill: var(--good);
+    color: var(--good);
+}
+
+.delta.flat {
+    fill: var(--ink-3);
+    color: var(--ink-3);
+    font-weight: 400;
+}
+
+.tile .d {
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.tile .d .from {
+    color: var(--ink-2);
+}
+
+.verdicts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 12px 0 4px;
+}
+
+.pill {
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--ink-2);
+}
+
+.pill.bad {
+    color: var(--bad);
+    border-color: var(--bad);
+}
+
+.pill.good {
+    color: var(--good);
+    border-color: var(--good);
+}
+
+.meta .sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    margin-right: 4px;
+}
+
+tr.dim td {
+    color: var(--ink-2);
+}
+
+/* --- bench scaling (multiline) ------------------------------------------- */
+
+.ml {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.ideal {
+    fill: none;
+    stroke: var(--ink-3);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+}
+
+.mldot {
+    stroke: var(--surface);
+    stroke-width: 1.5;
+    cursor: pointer;
+}
+
+.s0 { stroke: var(--s0); }
+.s1 { stroke: var(--s1); }
+.s2 { stroke: var(--s2); }
+.s3 { stroke: var(--s3); }
+.s4 { stroke: var(--s4); }
+.s5 { stroke: var(--s5); }
+.s6 { stroke: var(--s6); }
+.s7 { stroke: var(--s7); }
+
+.mldot.s0 { fill: var(--s0); }
+.mldot.s1 { fill: var(--s1); }
+.mldot.s2 { fill: var(--s2); }
+.mldot.s3 { fill: var(--s3); }
+.mldot.s4 { fill: var(--s4); }
+.mldot.s5 { fill: var(--s5); }
+.mldot.s6 { fill: var(--s6); }
+.mldot.s7 { fill: var(--s7); }
+
+.legend .sw.s0 { background: var(--s0); }
+.legend .sw.s1 { background: var(--s1); }
+.legend .sw.s2 { background: var(--s2); }
+.legend .sw.s3 { background: var(--s3); }
+.legend .sw.s4 { background: var(--s4); }
+.legend .sw.s5 { background: var(--s5); }
+.legend .sw.s6 { background: var(--s6); }
+.legend .sw.s7 { background: var(--s7); }
+
+.legend .sw.ideal-sw {
+    background: repeating-linear-gradient(90deg,
+        var(--ink-3) 0 4px, transparent 4px 7px);
+}
+
+td.peak {
+    font-weight: 600;
+    color: var(--good);
+}
+
+td .spd {
+    color: var(--ink-2);
+    font-size: 11px;
 }
 
 table {

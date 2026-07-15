@@ -54,18 +54,30 @@ def _rounded_bar_d(x, y, w, h, r, vertical):
             f"{x + w - r:.1f},{y + h:.1f} H{x:.1f} Z")
 
 
-def line_chart(xs, ys, lo, hi, chart_id):
-    """Single-series line, optional min..max wash, crosshair hover layer."""
+def line_chart(xs, ys, lo, hi, chart_id, xs2=None, ys2=None, ymax_cap=None):
+    """Single-series line, optional min..max wash, crosshair hover layer.
+
+    xs2/ys2: an optional SECOND series (drawn under the first in the soft
+    accent step -- base vs head in the compare view); the shared x/y scales
+    cover both. ymax_cap clips the y scale (a lone 20x scheduler-noise spike
+    would flatten everything else); capped points draw off the top and the
+    tooltip still reports their true values."""
     ymax = max(hi) if hi else max(ys)
+    if ys2:
+        ymax = max(ymax, max(ys2))
+    if ymax_cap is not None:
+        ymax = min(ymax, ymax_cap)
     ymax = ymax * 1.05 or 1
-    x0, x1 = xs[0], xs[-1]
+    x0 = min(xs[0], xs2[0]) if xs2 else xs[0]
+    x1 = max(xs[-1], xs2[-1]) if xs2 else xs[-1]
     span = (x1 - x0) or 1
 
     def px(x):
         return PAD_L + (W - PAD_L - PAD_R) * (x - x0) / span
 
     def py(v):
-        return PAD_T + (H - PAD_T - PAD_B) * (1 - v / ymax)
+        # clamp to the plot top: values past a ymax_cap pin to the edge
+        return max(PAD_T, PAD_T + (H - PAD_T - PAD_B) * (1 - v / ymax))
 
     band = None
     if lo:  # downsample band: the spread the mean line averages over
@@ -79,6 +91,8 @@ def line_chart(xs, ys, lo, hi, chart_id):
                band=band,
                line=" ".join(f"{px(x):.1f},{py(v):.1f}"
                              for x, v in zip(xs, ys)),
+               line2=" ".join(f"{px(x):.1f},{py(v):.1f}"
+                              for x, v in zip(xs2, ys2)) if xs2 else None,
                x_first=f"tick {x0}",
                x_last=str(x1))
     payload = dict(xs=xs, ys=[round(v, 2) for v in ys],
@@ -86,7 +100,52 @@ def line_chart(xs, ys, lo, hi, chart_id):
                    hi=[round(v, 2) for v in hi] if hi else None,
                    x0=x0, span=span, ymax=ymax,
                    padl=PAD_L, padr=PAD_R, padt=PAD_T, padb=PAD_B, w=W, h=H)
+    if xs2:
+        payload["xs2"] = xs2
+        payload["ys2"] = [round(v, 2) for v in ys2]
     return ctx, payload
+
+
+def multiline_chart(series, lane_labels, chart_id, ideal=None):
+    """Speedup-vs-lanes scaling curves: one line per series over evenly-spaced
+    lane ticks, per-point dots, and an optional dashed ideal-linear reference.
+
+    series: list of dict(label=, ys=[speedup per lane], slot=int categorical).
+    lane_labels: the lane counts, one per point (the x tick labels).
+    ideal: optional [speedup per lane] drawn muted+dashed (perfect scaling)."""
+    n = len(lane_labels)
+    h = 240
+    # Scale to the REAL series only; the ideal diagonal is a reference, so let
+    # it run off the top (clipped by the viewBox) rather than compressing the
+    # measured curves -- with heavy oversubscription the real peak is a small
+    # fraction of ideal-at-max-lanes.
+    allys = [v for s in series for v in s["ys"]]
+    ymax = (max(allys) if allys else 1) * 1.15 or 1
+    plot_w = W - PAD_L - PAD_R
+
+    def px(i):
+        return PAD_L + (plot_w * i / (n - 1) if n > 1 else plot_w / 2)
+
+    def py(v):
+        return PAD_T + (h - PAD_T - PAD_B) * (1 - v / ymax)
+
+    lines, dots = [], []
+    for s in series:
+        lines.append(dict(slot=s["slot"], pts=" ".join(
+            f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(s["ys"]))))
+        for i, v in enumerate(s["ys"]):
+            dots.append(dict(slot=s["slot"], cx=f"{px(i):.1f}",
+                             cy=f"{py(v):.1f}", label=s["label"],
+                             lane=lane_labels[i], spd=f"{v:.2f}"))
+    ctx = dict(_frame(W, h), id=chart_id,
+               grid=_gridlines(ymax, h, lambda v: f"{v:g}x"),
+               xticks=[dict(x=f"{px(i):.1f}", label=str(l))
+                       for i, l in enumerate(lane_labels)],
+               ideal=" ".join(f"{px(i):.1f},{py(v):.1f}"
+                              for i, v in enumerate(ideal)) if ideal else None,
+               lines=lines, dots=dots,
+               legend=[dict(label=s["label"], slot=s["slot"]) for s in series])
+    return ctx, None
 
 
 def histogram(values, chart_id, bins_cap=40):
@@ -169,4 +228,44 @@ def hbars(rows, chart_id, stacked=False):
     ctx = dict(_frame(W, h), id=chart_id, label_w=label_w, rows=out_rows)
     payload = [dict(label=r[0], v=r[1], flush=(r[2] if stacked else None))
                for r in rows]
+    return ctx, payload
+
+
+def paired_hbars(rows, chart_id):
+    """Base-vs-head magnitude comparison: two thin bars per row (base in the
+    soft accent step above, head in the full accent below), one shared scale,
+    the head bar annotated with its delta.
+
+    rows: (label, base_value, head_value, delta_text, delta_cls) --
+    delta_cls is the CSS class for the annotation ("up"/"down"/"flat")."""
+    label_w = 150
+    bar_h, gap = 9, 2
+    row_h = 2 * bar_h + gap + 10
+    h = PAD_T + len(rows) * row_h + 8
+    vmax = max(max(r[1], r[2]) for r in rows) or 1
+    plot_w = W - label_w - PAD_R - 96  # room for value + delta annotations
+    out_rows = []
+    for i, r in enumerate(rows):
+        y = PAD_T + i * row_h + 4
+        bars = []
+        for j, (v, cls) in enumerate(((r[1], "bar2"), (r[2], "bar"))):
+            w = plot_w * v / vmax
+            if w <= 0:
+                continue
+            by = y + j * (bar_h + gap)
+            r_ = min(3.0, w, bar_h / 2)
+            bars.append(dict(cls=cls, i=i,
+                             d=_rounded_bar_d(label_w, by, w, bar_h, r_,
+                                              vertical=False)))
+        vx = label_w + plot_w * max(r[1], r[2]) / vmax + 6
+        out_rows.append(dict(label=r[0],
+                             ly=f"{y + bar_h + gap + 4:.1f}",
+                             bars=bars,
+                             vx=f"{vx:.1f}",
+                             vy=f"{y + bar_h + gap + 4:.1f}",
+                             value=fmt_us(r[2]),
+                             delta=r[3], delta_cls=r[4]))
+    ctx = dict(_frame(W, h), id=chart_id, label_w=label_w, rows=out_rows)
+    payload = [dict(label=r[0], base=round(r[1], 2), head=round(r[2], 2),
+                    delta=r[3]) for r in rows]
     return ctx, payload
