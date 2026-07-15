@@ -24,6 +24,7 @@
 #include "system.hpp"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -44,6 +45,10 @@ struct WorkItem {
     std::uint32_t archetype; // world archetype index, or kImperative
     std::uint32_t begin, end;
     std::uint32_t ordinal;
+    // Measured execution time of this item, written by the lane that ran it
+    // (disjoint per item: no cross-lane contention); the Schedule rolls
+    // items up per system into a SystemWork event.
+    double busy_us = 0;
 };
 inline constexpr std::uint32_t kImperative = 0xFFFF'FFFFu;
 // A slice below this many rows is not worth a separate claim.
@@ -135,15 +140,26 @@ inline void run_work_item(WorkItem const& it,
 // shared 1-lane pool so their queries iterate inline on their lane. Exceptions
 // (from a system body or a kernel item) propagate out of the dispatch join;
 // the caller owns abort policy.
-inline void run_wave_items(std::vector<WorkItem> const& items,
+//
+// Each item is bracketed with clock reads into item.busy_us -- two
+// steady_clock reads per >=kMinItemRows-row item, measured within run-to-run
+// noise, so the timing is unconditional rather than plumbed behind a flag.
+inline void run_wave_items(std::vector<WorkItem>& items,
                            std::span<SystemRecord> systems,
                            World& world,
                            Commands& cmds,
                            WorkerPool& pool) {
+    using clock  = std::chrono::steady_clock;
+    auto run_one = [&](WorkItem& it, WorkerPool& p) {
+        auto const t0 = clock::now();
+        run_work_item(it, systems, world, cmds, p);
+        it.busy_us =
+            std::chrono::duration<double, std::micro>(clock::now() - t0).count();
+    };
     if (items.empty())
         return;
     if (items.size() == 1) {
-        run_work_item(items[0], systems, world, cmds, pool);
+        run_one(items[0], pool);
         return;
     }
     std::atomic<std::size_t> next {0};
@@ -153,7 +169,7 @@ inline void run_wave_items(std::vector<WorkItem> const& items,
         // is ignored in favor of dynamic claims.
         for (auto i = next.fetch_add(1, std::memory_order_relaxed); i < items.size();
              i = next.fetch_add(1, std::memory_order_relaxed))
-            run_work_item(items[i], systems, world, cmds, inner);
+            run_one(items[i], inner);
     });
 }
 

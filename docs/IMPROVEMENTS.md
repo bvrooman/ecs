@@ -319,9 +319,13 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      neither compress nor come cheap; keep it serial.
    The A/B is safe by construction — `add` ↔ `add_kernel` is a one-word,
    behavior-preserving switch (identical results at any lane count), so
-   measure with `ScheduleReport` and believe the numbers. Tooling roadmap: the
-   profiler should surface per-system barrier-hook time so a kernel whose
-   finish fold costs as much as its dispatch flags itself.
+   measure with `ScheduleReport` and believe the numbers. **[done]** The
+   profiler surfaces exactly this: each system emits a `SystemWork` event
+   with measured busy time (per-item timing summed across lanes) plus its
+   barrier prepare/finish hook durations, so a kernel whose finish fold
+   costs as much as its dispatch flags itself in `ScheduleReport`'s
+   prep/fin columns, in `ScheduleTrace`'s CSV, and in the HTML report
+   (`tools/schedule_report`).
 
    **Data layout as the missing precondition — spatial/key sorting
    (in prototype).** The grid shape loses above because work items are
@@ -397,10 +401,57 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
   `std::string` fields through relocation under ASAN; throwing
   observer/missing-resource paths; tag components through the full archetype
   path; doctest (or extend `check.hpp` with variadic `CHECK`, value-printing
-  `CHECK_EQ`, per-case ctest registration); dispersion + `--csv` in
-  benchmarks; `-march=native` as an option; structural churn / fragmentation /
-  random-access benchmark dimensions; optional EnTT/flecs comparison; a wasm
-  CI leg running `web/test/smoke.cpp` under node.
+  `CHECK_EQ`, per-case ctest registration); `-march=native` as an option;
+  optional EnTT/flecs comparison; a wasm CI leg running `web/test/smoke.cpp`
+  under node. **[done]** structural churn / fragmentation / random-access
+  benchmark dimensions (churn/access suites), machine-readable results
+  (`ECS_BENCH_OUT`), per-suite dispersion via the shared `bench::Dist`.
+
+### Benchmark-informed development workflow (roadmap)
+
+The goal: never guess about the impact of a change — identify regressions
+across reproducible runs and configurations, with per-system attribution.
+Three cadences, matched to the measurement layers that already exist:
+the microbenchmarks (inner loop), deterministic `mist-headless` +
+`ScheduleTrace` (per-PR attribution), and the lanes×population sweeps
+(longitudinal trends).
+
+1. **[done]** Machine-readable results: every suite (+ `mist-headless`)
+   appends `(suite,name,metric,value,unit,better,config…)` rows wrapped in a
+   run-metadata envelope (timestamp/commit/build/compiler/cpu) to
+   `ECS_BENCH_OUT=<csv>`; `mist-headless` gained `ECS_TRACE` so deterministic
+   macro runs produce comparable schedule traces. See `benchmarks/README.md`.
+2. **[done]** `schedule-report compare base.csv head.csv`: side-by-side HTML
+   + console/CSV deltas per system (busy/prepare/finish), noise-aware
+   significance from the per-tick distributions, `--fail-on-regression` for
+   gating.
+3. **[done]** Interleaved A/B driver (`benchmarks/ab.py`): builds the base
+   ref in a git worktree + the working tree as head, runs the suites
+   round-robin with the order flipped each round, and compares paired
+   per-round samples per (suite,name,metric,entities,lanes) key — paired
+   t-test at 99% (a fixed 3σ is anti-conservative at 3–7 rounds) plus a
+   relative threshold (default 5%). Validated both ways: same-vs-same runs
+   clean; a planted `get<C>` pessimization is caught (+200%) with nothing
+   else flagged. Wall time is only trustworthy relative, same machine,
+   same session.
+4. CI wiring beyond the smoke leg **[smoke done]** (tiny-size run of every
+   suite on the Release legs asserts rows + envelope, never timings):
+   label-triggered or nightly job running the A/B driver (base and head in
+   the *same job* — never compare against stored absolute numbers from
+   other runners), PR comment with the delta table, HTML reports as
+   artifacts. Allocations/tick gates hard (noise-free). Later:
+   instructions-retired counters (perf/cachegrind) for de-noised per-PR
+   gating on shared runners.
+5. Longitudinal dashboard: nightly full suite + sweeps on one consistent
+   machine appended to a data branch; trend page over the accumulated
+   results CSV (the envelope columns make rows self-describing).
+
+Pool-width matrix **[done]**: the scaling suites (scale/primitives/schedule)
+sweep the lane count via `bench::lane_set()` (`ECS_LANES`, default the
+power-of-two ladder to hw) instead of timing one oversubscribing hw point;
+the results CSV's `lanes` column makes each run a lanes×metric matrix, and
+`schedule-report bench` renders speedup-vs-lanes curves against an ideal
+diagonal so the turnover past the physical-core count is a picture.
 
 ## 8. Wasm & JS interop
 

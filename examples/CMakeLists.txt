@@ -13,8 +13,12 @@ target_compile_options(nbody PRIVATE $<$<CONFIG:Release>:-O2>)
 add_executable(mist-headless
   mist/tools/headless.cpp
   mist/simulation.cpp)
-target_include_directories(mist-headless PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/mist)
-target_link_libraries(mist-headless PRIVATE ecs::ecs)
+# benchmarks/ for bench.hpp (the ECS_BENCH_OUT results sink); ecs::profiler
+# for the ScheduleTrace observer (runtime-gated on ECS_TRACE, like mist).
+target_include_directories(mist-headless PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/mist
+  ${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks)
+target_link_libraries(mist-headless PRIVATE ecs::ecs ecs::profiler)
 target_compile_options(mist-headless PRIVATE $<$<CONFIG:Release>:-O3>)
 
 # ---------------------------------------------------------------------------
