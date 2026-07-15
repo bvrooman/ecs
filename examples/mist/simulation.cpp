@@ -188,6 +188,17 @@ struct AddStats {
 
 } // namespace
 
+// Row-sort key: the grid cell a bird falls in. Sorting rows by it keeps
+// birds in the same cell adjacent in storage, so grid's sparse CellAccum
+// partials touch a compact cell range (they compress, and the kernel wins).
+// Shared by the load-time sort in seed_flock() and the periodic maintenance
+// hook in build_mist_schedule(), so both use the identical key.
+static int flock_cell(Position const& p) {
+    return FlockGrid::index(FlockGrid::axis(p.x),
+                            FlockGrid::axis(p.y),
+                            FlockGrid::axis(p.z));
+}
+
 // The flock-seeding body: place the birds in a loose swirling disc. Invoked by
 // seed_flock() (the load step); factored out so the RNG-draw order stays fixed.
 static void scatter_flock(Commands& cmd, Rng& rng, int const count) {
@@ -217,6 +228,12 @@ void seed_flock(World& world, int const count) {
         scatter_flock(cmd, *rng, count);
     });
     s.run(world); // one flush spawns the birds into their archetype
+    // Sort by grid cell now, so the flock starts as row-coherent as the
+    // maintenance hook keeps it. Spawn order is uncorrelated with cell, so
+    // without this the first ~64 ticks (before the first periodic sort) run on
+    // disordered rows and grid's partials don't compress -- a warm-up hump of
+    // ~2x the steady busy that resolves only at the first maintenance sort.
+    world.sort_rows<Position>(flock_cell);
 }
 
 void build_mist_schedule(Schedule& schedule, MistInput in) {
@@ -283,11 +300,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // asserts it). Counting-sort path: ~0.9ms per 40k birds, ~14us/tick
     // amortized at this cadence.
     schedule.add_maintenance("sort-rows", 64, [](World& w) {
-        w.sort_rows<Position>([](Position const& p) {
-            return FlockGrid::index(FlockGrid::axis(p.x),
-                                    FlockGrid::axis(p.y),
-                                    FlockGrid::axis(p.z));
-        });
+        w.sort_rows<Position>(flock_cell);
     });
 
     // grid: reduce every bird into the spatial grid (per-cell count + position
