@@ -132,9 +132,14 @@ struct CellAccum {
     std::vector<int> idx; // cell -> entry index + 1; 0 = untouched
     std::vector<std::pair<int, Cell>> entries;
 
+    // Allocate the dense index eagerly (256 KB for a 40^3 grid), NOT lazily on
+    // first at(): with ~64 partials this is ~16 MB, and paying it on the first
+    // tick's item execution was that tick's dominant cost (~3 ms). Constructing
+    // it here means Schedule::prewarm -- which sizes the Reduce slot array
+    // before the timed loop -- pre-pays it, so the first real tick is steady.
+    CellAccum() : idx(std::size_t(FlockGrid::cells), 0) {}
+
     Cell& at(int const c) {
-        if (idx.empty())
-            idx.assign(std::size_t(FlockGrid::cells), 0);
         int& slot = idx[std::size_t(c)];
         if (slot == 0) {
             entries.emplace_back(c, Cell {});
@@ -180,33 +185,49 @@ struct AddStats {
 
 } // namespace
 
-void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
+// The scatter body: seed the flock in a loose swirling disc. Shared by the
+// `scatter` one-shot system (build_mist_schedule seed=true) and the standalone
+// seed_flock() load step (seed=false), so both produce the identical flock.
+static void scatter_flock(Commands& cmd, Rng& rng, int const count) {
+    auto& g = rng.gen;
+    std::uniform_real_distribution<float> p(-0.45f, 0.45f);
+    std::uniform_real_distribution<float> j(-0.06f, 0.06f);
+    // Start as a gently swirling disc centred on screen, at the working depth
+    // (~kRoamZc). The velocity is a curl (rotational) field, v ~ (-y, x):
+    // locally coherent -- neighbours share a heading, so alignment stays happy
+    // and it reads as a murmuration from t=0 -- but its centre of mass stays
+    // put. A single shared heading instead translated the whole flock
+    // off-screen (it rushed to the top-edge before the goal could rein it
+    // back); the swirl lingers in the middle.
+    for (int i = 0; i < count; ++i) {
+        float const px = p(g), py = p(g);
+        // Swirl (-y, x) + a gentle shared forward drift (+z): the drift gives
+        // the dead-centre birds (whose swirl velocity is ~0) a coherent heading
+        // too, so the centre doesn't evacuate into a ring.
+        cmd.spawn(Position {px, py, cfg::kRoamZc + p(g)},
+                  Velocity {-py + j(g), px + j(g), 0.20f + j(g)});
+    }
+}
+
+void seed_flock(World& world, int const count) {
+    Schedule s;
+    s.add_once("seed_flock", [count](Commands& cmd, ResMut<Rng> rng) {
+        scatter_flock(cmd, *rng, count);
+    });
+    s.run(world); // one flush spawns the birds into their archetype
+}
+
+void build_mist_schedule(Schedule& schedule, MistInput in, int count, bool seed) {
     Tuning const T = read_tuning(); // steering weights (env-overridable, for sweeps)
-    // scatter: seed the flock once in a loose blob with small random velocities,
-    // then remove itself. phase<-1> runs before the per-tick work.
-    schedule.add_once(
-        "scatter",
-        [count](Commands& cmd, ResMut<Rng> rng) {
-            auto& g = rng->gen;
-            std::uniform_real_distribution<float> p(-0.45f, 0.45f);
-            std::uniform_real_distribution<float> j(-0.06f, 0.06f);
-            // Start as a gently swirling disc centred on screen, at the working
-            // depth (~kRoamZc). The velocity is a curl (rotational) field, v ~
-            // (-y, x): locally coherent -- neighbours share a heading, so
-            // alignment stays happy and it reads as a murmuration from t=0 -- but
-            // its centre of mass stays put. A single shared heading instead
-            // translated the whole flock off-screen (it rushed to the top-edge
-            // before the goal could rein it back); the swirl lingers in the middle.
-            for (int i = 0; i < count; ++i) {
-                float const px = p(g), py = p(g);
-                // Swirl (-y, x) + a gentle shared forward drift (+z): the drift
-                // gives the dead-centre birds (whose swirl velocity is ~0) a
-                // coherent heading too, so the centre doesn't evacuate into a ring.
-                cmd.spawn(Position {px, py, cfg::kRoamZc + p(g)},
-                          Velocity {-py + j(g), px + j(g), 0.20f + j(g)});
-            }
-        },
-        phase<-1> {});
+    // scatter: seed the flock once, then remove itself. phase<-1> runs before
+    // the per-tick work. Omitted when the caller seeds at load (seed_flock).
+    if (seed)
+        schedule.add_once(
+            "scatter",
+            [count](Commands& cmd, ResMut<Rng> rng) {
+                scatter_flock(cmd, *rng, count);
+            },
+            phase<-1> {});
 
     // input: copy the latest cursor into the Cursor resource on the sim thread
     // (single-writer); `goal`/`steer` read it. wave 0.

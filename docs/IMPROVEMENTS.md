@@ -108,6 +108,18 @@ that introduced this document; the rest are recorded as a roadmap.
 ### Scheduling & parallelism
 - **[done]** Cross-system parallelism via the work-item executor (see item 6
   above); `RunPolicy` was interim and removed.
+- **[done]** `Schedule::prewarm(World&)`: pre-pays a kernel wave's one-time
+  first-tick state sizing (per-item slot arrays + prepare hooks: reduce
+  targets reset, extract/collect/bin targets pre-size) against the populated
+  world, so the first real tick allocates nothing and its per-system busy
+  times are steady from tick 0 instead of a cold outlier. Surfaced by the
+  schedule report: mist's `grid` first tick fell from 3.9x to 1.16x steady
+  (whole tick 2.45x -> 1.00x). Partials with fixed-size scratch (mist's
+  `CellAccum` dense index) allocate it in their constructor so slot sizing
+  pre-pays it. Runs no bodies/folds -> non-mutating; verified bitwise-equal
+  to an un-prewarmed run. The load-then-prewarm-then-loop pattern is the
+  standard engine answer (pre-allocate at load, keep the frame allocation-
+  free); see examples/mist/tools/headless.cpp (`ECS_PREWARM=0` A/Bs it).
 - **[done]** `for_each_chunk` paid one fork-join barrier per archetype and
   applied the 256-row serial threshold per archetype; now a single flattened
   `parallel_for` over the total row count, mapping global ranges to

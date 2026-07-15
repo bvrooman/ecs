@@ -10,6 +10,7 @@
 
 namespace ecs {
 class Schedule;
+class World;
 }
 
 // The `extract` kernel's target: the draw-ready snapshot it writes IS the
@@ -28,11 +29,23 @@ struct SnapshotTarget {
     }
 };
 
-// Register the mist systems on `schedule`: a one-shot scatter of `count`
-// particles, then per tick input -> clock -> goal -> grid -> steer ->
-// integrate -> extract -> publish. They operate on the components/resources in
-// mist.hpp and publish draw-ready frames to a TripleBuffer<RenderSnapshot>
-// resource the caller must have installed (plus a SnapshotTarget pointing at
-// it, and a FlockStats resource for the metrics reduction). `in` points at
-// the atomics the main thread updates with the live cursor.
-void build_mist_schedule(ecs::Schedule& schedule, MistInput in, int count);
+// Register the mist systems on `schedule`: with `seed` (the default) a one-shot
+// scatter of `count` particles runs first, then per tick input -> clock -> goal
+// -> grid -> steer -> integrate -> extract -> publish. They operate on the
+// components/resources in mist.hpp and publish draw-ready frames to a
+// TripleBuffer<RenderSnapshot> resource the caller must have installed (plus a
+// SnapshotTarget pointing at it, and a FlockStats resource for the metrics
+// reduction). `in` points at the atomics the main thread updates with the live
+// cursor.
+//
+// Pass seed=false to omit the scatter and seed the flock separately at load
+// with seed_flock() below -- the load-then-prewarm-then-loop pattern, where
+// Schedule::prewarm() can pre-pay the kernels' first-tick allocation because
+// the birds already exist (see mist/tools/headless.cpp).
+void build_mist_schedule(ecs::Schedule& schedule, MistInput in, int count,
+                         bool seed = true);
+
+// Spawn `count` birds into `world` now (the scatter body, run as a one-shot
+// schedule). Requires an Rng resource. Use with build_mist_schedule(seed=false)
+// to separate load from the timed loop so prewarm has something to size.
+void seed_flock(ecs::World& world, int count);

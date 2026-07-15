@@ -249,6 +249,30 @@ public:
         return self.events_;
     }
 
+    // Pre-pay the first tick's one-time kernel-param initialization. For every
+    // kernel system, this sizes the per-item slot state and runs the prepare
+    // hooks (reduce targets reset, extract/collect/bin targets pre-size)
+    // against the CURRENT, already-populated world -- so the first real run()
+    // allocates nothing and its per-system busy times are steady from tick 0
+    // instead of paying a cold outlier. It runs NO system bodies and NO barrier
+    // folds, so it does not advance or otherwise mutate simulation state (the
+    // targets it touches are reset every tick regardless) and emits no events.
+    // Call once, after the world is populated (entities spawned) and before the
+    // timed/rendered loop; idempotent.
+    //
+    // A kernel param whose partial holds fixed-size scratch (e.g. a dense
+    // touched-cell index) should allocate that scratch in the partial's
+    // constructor, not lazily on first use -- then sizing the slot array here
+    // pre-pays it. Otherwise prewarm still covers the slot array and the
+    // barrier targets, but the partial's own lazy heap growth lands on tick 0.
+    void prewarm(World& world) {
+        rebuild();
+        for (auto const& wave : waves_) {
+            detail::build_wave_items(items_, wave, systems_, world);
+            prepare_hooks(wave, world);
+        }
+    }
+
 private:
     // Stamp an id, normalize the access sets, and store -- the single funnel
     // every add_* form goes through.
