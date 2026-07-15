@@ -29,23 +29,27 @@ struct SnapshotTarget {
     }
 };
 
-// Register the mist systems on `schedule`: with `seed` (the default) a one-shot
-// scatter of `count` particles runs first, then per tick input -> clock -> goal
-// -> grid -> steer -> integrate -> extract -> publish. They operate on the
+// Register the mist per-tick systems on `schedule`: input -> clock -> goal ->
+// grid -> steer -> integrate -> extract -> publish. They operate on the
 // components/resources in mist.hpp and publish draw-ready frames to a
 // TripleBuffer<RenderSnapshot> resource the caller must have installed (plus a
 // SnapshotTarget pointing at it, and a FlockStats resource for the metrics
 // reduction). `in` points at the atomics the main thread updates with the live
 // cursor.
 //
-// Pass seed=false to omit the scatter and seed the flock separately at load
-// with seed_flock() below -- the load-then-prewarm-then-loop pattern, where
-// Schedule::prewarm() can pre-pay the kernels' first-tick allocation because
-// the birds already exist (see mist/tools/headless.cpp).
-void build_mist_schedule(ecs::Schedule& schedule, MistInput in, int count,
-                         bool seed = true);
+// The flock is NOT seeded here. The load-then-prewarm-then-loop pattern is:
+//
+//   seed_flock(world, count);            // load: spawn the birds
+//   build_mist_schedule(schedule, in);
+//   schedule.prewarm(world);             // pre-pay the kernels' first-tick state
+//   for (;;) schedule.run(world, pool);  // every tick is a steady sim tick
+//
+// Seeding separately (rather than a scatter-on-tick-0 system) is what lets
+// prewarm size the per-bird kernel state before the loop, so tick 0 is not a
+// cold-start outlier -- and it mirrors how a real game separates level load
+// from the frame loop.
+void build_mist_schedule(ecs::Schedule& schedule, MistInput in);
 
-// Spawn `count` birds into `world` now (the scatter body, run as a one-shot
-// schedule). Requires an Rng resource. Use with build_mist_schedule(seed=false)
-// to separate load from the timed loop so prewarm has something to size.
+// Spawn `count` birds into `world` now, as a one-shot schedule. Requires an Rng
+// resource. Call before build_mist_schedule + prewarm (see the pattern above).
 void seed_flock(ecs::World& world, int count);

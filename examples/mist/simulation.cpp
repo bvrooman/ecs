@@ -6,7 +6,6 @@
 // automatically:
 //
 //   maintenance (every 64 ticks): sort-rows by grid cell (world quiescent)
-//   phase -1: scatter                (one-shot imperative: seed the flock)
 //   wave 0:   input | clock | grid   (grid = kernel Reduce, sparse partials)
 //   wave 1:   goal                   (after input's Cursor + clock's Clock)
 //   wave 2:   steer                  (kernel: boids + goal -> Velocity)
@@ -14,14 +13,18 @@
 //   wave 4:   extract [| metrics]    (kernel, Extract into the back buffer)
 //   wave 5:   publish [| metrics-write]
 //
+// The flock is seeded once at load with seed_flock() (NOT a scatter-on-tick-0
+// system), then the schedule is prewarmed, so every tick the schedule runs is
+// a steady per-bird tick with no cold-start outlier -- the load/frame-loop
+// split a real game uses; see simulation.hpp and the callers.
+//
 // The division of labour the port demonstrates: per-bird data-parallel work
 // (`grid`, `steer`, `integrate`, `extract`, `metrics`) is registered with
 // add_kernel, so the executor slices each system's rows into work items and
 // overlaps everything in a wave across the pool's lanes -- while the small
-// ORDERED resource writers (`input`, `clock`, `goal`, `publish`) and the
-// one-shot Commands setup (`scatter`) stay imperative add() systems. Where a
-// serial system gathered shared output, the kernels use the barrier-merged
-// primitives instead:
+// ORDERED resource writers (`input`, `clock`, `goal`, `publish`) stay
+// imperative add() systems. Where a serial system gathered shared output, the
+// kernels use the barrier-merged primitives instead:
 //
 //   grid     Reduce<FlockGrid, MergeCells, CellAccum>: sparse touched-cells
 //            partials folded into the dense grid at the barrier -- viable
@@ -185,9 +188,8 @@ struct AddStats {
 
 } // namespace
 
-// The scatter body: seed the flock in a loose swirling disc. Shared by the
-// `scatter` one-shot system (build_mist_schedule seed=true) and the standalone
-// seed_flock() load step (seed=false), so both produce the identical flock.
+// The flock-seeding body: place the birds in a loose swirling disc. Invoked by
+// seed_flock() (the load step); factored out so the RNG-draw order stays fixed.
 static void scatter_flock(Commands& cmd, Rng& rng, int const count) {
     auto& g = rng.gen;
     std::uniform_real_distribution<float> p(-0.45f, 0.45f);
@@ -217,17 +219,8 @@ void seed_flock(World& world, int const count) {
     s.run(world); // one flush spawns the birds into their archetype
 }
 
-void build_mist_schedule(Schedule& schedule, MistInput in, int count, bool seed) {
+void build_mist_schedule(Schedule& schedule, MistInput in) {
     Tuning const T = read_tuning(); // steering weights (env-overridable, for sweeps)
-    // scatter: seed the flock once, then remove itself. phase<-1> runs before
-    // the per-tick work. Omitted when the caller seeds at load (seed_flock).
-    if (seed)
-        schedule.add_once(
-            "scatter",
-            [count](Commands& cmd, ResMut<Rng> rng) {
-                scatter_flock(cmd, *rng, count);
-            },
-            phase<-1> {});
 
     // input: copy the latest cursor into the Cursor resource on the sim thread
     // (single-writer); `goal`/`steer` read it. wave 0.

@@ -77,8 +77,7 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     seed_flock(w, count);
 
     Schedule s;
-    build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags}, count,
-                        /*seed=*/false);
+    build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags});
 
     // Optional schedule trace, truncated per run() so the last run wins (the
     // 4-lane rerun) -- same convention as ECS_METRICS above.

@@ -124,10 +124,16 @@ int main() {
     // (resource addresses are stable, so the pointer stays valid).
     world.emplace_resource<SnapshotTarget>(SnapshotTarget {&snap_channel});
 
+    // Load: seed the flock now (needs the Rng resource above), so the schedule
+    // holds only steady per-tick work and prewarm below can pre-pay the
+    // kernels' first-tick state -- the level-load / frame-loop split.
+    seed_flock(world, count);
+
     WindowState wstate;
 
     Schedule schedule;
-    build_mist_schedule(schedule, MistInput {&wstate.cursor, &wstate.flags}, count);
+    build_mist_schedule(schedule, MistInput {&wstate.cursor, &wstate.flags});
+    schedule.prewarm(world); // pre-pay kernel state so the first frame is steady
     std::printf("mist: %d particles; schedule %zu systems across %zu levels\n",
                 count,
                 schedule.size(),
