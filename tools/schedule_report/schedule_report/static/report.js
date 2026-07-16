@@ -151,7 +151,6 @@
                 rows.push(['work', fmt(d.v)]);
                 rows.push(['command flush', fmt(d.flush)]);
             }
-            if (d.maint) rows.push(['phase', 'serial maintenance']);
             if (d.ran != null) rows.push(['ticks ran', d.ran + ' of ' + d.of]);
             show(evt, rows);
         });

@@ -101,9 +101,10 @@ public:
     // canonical key is the same permutation at any lane count, so schedule
     // results stay bitwise reproducible across sorts. Rows drift back out of
     // order via swap-and-pop churn; re-sort every N ticks (key coherence
-    // decays slowly, the sort amortizes -- see Schedule::add_maintenance).
-    // Structural, like the *_now primitives: call it OUTSIDE run() or from a
-    // maintenance hook, never from inside a system.
+    // decays slowly, the sort amortizes). Structural, like the *_now
+    // primitives: call it OUTSIDE run(), or from inside a system by recording
+    // it as a command (Commands::sort) so it applies at the barrier -- never
+    // directly mid-wave.
     //
     // `min_disorder` skips archetypes that are still nearly in order: the
     // disorder of an archetype is its fraction of adjacent key DESCENTS
@@ -649,6 +650,21 @@ public:
             using D = std::decay_t<C>;
             if (w.alive(e) && w.has<D>(e))
                 w.set_now<D>(e, std::move(value));
+        });
+    }
+
+    // Reorder every C-bearing archetype's rows by a canonical key at the next
+    // flush -- a deferred World::sort_rows. sort_rows is structural (it permutes
+    // rows, like the *_now edits) so it cannot run mid-wave; recording it as a
+    // command runs it single-threaded and world-quiescent at the barrier, the
+    // same place spawns/despawns apply. That is what lets an ordinary system ask
+    // for data-layout upkeep (e.g. re-sort by grid cell every N ticks) without
+    // the raw World& sort_rows would otherwise need. Deterministic; see
+    // World::sort_rows for the key / min_disorder contract.
+    template <class C, class KeyFn>
+    void sort(KeyFn key, double min_disorder = 0.0) {
+        record([key = std::move(key), min_disorder](World& w) {
+            w.sort_rows<C>(key, min_disorder);
         });
     }
 

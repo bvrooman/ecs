@@ -13,32 +13,23 @@
 //   for (;;) sched.run(world, pool);
 //   trace.flush();                          // drain the tail at shutdown
 //
-// Columns (every measurement numeric except `wave`; `system` is the row's key):
+// Columns (every measurement numeric; `system` is the row's key):
 //
 //   tick        run() ordinal since the trace attached (0-based)
-//   wave        the system's wave index within the tick, OR the literal
-//               `maint` for a maintenance-hook row (see below)
-//   system      system name (or the maintenance hook's name on a maint row)
+//   wave        the system's wave index within the tick
+//   system      system name
 //   busy_us     sum of the system's work-item durations across all lanes
-//               (CPU time: a fanned wave's busy columns sum past wall time).
-//               On a maint row: that hook's single-threaded cost this tick.
-//   prepare_us  the system's single-threaded barrier prepare hook (0 on maint)
-//   finish_us   the system's single-threaded barrier finish hook (0 on maint)
-//   items       work items the system contributed (1 for imperative; 0 on maint)
+//               (CPU time: a fanned wave's busy columns sum past wall time)
+//   prepare_us  the system's single-threaded barrier prepare hook
+//   finish_us   the system's single-threaded barrier finish hook (folds)
+//   items       work items the system contributed (1 for imperative)
 //   wave_us     wall duration of the whole wave (repeated on each of the
-//               wave's rows; includes the flush). On a maint row: the whole
-//               maintenance phase's wall this tick (sum of its hooks).
-//   flush_us    command-flush portion of wave_us (repeated likewise; 0 on maint)
-//   tick_us     wall duration of the tick's WAVES (repeated on every row of the
-//               tick, maint rows included); systems only -- excludes
-//               maintenance, so the true frame wall is tick_us + the tick's
-//               maintenance-phase wall.
+//               wave's rows; includes the flush)
+//   flush_us    command-flush portion of wave_us (repeated likewise)
+//   tick_us     wall duration of the whole tick (repeated on the tick's rows)
 //
-// Maintenance rows: a Schedule::add_maintenance hook runs world-quiescent
-// BEFORE the tick's waves (see Schedule::add_maintenance). Each hook that fired
-// emits one row with wave=`maint`, keyed by the hook name -- the frame's opening
-// serial phase, modeled as pseudo-systems so a hook ranks and charts alongside
-// real systems. A tick with no maintenance simply has no maint rows.
+// A per-N-tick system (Schedule `every`) simply has rows only on the ticks it
+// ran -- like a one-shot phase, its wave exists for a subset of ticks.
 //
 // It is one of the two timing observers the profiler was split into (the other
 // is ScheduleReport, which aggregates instead of tracing); register either,
@@ -86,27 +77,9 @@ public:
         using namespace sched_event;
         std::visit(
             event::overloaded {
-                [this](Maintenance const& ev) {
-                    // Fires before TickBegin, world-quiescent. Buffer the hook
-                    // (name + cost); TickBegin materializes the rows once the
-                    // phase total is known.
-                    pending_maint_.push_back({std::string(ev.name), ev.us});
-                },
                 [this](TickBegin const&) {
                     tick_first_row_ = rows_.size();
-                    // Materialize the maintenance phase as the tick's opening
-                    // rows: one per hook, wave=maint, wave_us = the phase wall
-                    // (sum of hooks, run serially). tick_us is stamped at
-                    // TickEnd alongside the system rows.
-                    double phase_us = 0;
-                    for (auto const& m : pending_maint_)
-                        phase_us += m.second;
-                    for (auto const& m : pending_maint_)
-                        rows_.push_back(Row {tick_no_, 0, SystemId {0}, m.second,
-                                             0.0, 0.0, 0, phase_us, 0.0, 0.0,
-                                             true, m.first});
-                    pending_maint_.clear();
-                    t_tick_ = clock::now();
+                    t_tick_         = clock::now();
                 },
                 [this](WaveBegin const& ev) {
                     cur_wave_       = ev.level;
@@ -126,9 +99,7 @@ public:
                                          ev.items,
                                          0.0,
                                          0.0,
-                                         0.0,
-                                         false,
-                                         {}});
+                                         0.0});
                 },
                 [this](WaveEnd const& ev) {
                     double const us = elapsed_us(t_wave_);
@@ -138,8 +109,6 @@ public:
                     }
                 },
                 [this](TickEnd const&) {
-                    // Systems-only tick wall (maintenance ran before t_tick_),
-                    // stamped on every row of the tick including the maint rows.
                     double const us = elapsed_us(t_tick_);
                     for (auto i = tick_first_row_; i < rows_.size(); ++i)
                         rows_[i].tick_us = us;
@@ -151,10 +120,8 @@ public:
                 },
                 [this](TickAbort const&) {
                     // Drop the aborted tick's partial rows: a truncated tick
-                    // would skew every downstream distribution. The tick's maint
-                    // rows are among them (pushed at TickBegin) and go too.
+                    // would skew every downstream distribution.
                     rows_.resize(tick_first_row_);
-                    pending_maint_.clear();
                 },
                 [](auto const&) {}, // SystemBegin/SystemEnd: unused by the trace
             },
@@ -164,22 +131,14 @@ public:
     // Format and emit every buffered row now (e.g. at shutdown). No-op if empty.
     void flush() {
         char buf[320];
-        char wave[16];
         for (Row const& r : rows_) {
-            char const* nm;
-            if (r.is_maint) {
-                std::snprintf(wave, sizeof(wave), "maint");
-                nm = r.maint_name.c_str();
-            } else {
-                std::snprintf(wave, sizeof(wave), "%zu", r.wave);
-                auto const it = names_.find(r.id);
-                nm            = it != names_.end() ? it->second.c_str() : "?";
-            }
-            int const k = std::snprintf(buf,
+            auto const it  = names_.find(r.id);
+            char const* nm = it != names_.end() ? it->second.c_str() : "?";
+            int const k    = std::snprintf(buf,
                                         sizeof(buf),
-                                        "%llu,%s,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f",
+                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f",
                                         static_cast<unsigned long long>(r.tick),
-                                        wave,
+                                        r.wave,
                                         nm,
                                         r.busy_us,
                                         r.prepare_us,
@@ -204,8 +163,8 @@ private:
 
     struct Row {
         std::uint64_t tick;
-        std::size_t wave; // wave index; ignored (written as `maint`) when is_maint
-        SystemId id;      // valid unless is_maint
+        std::size_t wave;
+        SystemId id;
         double busy_us;
         double prepare_us;
         double finish_us;
@@ -213,8 +172,6 @@ private:
         double wave_us;
         double flush_us;
         double tick_us;
-        bool is_maint;          // a maintenance-hook row (serial pre-wave phase)
-        std::string maint_name; // hook name when is_maint (empty otherwise)
     };
 
     Sink sink_;
@@ -228,9 +185,6 @@ private:
     std::size_t tick_first_row_ = 0; // first row of the current tick
     std::size_t wave_first_row_ = 0; // first row of the current wave
     std::uint64_t tick_no_      = 0;
-    // Maintenance hooks that fired since the last TickBegin (name, us), drained
-    // into rows at TickBegin once the phase total is known.
-    std::vector<std::pair<std::string, double>> pending_maint_;
 };
 
 } // namespace ecs::diag

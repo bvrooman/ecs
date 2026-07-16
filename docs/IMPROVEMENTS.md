@@ -368,10 +368,17 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      already-sorted archetypes (1.85ms → 0.24ms) plus a `min_disorder`
      threshold (fraction of adjacent key descents) to leave nearly-coherent
      layouts alone.
-   - **[done — this branch]** `Schedule::add_maintenance(name, every_n, fn)`:
-     the hook runs single-threaded at the start of every n-th `run()`, before
-     any wave, world quiescent — the sanctioned home for `sort_rows` cadences
-     and other structural upkeep without leaving the tick loop.
+   - **[done]** Structural upkeep is a regular system, not a bespoke hook.
+     Two general primitives replace the old `Schedule::add_maintenance`:
+     a runtime `every` cadence on `add`/`add_kernel` (a system runs only on
+     ticks where `tick % every == 0`; a wave emptied by skips runs no barrier),
+     and `Commands::sort<C>(key)` — a deferred `World::sort_rows` that applies
+     at the barrier (world-quiescent, single-threaded) like every other
+     command. So a re-sort cadence is just a `phase<-1>` system that records a
+     sort command every N ticks: it inherits the schedule's timing, reporting,
+     and exception handling with no maintenance-specific path. (The sort's cost
+     then lands in that wave's `flush_us`; per-command flush attribution is a
+     reporting follow-up.)
    - End-to-end (mist, grid flipped to the kernel Reduce + a 64-tick sort
      cadence): 4-lane tick 0.83 → 0.77 ms at 40k, 1.63 → 1.54 ms at 85k
      (lane-scaling 2.6-2.8× → 3.1-3.3×), at the documented cost of ~10% at
@@ -380,7 +387,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      shape at every scale: ~8-10% behind at 1 lane, parity at 2, ahead from
      3 lanes up (to ~10% at 4 lanes / 170k), with the crossover pinned
      between 2 and 3 lanes independent of flock size. Determinism checks
-     stay bitwise-green with the maintenance sort on. (Both variants
+     stay bitwise-green with the periodic sort on. (Both variants
      collapse identically under oversubscription — 5 lanes on 4 cores is
      ~25× worse; the always-spin pool's rule stands: lanes ≤ cores minus
      the other hot threads.)

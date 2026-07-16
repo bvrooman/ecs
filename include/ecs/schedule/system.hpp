@@ -278,6 +278,10 @@ struct SystemRecord {
     int phase         = 0;
     std::size_t level = 0;
     bool once         = false;
+    // Cadence: the system runs only on ticks where tick % every == 0 (every==1
+    // is every tick). A skipped system contributes no work items that tick;
+    // a wave left empty by skips runs no barrier. Always >= 1.
+    std::uint64_t every = 1;
 
     [[nodiscard]]
     bool is_kernel() const noexcept {

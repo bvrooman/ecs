@@ -27,7 +27,7 @@
 //      start -- cache, CPU frequency ramp -- that prewarm cannot; the timed
 //      loop and trace then reflect steady state)
 //
-// The schedule registers its own sort-rows maintenance hook (every 64 ticks,
+// The schedule registers its own sort-rows sort-rows system (every 64 ticks,
 // see simulation.cpp), so the bitwise checks below also prove determinism
 // composes with row sorting.
 #include "bench.hpp"

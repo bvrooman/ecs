@@ -34,24 +34,11 @@ def render(trace_path, out_path, warmup=0):
     def chart(kind, ctx):
         return Markup(env.get_template(f"charts/{kind}.svg.j2").render(ctx))
 
-    systems, ticks, waves, maint = load(trace_path, warmup)
-    maint_per_tick = maint["per_tick"]                  # tick -> phase wall
+    systems, ticks, waves = load(trace_path, warmup)
     tick_ids = sorted(ticks)
-    tick_vals = [ticks[t] for t in tick_ids]            # systems only
-    maint_vals = [maint_per_tick.get(t, 0.0) for t in tick_ids]  # maint phase
-    # The frame wall the headline reports: systems + maintenance, so a tick's
-    # tile value is the whole picture even though the two are internally split.
-    total_vals = [c + m for c, m in zip(tick_vals, maint_vals)]
-    ts = stats(total_vals)          # headline distribution (whole frame)
-    cs = stats(tick_vals)           # systems-only (per-system share denominator)
-    n_ticks = len(tick_ids)
-
-    # Maintenance amortized across every tick (sum / n_ticks) plus its
-    # per-occurrence profile, shown only when the workload has maintenance.
-    maint_ran = [m for m in maint_vals if m > 0.0]
-    maint_total = sum(maint_vals)
-    has_maint = maint_total > 0.0
-    maint_amortized = maint_total / n_ticks if n_ticks else 0.0
+    tick_vals = [ticks[t] for t in tick_ids]
+    ts = stats(tick_vals)   # whole-tick distribution (a per-N-tick system's
+    n_ticks = len(tick_ids)  # cost is inside tick_us, on the ticks it runs)
 
     payload = {"lines": {}, "hists": {}, "hbars": {}}
 
@@ -62,8 +49,6 @@ def render(trace_path, out_path, warmup=0):
         return chart("line", ctx), lo is not None
 
     # headline ---------------------------------------------------------------
-    # mean/p50/p99 are the whole frame (systems + maintenance); ticks/s follows
-    # from the same mean, so the rate matches the reported tick cost.
     tiles = [
         ("mean tick", fmt_us(ts["mean"])),
         ("p50 tick", fmt_us(ts["p50"])),
@@ -71,126 +56,66 @@ def render(trace_path, out_path, warmup=0):
         ("ticks / s", f"{1e6 / ts['mean']:,.0f}" if ts["mean"] else "0"),
     ]
 
-    # Frame breakdown: how the mean tick splits into systems vs maintenance,
-    # so the headline total is decomposable at a glance. Only when maintenance
-    # actually ran -- otherwise the total IS the systems time.
-    breakdown = None
-    if has_maint:
-        ms = stats(maint_ran)
-        breakdown = dict(
-            total=fmt_us(ts["mean"]),
-            systems=fmt_us(cs["mean"]),
-            maint=fmt_us(maint_amortized),
-            maint_pct=f"{100.0 * maint_amortized / ts['mean']:.1f}"
-                      if ts["mean"] else "0.0",
-            ran=len(maint_ran), of=n_ticks,
-            cadence=round(n_ticks / len(maint_ran)) if maint_ran else 0,
-            per_run=fmt_us(ms["mean"]), per_run_max=fmt_us(ms["mx"]),
-        )
-
-    # tick wall time: the whole frame (systems + maintenance), so the spikes on
-    # maintenance ticks are visible rather than hidden under a systems-only line.
+    # tick wall time -- the whole tick, so a per-N-tick system's spike (its cost
+    # lands in that tick's wave/flush) shows as a periodic bump rather than being
+    # averaged away.
     tick_svg, tick_banded = line_section(
-        *downsample(tick_ids, total_vals), "tick", "frame wall")
+        *downsample(tick_ids, tick_vals), "tick", "tick wall")
 
-    # frame phases: the serial maintenance phase (if any) first, then the
-    # parallel waves. Each bar is mean wall over the ticks it RAN (not amortized
-    # over all ticks), so the maintenance phase shows its per-occurrence spike
-    # with a "ran n of N" count -- the same machinery one-shot waves already use.
-    phase_rows, phase_ran = [], []
-    if has_maint:
-        ran_ticks = [t for t in tick_ids if maint_per_tick.get(t, 0.0) > 0.0]
-        phase_wall = sum(maint_per_tick[t] for t in ran_ticks) / len(ran_ticks)
-        phase_rows.append(("maintenance", phase_wall, 0.0, "maint"))
-        phase_ran.append(len(ran_ticks))
+    # waves: wall vs flush, mean over the ticks each wave ran. A one-shot or
+    # per-N-tick phase (e.g. a re-sort every 64 ticks) exists for only a subset
+    # of ticks, so its bar carries a "ran n of N" count.
+    rows, ran = [], []
     for w in sorted(waves):
         per_tick = waves[w].values()
         wall = sum(v[0] for v in per_tick) / len(per_tick)
         flush = sum(v[1] for v in per_tick) / len(per_tick)
-        phase_rows.append((f"wave {w}", max(0.0, wall - flush), flush))
-        phase_ran.append(len(per_tick))
-    ctx, data = charts.hbars(phase_rows, "phases", stacked=True)
-    for d, n in zip(data, phase_ran):
+        rows.append((f"wave {w}", max(0.0, wall - flush), flush))
+        ran.append(len(per_tick))
+    ctx, data = charts.hbars(rows, "waves", stacked=True)
+    for d, n in zip(data, ran):
         d["ran"], d["of"] = n, n_ticks  # tooltip: "ran n of N ticks"
-    phases_partial = any(n < n_ticks for n in phase_ran)
-    phases_svg = chart("hbars", ctx)
-    payload["hbars"]["phases"] = data
+    waves_partial = any(n < n_ticks for n in ran)
+    waves_svg = chart("hbars", ctx)
+    payload["hbars"]["waves"] = data
 
-    # Unified entries: real systems AND maintenance hooks (pseudo-systems), so
-    # both rank and chart together. Maintenance rows amortize the same way
-    # (sum / all ticks), so a rare hook ranks by its true per-tick budget; the
-    # card carries the per-occurrence story its distribution and series show.
-    entries = [dict(kind="system", name=n, busy=systems[n]["busy"],
-                    prep=systems[n]["prep"], fin=systems[n]["fin"],
-                    items=systems[n]["items"], ticks=systems[n]["ticks"],
-                    waves=systems[n]["waves"]) for n in systems]
-    entries += [dict(kind="maint", name=n, busy=h["busy"], ticks=h["ticks"])
-                for n, h in maint["hooks"].items()]
-    entries.sort(key=lambda e: -sum(e["busy"]))
-
-    # systems overview: amortized over the whole run (sum / ticks), so a
-    # one-shot setup system -- or a periodic maintenance hook -- compares
-    # honestly against every-tick systems.
-    rows = [(e["name"], sum(e["busy"]) / n_ticks,
-             "maint" if e["kind"] == "maint" else None) for e in entries]
+    # systems overview: amortized busy over the whole run (sum / all ticks), so
+    # a one-shot or per-N-tick system compares honestly against every-tick ones.
+    order = sorted(systems, key=lambda n: -sum(systems[n]["busy"]))
+    rows = [(name, sum(systems[name]["busy"]) / n_ticks) for name in order]
     ctx, data = charts.hbars(rows, "sys")
     overview_svg = chart("hbars", ctx)
     payload["hbars"]["sys"] = data
 
-    # per-entry cards ------------------------------------------------------------
+    # per-system cards -----------------------------------------------------------
     cards = []
     table = []
-    for idx, e in enumerate(entries):
-        st = stats(e["busy"])
-        ctx_h, hdata = charts.histogram(e["busy"], f"h-s{idx}")
-        hdata["label"] = e["name"]
+    for idx, name in enumerate(order):
+        s = systems[name]
+        st = stats(s["busy"])
+        prep = sum(s["prep"]) / len(s["prep"])
+        fin = sum(s["fin"]) / len(s["fin"])
+        ctx_h, hdata = charts.histogram(s["busy"], f"h-s{idx}")
+        hdata["label"] = name
         payload["hists"][f"h-s{idx}"] = hdata
-        series_svg, _ = line_section(*downsample(e["ticks"], e["busy"]),
-                                     f"l-s{idx}", f"{e['name']} busy")
-        base_stats = [("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
-                      ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
-                      ("max", fmt_us(st["mx"]))]
-        # One cost metric for every entry: amortized busy (sum / all ticks) as a
-        # share of the mean frame, so systems and maintenance are comparable and
-        # a rarely-run entry reads by its true per-tick budget, not its per-run
-        # spike (which the distribution and series below still show).
-        amort = sum(e["busy"]) / n_ticks
+        series_svg, _ = line_section(*downsample(s["ticks"], s["busy"]),
+                                     f"l-s{idx}", f"{name} busy")
+        # One cost metric: amortized busy (sum / all ticks) as a share of the
+        # mean tick, so a rarely-run system reads by its true per-tick budget,
+        # not its per-run spike (which the distribution and series still show).
+        amort = sum(s["busy"]) / n_ticks
         amort_pct = 100.0 * amort / ts["mean"] if ts["mean"] else 0.0
-        common = dict(name=e["name"], n=st["n"],
-                      amortized=fmt_us(amort), amortized_pct=f"{amort_pct:.1f}",
-                      hist=chart("histogram", ctx_h), series=series_svg)
-        if e["kind"] == "maint":
-            # A serial hook: no lanes, no barrier hooks, no wave -- those slots
-            # are N/A, everything else lines up with a system card.
-            cards.append(dict(common, maint=True, wave_txt="serial",
-                              items_txt="—", stats=base_stats,
-                              hint="the hook's whole-run cost spread over every "
-                                   "tick, as a share of the mean frame; the "
-                                   "distribution and series below show the real "
-                                   "per-occurrence cost, concentrated in the "
-                                   "ticks it runs"))
-            table.append([e["name"], "maint", "—", st["n"],
-                          fmt_us(st["mean"]), fmt_us(st["sd"]),
-                          fmt_us(st["p50"]), fmt_us(st["p99"]), fmt_us(st["mx"]),
-                          "—", "—", f"{amort_pct:.1f}%"])
-            continue
-        prep = sum(e["prep"]) / len(e["prep"])
-        fin = sum(e["fin"]) / len(e["fin"])
-        # Dominant wave placement; one-shot phases shift indices on the ticks
-        # they run (mist's scatter bumps every wave by one on tick 0), and
-        # the Frame phases note + run-count tooltips carry that story.
-        wave_mode, _ = e["waves"].most_common(1)[0]
-        cards.append(dict(common, maint=False,
-                          wave_txt=f"wave {wave_mode}",
-                          items_txt=f"{e['items']} work item"
-                                    + ("s" if e["items"] != 1 else ""),
-                          stats=base_stats + [("prepare", fmt_us(prep)),
-                                              ("finish", fmt_us(fin))],
-                          hint="amortized busy is CPU summed across all lanes "
-                               "over the mean frame, so a well-parallelized "
-                               "system can exceed 100%; it is spread over every "
-                               "tick, including any it sat out"))
-        table.append([e["name"], wave_mode, e["items"], st["n"],
+        wave_mode, _ = s["waves"].most_common(1)[0]
+        cards.append(dict(
+            name=name, wave=wave_mode, n_items=s["items"], n=st["n"],
+            amortized=fmt_us(amort), amortized_pct=f"{amort_pct:.1f}",
+            stats=[("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
+                   ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
+                   ("max", fmt_us(st["mx"])), ("prepare", fmt_us(prep)),
+                   ("finish", fmt_us(fin))],
+            hist=chart("histogram", ctx_h), series=series_svg,
+        ))
+        table.append([name, wave_mode, s["items"], st["n"],
                       fmt_us(st["mean"]), fmt_us(st["sd"]), fmt_us(st["p50"]),
                       fmt_us(st["p99"]), fmt_us(st["mx"]), fmt_us(prep),
                       fmt_us(fin), f"{amort_pct:.1f}%"])
@@ -200,14 +125,11 @@ def render(trace_path, out_path, warmup=0):
         n_ticks=n_ticks,
         n_systems=len(systems),
         n_waves=len(waves),
-        n_maint=len(maint["hooks"]),
-        has_maint=has_maint,
         tiles=tiles,
-        breakdown=breakdown,
         tick_svg=tick_svg,
         tick_banded=tick_banded,
-        phases_svg=phases_svg,
-        phases_partial=phases_partial,
+        waves_svg=waves_svg,
+        waves_partial=waves_partial,
         overview_svg=overview_svg,
         cards=cards,
         table=table,

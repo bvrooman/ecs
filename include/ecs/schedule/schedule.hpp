@@ -54,18 +54,23 @@ public:
 
     // Register an imperative system. Its access is derived from its parameter
     // types; an optional trailing phase<N> tag gives coarse ordering (default
-    // phase 0). Returns a handle remove() can unschedule. Example:
+    // phase 0), and an optional trailing `every` runs the system only on ticks
+    // where tick % every == 0 (default 1 = every tick -- e.g. re-sort the flock
+    // every 64 ticks). Returns a handle remove() can unschedule. Example:
     //   sched.add("integrate", [](Query<Position, const Velocity> q){ ... });
     //   sched.add("startup",   setup_fn, phase<-1>{});
+    //   sched.add("resort", [](Commands& c){ c.sort<Position>(cell); },
+    //             phase<-1>{}, /*every=*/64);
     template <class Fn, int P = 0>
-    SystemId add(std::string name, Fn&& fn, phase<P> = {}) {
-        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P);
+    SystemId add(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
+        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P,
+                       every);
     }
 
     // One-shot system: runs on the next run() and is then removed (e.g. setup).
     template <class Fn, int P = 0>
     SystemId add_once(std::string name, Fn&& fn, phase<P> = {}) {
-        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P);
+        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/true, P, 1);
     }
 
     // Register a KERNEL system. Same signature rules as add() -- the system's
@@ -105,24 +110,9 @@ public:
     // Query is bound to the shared 1-lane pool, so nothing a kernel body does
     // can reach a nested dispatch.
     template <class Fn, int P = 0>
-    SystemId add_kernel(std::string name, Fn&& fn, phase<P> = {}) {
-        return emplace_kernel(std::move(name), std::forward<Fn>(fn), P);
-    }
-
-    // Register a MAINTENANCE hook: `fn(World&)` runs single-threaded on the
-    // calling thread at the START of every `every_n`-th run(), BEFORE any
-    // wave, while the world is quiescent. This is the sanctioned place for
-    // work that is structural and therefore cannot be a system -- the
-    // canonical use is data-layout upkeep like World::sort_rows every N
-    // ticks (see docs/IMPROVEMENTS.md, parallel-primitives section), or
-    // capacity trims. Hooks run in registration order, emit no schedule
-    // events, and a throwing hook propagates out of run() before the tick
-    // does any work.
-    template <class Fn>
-    void add_maintenance(std::string name, std::uint64_t const every_n, Fn&& fn) {
-        maintenance_.push_back(Maintenance {std::move(name),
-                                            std::max<std::uint64_t>(1, every_n),
-                                            std::forward<Fn>(fn)});
+    SystemId
+    add_kernel(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
+        return emplace_kernel(std::move(name), std::forward<Fn>(fn), P, every);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -217,25 +207,24 @@ public:
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
         using namespace sched_event;
-        // Maintenance hooks: world quiescent, before any wave (see
-        // add_maintenance). Timed and emitted BEFORE TickBegin, so the cost is
-        // attributable to this tick yet excluded from its tick_us (an observer
-        // clocks tick_us from TickBegin) -- real frame work, separate phase.
-        for (auto& m : maintenance_)
-            if (tick_ % m.every == 0) {
-                auto const t0 = detail::sched_clock::now();
-                m.fn(world);
-                // sched_event::Maintenance -- Schedule::Maintenance is the
-                // storage struct (member), so qualify to disambiguate.
-                events_.emit(sched_event::Maintenance {m.name,
-                                                       detail::elapsed_us(t0)});
-            }
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
         std::size_t lvl = 0;
         for (auto const& wave : waves_) {
-            events_.emit(WaveBegin {lvl, wave.size()});
-            run_wave(wave, world, cmds, pool, lvl);
+            // Cadence: only the systems due this tick (tick % every == 0) run.
+            // A wave all of whose systems are skipped runs no barrier and emits
+            // no events, but still advances lvl so later waves keep a stable
+            // index across ticks (a per-N-tick system's wave comes and goes).
+            active_wave_.clear();
+            for (auto const idx : wave)
+                if (tick_ % systems_[idx].every == 0)
+                    active_wave_.push_back(idx);
+            if (active_wave_.empty()) {
+                ++lvl;
+                continue;
+            }
+            events_.emit(WaveBegin {lvl, active_wave_.size()});
+            run_wave(active_wave_, world, cmds, pool, lvl);
             double flush_us = 0;
             try {
                 auto const t0 = detail::sched_clock::now();
@@ -306,7 +295,8 @@ private:
     // instantiation doesn't add a missing-return error on top.
 
     template <class Fn>
-    SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase) {
+    SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase,
+                     std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -331,6 +321,7 @@ private:
                 sys.name  = std::move(name);
                 sys.phase = phase;
                 sys.once  = once;
+                sys.every = std::max<std::uint64_t>(1, every);
                 detail::imperative_declare<Args>(sys.access, Seq {});
                 if constexpr (Info::any_stateful) {
                     // Per-system state (Local<T>): lives with the closure, so
@@ -356,7 +347,8 @@ private:
     }
 
     template <class Fn>
-    SystemId emplace_kernel(std::string name, Fn&& fn, int const phase) {
+    SystemId emplace_kernel(std::string name, Fn&& fn, int const phase,
+                            std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -395,6 +387,7 @@ private:
                 System sys;
                 sys.name  = std::move(name);
                 sys.phase = phase;
+                sys.every = std::max<std::uint64_t>(1, every);
                 detail::kernel_declare<Args>(sys.access, Seq {});
                 sys.query_sig = detail::query_param_traits<Q>::signature();
 
@@ -561,17 +554,11 @@ private:
         dirty_ = false;
     }
 
-    struct Maintenance {
-        std::string name;
-        std::uint64_t every = 1;
-        detail::move_only_function<void(World&)> fn;
-    };
-
     event::Emitter<ScheduleEvent> events_;
     std::vector<System> systems_;
-    std::vector<Maintenance> maintenance_;
     std::vector<std::vector<std::size_t>> waves_;
-    std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
+    std::vector<std::size_t> active_wave_;     // per-wave due-system scratch, reused
+    std::vector<detail::WorkItem> items_;      // per-wave scratch, capacity retained
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
