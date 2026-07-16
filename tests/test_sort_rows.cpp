@@ -218,18 +218,19 @@ static void min_disorder_skips_small_drift() {
     CHECK(descents() == 0);
 }
 
-// Schedule::add_maintenance: fires every N runs, before any wave, with the
-// world quiescent -- shown by sorting from the hook while kernels run every
-// tick, with churn re-disordering rows in between; the schedule's results
-// stay bitwise lane-count-invariant with the hook on.
-static void maintenance_hook_fires_on_cadence_and_sorts() {
+// A per-N-tick system (Schedule `every`) runs only on ticks where
+// tick % every == 0, and Commands::sort defers World::sort_rows to the barrier
+// so a plain phase<-1> system can re-sort the layout -- shown by sorting from
+// such a system while kernels run every tick, with churn re-disordering rows in
+// between; the schedule's results stay bitwise lane-count-invariant.
+static void every_cadence_fires_and_sort_command_stays_invariant() {
     int fired = 0;
     {
         World w;
         Schedule s;
-        s.add_maintenance("count", 3, [&](World&) { ++fired; });
-        s.add("noop", [](Res<int>) {});
         w.emplace_resource<int>(0);
+        s.add(
+            "count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
         for (int t = 0; t < 9; ++t)
             s.run(w);
     }
@@ -243,9 +244,15 @@ static void maintenance_hook_fires_on_cadence_and_sorts() {
                 cmd.spawn(Position {scrambled(i), 0}, Health {i});
         });
         Schedule s;
-        s.add_maintenance("sort", 4, [](World& world) {
-            world.sort_rows<Position>([](Position const& p) { return int(p.x); });
-        });
+        // Re-sort by cell every 4 ticks: a phase<-1> system recording a sort
+        // command, applied at that phase's (world-quiescent) barrier.
+        s.add(
+            "sort",
+            [](Commands& c) {
+                c.sort<Position>([](Position const& p) { return int(p.x); });
+            },
+            phase<-1> {},
+            /*every=*/4);
         // Churn: cull a band each tick (swap-and-pop disorders the tail)...
         s.add_kernel("cull", [](Query<Health const> q, Commands& cmd) {
             q.for_each_chunk([&](std::span<Entity> es, chunk<Health const> h) {
@@ -349,13 +356,41 @@ static void dynamic_column_applies_permutation() {
     CHECK(col.size() == 5);
 }
 
+// Commands::sort defers World::sort_rows to the barrier, so a system can request
+// the permute even though sort_rows itself is structural. The layout is sorted
+// after the wave's flush, exactly as a direct sort_rows would leave it.
+static void sort_command_applies_at_barrier() {
+    World w;
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 1'000; ++i)
+            cmd.spawn(Position {scrambled(i), 0}, Health {i});
+    });
+    auto descents = [&] {
+        int prev = -1, d = 0;
+        query<Position const>(w).for_each_serial([&](Position const& p) {
+            if (int(p.x) < prev)
+                ++d;
+            prev = int(p.x);
+        });
+        return d;
+    };
+    CHECK(descents() > 0); // scrambled to start
+
+    Schedule s;
+    s.add("resort",
+          [](Commands& c) { c.sort<Position>([](Position const& p) { return int(p.x); }); });
+    s.run(w); // records the sort; applied at the wave barrier
+    CHECK(descents() == 0); // sorted after the flush
+}
+
 int main() {
     RUN_SUITE(sort_orders_rows_and_preserves_handles);
+    RUN_SUITE(sort_command_applies_at_barrier);
     RUN_SUITE(sort_is_stable);
     RUN_SUITE(sort_after_churn);
     RUN_SUITE(integral_keys_sort_correctly_on_both_paths);
     RUN_SUITE(min_disorder_skips_small_drift);
-    RUN_SUITE(maintenance_hook_fires_on_cadence_and_sorts);
+    RUN_SUITE(every_cadence_fires_and_sort_command_stays_invariant);
     RUN_SUITE(sorted_layout_stays_lane_count_invariant);
     RUN_SUITE(dynamic_column_applies_permutation);
     return REPORT();

@@ -10,8 +10,7 @@
 <main>
   <h1>Schedule report</h1>
   <div class="meta">{{ source }} &middot; {{ "{:,}".format(n_ticks) }} ticks
-    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves{% if has_maint %}
-    &middot; {{ n_maint }} maintenance hook{{ "s" if n_maint != 1 }}{% endif %}</div>
+    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves</div>
 
   <div class="tiles">
     {% for label, value in tiles %}
@@ -20,40 +19,25 @@
     {% endfor %}
   </div>
 
-  {% if breakdown %}
-  <div class="sub" style="margin-top:.4rem">mean frame
-    <b>{{ breakdown.total }}</b> = systems <b>{{ breakdown.systems }}</b> +
-    maintenance <b>{{ breakdown.maint }}</b> ({{ breakdown.maint_pct }}%,
-    amortized). Maintenance ran on {{ "{:,}".format(breakdown.ran) }} of
-    {{ "{:,}".format(breakdown.of) }} ticks (every ~{{ breakdown.cadence }}),
-    <span class="hint" data-hint="maintenance runs world-quiescent before the tick's waves (e.g. sort_rows); it is real frame-thread work but a separate amortized phase, so it is excluded from tick_us and per-system shares and added back here">{{ breakdown.per_run }} per run</span>
-    (max {{ breakdown.per_run_max }}).</div>
-  {% endif %}
-
   <h2>Tick wall time</h2>
   <div class="card">
-    <div class="sub">whole frame &mdash; systems{% if breakdown %} plus the
-      maintenance phase, so maintenance ticks show as periodic spikes{% endif %}
-      {%- if tick_banded %}; mean per bucket, the wash spans each
-      bucket&rsquo;s min&hellip;max{% endif %}</div>
+    {% if tick_banded %}
+    <div class="sub">mean per bucket; the wash spans each bucket&rsquo;s
+      min&hellip;max</div>
+    {% endif %}
     {{ tick_svg }}
   </div>
 
-  <h2>Frame phases</h2>
+  <h2>Waves</h2>
   <div class="card">
     <div class="legend">
       <span><span class="sw" style="background:var(--accent)"></span>work</span>
       <span><span class="sw" style="background:var(--accent-soft)"></span>command flush</span>
-      {%- if has_maint %}
-      <span><span class="sw" style="background:var(--maint)"></span>maintenance (serial)</span>
-      {%- endif %}
     </div>
-    <div class="sub">mean wall time over the ticks each phase ran{% if has_maint %}.
-      Maintenance is the frame&rsquo;s opening serial phase (world-quiescent,
-      before the waves) &mdash; its bar is the per-occurrence cost, not
-      amortized{% endif %}{% if phases_partial %}; one-shot phases run for only
+    <div class="sub">mean wall time over the ticks each wave ran{% if waves_partial %};
+      one-shot or per-N-tick phases (e.g. a re-sort every 64 ticks) run for only
       some ticks, so hover a row for its run count{% endif %}</div>
-    {{ phases_svg }}
+    {{ waves_svg }}
   </div>
 
   <h2>Systems by busy time per tick</h2>
@@ -61,27 +45,24 @@
     <div class="sub">total busy across the run / total ticks. busy = sum of
       the system&rsquo;s work items across all lanes (CPU time; a fanned
       wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall
-      time){% if has_maint %}. Maintenance hooks
-      (<span class="sw" style="background:var(--maint)"></span>) rank here too,
-      amortized over every tick &mdash; small per-tick, but concentrated in the
-      few ticks they run{% endif %}</div>
+      time)</div>
     {{ overview_svg }}
   </div>
 
   <h2>Systems</h2>
   {% for c in cards %}
   <div class="card">
-    <h3>{{ c.name }}{% if c.maint %} <span class="tag">maintenance</span>{% endif %}</h3>
-    <div class="sub">{{ c.wave_txt }} &middot; {{ c.items_txt }} &middot;
+    <h3>{{ c.name }}</h3>
+    <div class="sub">wave {{ c.wave }} &middot;
+      {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
       ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
-      <span class="hint" data-hint="{{ c.hint }}">amortized {{ c.amortized_pct }}% of frame ({{ c.amortized }} / tick)</span></div>
+      <span class="hint" data-hint="amortized busy is CPU summed across all lanes over the mean tick, so a well-parallelized system can exceed 100%; it is spread over every tick, including any it sat out (its per-run cost shows in the distribution and series below)">amortized {{ c.amortized_pct }}% of tick ({{ c.amortized }} / tick)</span></div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
     </div>
-    <div class="sub">{{ "cost" if c.maint else "busy" }} distribution
-      {%- if c.maint %} (per run){% endif %}</div>
+    <div class="sub">busy distribution</div>
     {{ c.hist }}
-    <div class="sub">{{ "cost" if c.maint else "busy" }} over the run</div>
+    <div class="sub">busy over the run</div>
     {{ c.series }}
   </div>
   {% endfor %}
@@ -91,7 +72,7 @@
     <table>
       <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
         <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
-        <th>prepare</th><th>finish</th><th>amort % frame</th></tr></thead>
+        <th>prepare</th><th>finish</th><th>amort % tick</th></tr></thead>
       <tbody>
         {% for row in table %}
         <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>

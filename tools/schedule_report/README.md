@@ -99,22 +99,10 @@ wall time. `prepare_us`/`finish_us` bracket the single-threaded barrier hooks
 (Reduce folds, Extract pre-sizing); `wave_us` includes the command flush,
 reported separately as `flush_us`.
 
-**Maintenance** (`Schedule::add_maintenance` hooks — e.g. `sort_rows`) runs
-world-quiescent *before* a tick's waves. Each hook that fires emits a trace row
-with `wave=maint`, keyed by the hook name — the frame's opening serial phase,
-modeled as a pseudo-system so it ranks and charts alongside real systems. It is
-excluded from `tick_us` (which an observer clocks from `TickBegin`, after
-maintenance) and from per-system shares, but it surfaces in three places:
-
-- the headline **mean/p50/p99 tick** and the tick-wall chart report the whole
-  frame (`tick_us` + the tick's maintenance-phase wall), so p99 captures the
-  maintenance spike, with a breakdown line splitting the mean into systems vs
-  amortized maintenance;
-- the **Frame phases** chart shows the maintenance phase as a distinct
-  (amber, serial) bar with its per-occurrence cost and a "ran n of N" count;
-- the **systems overview**, **cards**, and **table** include each hook, ranked
-  amortized among the systems, its card leading with the per-run distribution
-  and time series.
-
-Traces written before maintenance observability simply have no `maint` rows and
-render unchanged.
+A system's headline cost is its **amortized busy** — the sum of its busy time
+over *all* ticks, shown as a share of the mean tick — so a per-N-tick system
+(Schedule `every`, e.g. a re-sort every 64 ticks) ranks by its true per-tick
+budget rather than its per-run spike; the spike still shows in that card's
+distribution and time series, and its wave carries a "ran n of N" count.
+(Structural upkeep recorded via `Commands::sort` lands in that wave's
+`flush_us`, so the whole cost is visible in the Waves split and in `tick_us`.)

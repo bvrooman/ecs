@@ -82,14 +82,11 @@ def compare(base_path, head_path, threshold_pct=2.0):
                significant changes first (largest |mean busy delta| first),
                then unchanged by head busy, then added/removed.
     """
-    sys_a, ticks_a, _, maint_a = load(base_path)
-    sys_b, ticks_b, _, maint_b = load(head_path)
+    sys_a, ticks_a, _ = load(base_path)
+    sys_b, ticks_b, _ = load(head_path)
 
-    # Compare the true frame wall (systems + maintenance), so a regression in a
-    # maintenance hook's amortized cost shows up in the tick verdict too.
-    pt_a, pt_b = maint_a["per_tick"], maint_b["per_tick"]
-    tick_vals_a = [ticks_a[t] + pt_a.get(t, 0.0) for t in ticks_a]
-    tick_vals_b = [ticks_b[t] + pt_b.get(t, 0.0) for t in ticks_b]
+    tick_vals_a = list(ticks_a.values())
+    tick_vals_b = list(ticks_b.values())
     ta = stats(tick_vals_a)
     tb = stats(tick_vals_b)
     ticks = dict(

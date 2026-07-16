@@ -5,7 +5,7 @@
 // is derived from each system's parameter types and leveled into waves
 // automatically:
 //
-//   maintenance (every 64 ticks): sort-rows by grid cell (world quiescent)
+//   phase -1 (every 64 ticks): sort-rows -> re-sort by grid cell at the barrier
 //   wave 0:   input | clock | grid   (grid = kernel Reduce, sparse partials)
 //   wave 1:   goal                   (after input's Cursor + clock's Clock)
 //   wave 2:   steer                  (kernel: boids + goal -> Velocity)
@@ -28,7 +28,7 @@
 //
 //   grid     Reduce<FlockGrid, MergeCells, CellAccum>: sparse touched-cells
 //            partials folded into the dense grid at the barrier -- viable
-//            only because the sort-rows maintenance hook keeps rows
+//            only because the sort-rows system keeps rows
 //            key-coherent (see the `grid` comment for the measured story).
 //   extract  Extract<SnapshotTarget>: disjoint per-item spans write the GPU
 //            vertices straight into the triple buffer's back buffer (the
@@ -37,7 +37,7 @@
 //            of the old two serial passes.
 //
 // Because every merge folds in canonical order, the row slicing is
-// lane-count independent, and the maintenance sort is stable over a
+// lane-count independent, and the periodic sort is stable over a
 // canonical key, the simulation's evolution is IDENTICAL at 1 lane and N --
 // same seed, same flock, bit for bit.
 //
@@ -129,7 +129,7 @@ inline Tuning read_tuning() {
 // megabytes each; a hash map measured slower than the serial rebuild). Both
 // structures persist per item; clear() re-zeroes only the touched index
 // slots. This partial compresses -- and the kernel wins -- ONLY because the
-// sort-rows maintenance hook keeps row order correlated with cell index; see
+// sort-rows system keeps row order correlated with cell index; see
 // the `grid` registration below for the measured story.
 struct CellAccum {
     std::vector<int> idx; // cell -> entry index + 1; 0 = untouched
@@ -191,7 +191,7 @@ struct AddStats {
 // Row-sort key: the grid cell a bird falls in. Sorting rows by it keeps
 // birds in the same cell adjacent in storage, so grid's sparse CellAccum
 // partials touch a compact cell range (they compress, and the kernel wins).
-// Shared by the load-time sort in seed_flock() and the periodic maintenance
+// Shared by the load-time sort in seed_flock() and the periodic sort
 // hook in build_mist_schedule(), so both use the identical key.
 static int flock_cell(Position const& p) {
     return FlockGrid::index(FlockGrid::axis(p.x),
@@ -229,10 +229,10 @@ void seed_flock(World& world, int const count) {
     });
     s.run(world); // one flush spawns the birds into their archetype
     // Sort by grid cell now, so the flock starts as row-coherent as the
-    // maintenance hook keeps it. Spawn order is uncorrelated with cell, so
+    // sort-rows system keeps it. Spawn order is uncorrelated with cell, so
     // without this the first ~64 ticks (before the first periodic sort) run on
     // disordered rows and grid's partials don't compress -- a warm-up hump of
-    // ~2x the steady busy that resolves only at the first maintenance sort.
+    // ~2x the steady busy that resolves only at the first periodic sort.
     world.sort_rows<Position>(flock_cell);
 }
 
@@ -290,25 +290,30 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
         go->z         = gz;
     });
 
-    // sort-rows maintenance: every 64 ticks, re-sort birds by grid cell so
-    // row order stays correlated with the spatial key (swap-and-pop churn
-    // and flight both decay it slowly). This is the data-layout precondition
-    // that makes the grid KERNEL below pay: work items slice contiguous row
-    // ranges, so key-coherent rows are what let its per-item partials
-    // compress. Stable sort, canonical key: the permutation is identical at
-    // every lane count, so the sim stays bitwise reproducible (mist-headless
-    // asserts it). Counting-sort path: ~0.9ms per 40k birds, ~14us/tick
-    // amortized at this cadence.
-    schedule.add_maintenance("sort-rows", 64, [](World& w) {
-        w.sort_rows<Position>(flock_cell);
-    });
+    // sort-rows: every 64 ticks, re-sort birds by grid cell so row order stays
+    // correlated with the spatial key (swap-and-pop churn and flight both decay
+    // it slowly). A plain phase<-1> system that records a sort COMMAND, so the
+    // permute runs at that phase's barrier -- world-quiescent, single-threaded,
+    // before the tick's other waves -- with the schedule's normal timing,
+    // reporting, and exception handling (no bespoke maintenance path). This is
+    // the data-layout precondition that makes the grid KERNEL below pay: work
+    // items slice contiguous row ranges, so key-coherent rows are what let its
+    // per-item partials compress. Stable sort, canonical key: the permutation is
+    // identical at every lane count, so the sim stays bitwise reproducible
+    // (mist-headless asserts it). Counting-sort path: ~0.9ms per 40k birds,
+    // ~14us/tick amortized at this cadence.
+    schedule.add(
+        "sort-rows",
+        [](Commands& c) { c.sort<Position>(flock_cell); },
+        phase<-1> {},
+        /*every=*/64);
 
     // grid: reduce every bird into the spatial grid (per-cell count + position
     // and velocity sums). A KERNEL whose Reduce partial is a sparse
     // touched-cells accumulator -- the shape that LOSES on uncorrelated rows
     // (measured ~2x the serial rebuild at 1 lane: partials don't compress, so
-    // the barrier fold re-did ~n adds serially) and WINS once the maintenance
-    // sort above keeps rows key-coherent (measured ~2x FASTER than the serial
+    // the barrier fold re-did ~n adds serially) and WINS once the sort-rows
+    // system above keeps rows key-coherent (measured ~2x FASTER than the serial
     // rebuild at 4 lanes: each item touches a compact cell range, the fold
     // shrinks to a few thousand entries, and the accumulation parallelizes).
     // The general rule lives in docs/IMPROVEMENTS.md: partial+merge pays when

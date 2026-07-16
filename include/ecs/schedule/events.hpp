@@ -67,15 +67,6 @@ namespace sched_event {
         std::size_t level;
         SystemId system;
     };
-    // One maintenance hook that fired this tick (world-quiescent, before the
-    // tick's waves -- see Schedule::add_maintenance). Emitted just BEFORE the
-    // tick's TickBegin, so it is attributable to the tick that follows yet
-    // excluded from that tick's tick_us (which an observer clocks from
-    // TickBegin). Real frame-thread work, but a separate amortized phase.
-    struct Maintenance {
-        std::string_view name;
-        double us = 0;
-    };
 } // namespace sched_event
 
 using ScheduleEvent = std::variant<sched_event::TickBegin,
@@ -85,7 +76,6 @@ using ScheduleEvent = std::variant<sched_event::TickBegin,
                                    sched_event::SystemBegin,
                                    sched_event::SystemEnd,
                                    sched_event::SystemWork,
-                                   sched_event::TickAbort,
-                                   sched_event::Maintenance>;
+                                   sched_event::TickAbort>;
 
 } // namespace ecs
