@@ -150,17 +150,25 @@ def render(trace_path, out_path, warmup=0):
         base_stats = [("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
                       ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
                       ("max", fmt_us(st["mx"]))]
-        common = dict(name=e["name"], n=st["n"], ran_partial=st["n"] < n_ticks,
+        # One cost metric for every entry: amortized busy (sum / all ticks) as a
+        # share of the mean frame, so systems and maintenance are comparable and
+        # a rarely-run entry reads by its true per-tick budget, not its per-run
+        # spike (which the distribution and series below still show).
+        amort = sum(e["busy"]) / n_ticks
+        amort_pct = 100.0 * amort / ts["mean"] if ts["mean"] else 0.0
+        common = dict(name=e["name"], n=st["n"],
+                      amortized=fmt_us(amort), amortized_pct=f"{amort_pct:.1f}",
                       hist=chart("histogram", ctx_h), series=series_svg)
         if e["kind"] == "maint":
-            # A serial hook: no lanes, no barrier hooks, no wave. Lead with its
-            # per-occurrence distribution; annotate the amortized per-tick cost
-            # as a share of the mean frame -- comparable to the systems' "% of
-            # tick" rather than an absolute that says nothing about proportion.
-            amort = sum(e["busy"]) / n_ticks
-            amort_pct = 100.0 * amort / ts["mean"] if ts["mean"] else 0.0
-            cards.append(dict(common, maint=True, amortized=fmt_us(amort),
-                              amortized_pct=f"{amort_pct:.1f}", stats=base_stats))
+            # A serial hook: no lanes, no barrier hooks, no wave -- those slots
+            # are N/A, everything else lines up with a system card.
+            cards.append(dict(common, maint=True, wave_txt="serial",
+                              items_txt="—", stats=base_stats,
+                              hint="the hook's whole-run cost spread over every "
+                                   "tick, as a share of the mean frame; the "
+                                   "distribution and series below show the real "
+                                   "per-occurrence cost, concentrated in the "
+                                   "ticks it runs"))
             table.append([e["name"], "maint", "—", st["n"],
                           fmt_us(st["mean"]), fmt_us(st["sd"]),
                           fmt_us(st["p50"]), fmt_us(st["p99"]), fmt_us(st["mx"]),
@@ -168,22 +176,24 @@ def render(trace_path, out_path, warmup=0):
             continue
         prep = sum(e["prep"]) / len(e["prep"])
         fin = sum(e["fin"]) / len(e["fin"])
-        # busy vs the systems' tick wall (cs, maintenance excluded): CPU summed
-        # across lanes, so a well-parallelized system legitimately exceeds 100%
-        # (the hover on the value explains this in the page).
-        share = 100.0 * st["mean"] / cs["mean"] if cs["mean"] else 0
         # Dominant wave placement; one-shot phases shift indices on the ticks
         # they run (mist's scatter bumps every wave by one on tick 0), and
         # the Frame phases note + run-count tooltips carry that story.
         wave_mode, _ = e["waves"].most_common(1)[0]
-        cards.append(dict(common, maint=False, wave=wave_mode,
-                          n_items=e["items"], share=f"{share:.1f}",
+        cards.append(dict(common, maint=False,
+                          wave_txt=f"wave {wave_mode}",
+                          items_txt=f"{e['items']} work item"
+                                    + ("s" if e["items"] != 1 else ""),
                           stats=base_stats + [("prepare", fmt_us(prep)),
-                                              ("finish", fmt_us(fin))]))
+                                              ("finish", fmt_us(fin))],
+                          hint="amortized busy is CPU summed across all lanes "
+                               "over the mean frame, so a well-parallelized "
+                               "system can exceed 100%; it is spread over every "
+                               "tick, including any it sat out"))
         table.append([e["name"], wave_mode, e["items"], st["n"],
                       fmt_us(st["mean"]), fmt_us(st["sd"]), fmt_us(st["p50"]),
                       fmt_us(st["p99"]), fmt_us(st["mx"]), fmt_us(prep),
-                      fmt_us(fin), f"{share:.1f}%"])
+                      fmt_us(fin), f"{amort_pct:.1f}%"])
 
     doc = env.get_template("report.html.j2").render(
         source=str(trace_path),

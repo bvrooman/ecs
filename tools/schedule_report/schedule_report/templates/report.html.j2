@@ -72,16 +72,9 @@
   {% for c in cards %}
   <div class="card">
     <h3>{{ c.name }}{% if c.maint %} <span class="tag">maintenance</span>{% endif %}</h3>
-    {%- if c.maint %}
-    <div class="sub">serial phase (world-quiescent, before the waves) &middot;
+    <div class="sub">{{ c.wave_txt }} &middot; {{ c.items_txt }} &middot;
       ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
-      <span class="hint" data-hint="the whole-run cost of this hook spread over every tick, as a share of the mean frame; the distribution and series below show the real per-occurrence cost, concentrated in the ticks it runs">amortized {{ c.amortized_pct }}% of frame ({{ c.amortized }} / tick)</span></div>
-    {%- else %}
-    <div class="sub">wave {{ c.wave }} &middot;
-      {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
-      <span class="hint" data-hint="busy is CPU time summed across all lanes, so a system whose work items run on several lanes at once can exceed 100% of the tick's wall clock">busy = {{ c.share }}% of mean tick wall</span>{% if c.ran_partial %} &middot;
-      ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
-    {%- endif %}
+      <span class="hint" data-hint="{{ c.hint }}">amortized {{ c.amortized_pct }}% of frame ({{ c.amortized }} / tick)</span></div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
     </div>
@@ -98,7 +91,7 @@
     <table>
       <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
         <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
-        <th>prepare</th><th>finish</th><th>% of tick</th></tr></thead>
+        <th>prepare</th><th>finish</th><th>amort % frame</th></tr></thead>
       <tbody>
         {% for row in table %}
         <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
