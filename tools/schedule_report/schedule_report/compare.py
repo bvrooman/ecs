@@ -87,8 +87,9 @@ def compare(base_path, head_path, threshold_pct=2.0):
 
     # Compare the true frame wall (systems + maintenance), so a regression in a
     # maintenance hook's amortized cost shows up in the tick verdict too.
-    tick_vals_a = [ticks_a[t] + maint_a.get(t, 0.0) for t in ticks_a]
-    tick_vals_b = [ticks_b[t] + maint_b.get(t, 0.0) for t in ticks_b]
+    pt_a, pt_b = maint_a["per_tick"], maint_b["per_tick"]
+    tick_vals_a = [ticks_a[t] + pt_a.get(t, 0.0) for t in ticks_a]
+    tick_vals_b = [ticks_b[t] + pt_b.get(t, 0.0) for t in ticks_b]
     ta = stats(tick_vals_a)
     tb = stats(tick_vals_b)
     ticks = dict(

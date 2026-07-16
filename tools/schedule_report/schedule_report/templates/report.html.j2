@@ -10,7 +10,8 @@
 <main>
   <h1>Schedule report</h1>
   <div class="meta">{{ source }} &middot; {{ "{:,}".format(n_ticks) }} ticks
-    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves</div>
+    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves{% if has_maint %}
+    &middot; {{ n_maint }} maintenance hook{{ "s" if n_maint != 1 }}{% endif %}</div>
 
   <div class="tiles">
     {% for label, value in tiles %}
@@ -38,17 +39,21 @@
     {{ tick_svg }}
   </div>
 
-  <h2>Waves</h2>
+  <h2>Frame phases</h2>
   <div class="card">
     <div class="legend">
       <span><span class="sw" style="background:var(--accent)"></span>work</span>
       <span><span class="sw" style="background:var(--accent-soft)"></span>command flush</span>
+      {%- if has_maint %}
+      <span><span class="sw" style="background:var(--maint)"></span>maintenance (serial)</span>
+      {%- endif %}
     </div>
-    <div class="sub">mean wall time per tick, per wave{% if waves_partial %}.
-      One-shot phases (setup systems pruned after their tick) shift the wave
-      indices on the ticks they run, so some waves exist for only a few ticks
-      &mdash; hover a row for its run count{% endif %}</div>
-    {{ waves_svg }}
+    <div class="sub">mean wall time over the ticks each phase ran{% if has_maint %}.
+      Maintenance is the frame&rsquo;s opening serial phase (world-quiescent,
+      before the waves) &mdash; its bar is the per-occurrence cost, not
+      amortized{% endif %}{% if phases_partial %}; one-shot phases run for only
+      some ticks, so hover a row for its run count{% endif %}</div>
+    {{ phases_svg }}
   </div>
 
   <h2>Systems by busy time per tick</h2>
@@ -56,24 +61,34 @@
     <div class="sub">total busy across the run / total ticks. busy = sum of
       the system&rsquo;s work items across all lanes (CPU time; a fanned
       wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall
-      time)</div>
+      time){% if has_maint %}. Maintenance hooks
+      (<span class="sw" style="background:var(--maint)"></span>) rank here too,
+      amortized over every tick &mdash; small per-tick, but concentrated in the
+      few ticks they run{% endif %}</div>
     {{ overview_svg }}
   </div>
 
   <h2>Systems</h2>
   {% for c in cards %}
   <div class="card">
-    <h3>{{ c.name }}</h3>
+    <h3>{{ c.name }}{% if c.maint %} <span class="tag">maintenance</span>{% endif %}</h3>
+    {%- if c.maint %}
+    <div class="sub">serial phase (world-quiescent, before the waves) &middot;
+      ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
+      <span class="hint" data-hint="the whole-run cost of this hook spread over every tick; the distribution and series below show the real per-occurrence cost, concentrated in the ticks it runs">amortized {{ c.amortized }} / tick</span></div>
+    {%- else %}
     <div class="sub">wave {{ c.wave }} &middot;
       {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
       <span class="hint" data-hint="busy is CPU time summed across all lanes, so a system whose work items run on several lanes at once can exceed 100% of the tick's wall clock">busy = {{ c.share }}% of mean tick wall</span>{% if c.ran_partial %} &middot;
       ran {{ c.n }} of {{ "{:,}".format(n_ticks) }} ticks{% endif %}</div>
+    {%- endif %}
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
     </div>
-    <div class="sub">busy time distribution</div>
+    <div class="sub">{{ "cost" if c.maint else "busy" }} distribution
+      {%- if c.maint %} (per run){% endif %}</div>
     {{ c.hist }}
-    <div class="sub">busy time over the run</div>
+    <div class="sub">{{ "cost" if c.maint else "busy" }} over the run</div>
     {{ c.series }}
   </div>
   {% endfor %}

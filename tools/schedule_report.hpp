@@ -28,6 +28,7 @@
 #include "stats.hpp"               // ecs::diag::TickStats
 
 #include <chrono>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -53,9 +54,10 @@ public:
         std::visit(
             event::overloaded {
                 [this](Maintenance const& ev) {
-                    // Fires world-quiescent before TickBegin; fold into the
-                    // upcoming tick's frame time (see the sim-tick summary).
-                    pending_maint_us_ += ev.us;
+                    // Fires world-quiescent before TickBegin; buffer per hook so
+                    // the sim-tick summary can fold the phase total AND report
+                    // each hook's own cost (see the maintenance phase lines).
+                    pending_maint_.push_back({std::string(ev.name), ev.us});
                 },
                 [this](TickBegin const& ev) {
                     if (waves_.size() < ev.n_waves) {
@@ -95,9 +97,16 @@ public:
                 [this](TickEnd const&) {
                     // The sim-tick summary is the WHOLE frame: the systems'
                     // wall time plus the maintenance phase that ran before it.
-                    tick_.sample(elapsed_us(t_tick_) + pending_maint_us_);
-                    maint_.sample(pending_maint_us_);
-                    pending_maint_us_ = 0;
+                    double phase_us = 0;
+                    for (auto const& m : pending_maint_)
+                        phase_us += m.second;
+                    tick_.sample(elapsed_us(t_tick_) + phase_us);
+                    maint_.sample(phase_us);
+                    // Per hook: only sample the ticks it ran, so its summary is
+                    // the per-occurrence cost (like a wave's mean-over-ran).
+                    for (auto const& m : pending_maint_)
+                        maint_hooks_[m.first].sample(m.second);
+                    pending_maint_.clear();
                     if (auto const s = tick_.due())
                         report(*s);
                 },
@@ -106,7 +115,7 @@ public:
                     // are simply never sampled (the next TickBegin/WaveBegin
                     // overwrite them), so a truncated measurement never lands.
                     // Its maintenance is dropped with the tick it belonged to.
-                    pending_maint_us_ = 0;
+                    pending_maint_.clear();
                 },
             },
             e);
@@ -149,11 +158,17 @@ private:
     // flush they include.
     void report(TickStats::Summary const& tick) {
         sink_(TickStats::format(tick, "sim tick"));
-        // Maintenance breakdown, in lockstep with the tick window (both sampled
+        // Maintenance phase, in lockstep with the tick window (both sampled
         // every TickEnd). Only emitted when a hook actually ran in the window,
-        // so maintenance-free workloads print exactly as before.
-        if (auto const m = maint_.flush(); m && m->max > 0.0)
+        // so maintenance-free workloads print exactly as before. The phase line
+        // mirrors a wave; its hooks are grouped beneath it like a wave's systems
+        // (deterministic name order), each showing its per-occurrence cost.
+        if (auto const m = maint_.flush(); m && m->max > 0.0) {
             sink_("  " + TickStats::format(*m, "maintenance"));
+            for (auto& [name, st] : maint_hooks_)
+                if (auto const s = st.flush())
+                    sink_("    " + TickStats::format(*s, name));
+        }
         // Each wave in execution order, then its systems grouped beneath it, also
         // in execution order (the order they ran within the wave).
         for (std::size_t w = 0; w < waves_.size(); ++w) {
@@ -188,8 +203,10 @@ private:
 
     Sink sink_;
     TickStats tick_;               // whole-frame distribution + report cadence
-    TickStats maint_;              // maintenance-phase distribution (lockstep)
-    double pending_maint_us_ = 0;  // maintenance since the last TickEnd
+    TickStats maint_;              // maintenance-phase total (lockstep)
+    std::map<std::string, TickStats> maint_hooks_; // per-hook, by name
+    // Maintenance hooks that fired since the last TickEnd (name, us).
+    std::vector<std::pair<std::string, double>> pending_maint_;
     std::vector<TickStats> waves_; // per wave index
     std::vector<double> wave_flush_us_; // per wave: flush sums over the window
     std::unordered_map<SystemId, Slot> systems_;

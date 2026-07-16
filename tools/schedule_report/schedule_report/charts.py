@@ -196,20 +196,36 @@ def hbars(rows, chart_id, stacked=False):
     """Horizontal bars: magnitude comparison (one hue), or a two-segment
     work/flush composition (ordinal steps of the same hue, 2px gaps).
 
-    rows: (label, value) or (label, work, flush)."""
+    rows: stacked -> (label, work, flush[, kind]); plain -> (label, value[, kind]).
+    An optional trailing `kind` string recolors the bar's data segment via the
+    class `bar-<kind>` (e.g. "maint" for the serial maintenance phase); the flush
+    segment always keeps the soft step."""
     label_w = 150
     row_h, bar_h = 26, 16
     h = PAD_T + len(rows) * row_h + 8
-    vmax = max((r[1] + (r[2] if stacked else 0)) for r in rows) or 1
+
+    def work(r):
+        return r[1]
+
+    def flush(r):
+        return r[2] if stacked else 0.0
+
+    def kind(r):
+        k = (r[3] if len(r) > 3 else None) if stacked \
+            else (r[2] if len(r) > 2 else None)
+        return k if isinstance(k, str) else None
+
+    vmax = max((work(r) + flush(r)) for r in rows) or 1
     plot_w = W - label_w - PAD_R - 60
     out_rows = []
     for i, r in enumerate(rows):
         y = PAD_T + i * row_h + (row_h - bar_h) / 2
-        total = r[1] + (r[2] if stacked else 0)
-        w1 = plot_w * r[1] / vmax
-        segs = [(label_w, w1, "bar")]
-        if stacked and r[2] > 0:
-            w2 = max(0.0, plot_w * r[2] / vmax - 2)  # 2px surface gap
+        total = work(r) + flush(r)
+        w1 = plot_w * work(r) / vmax
+        base_cls = f"bar-{kind(r)}" if kind(r) else "bar"
+        segs = [(label_w, w1, base_cls)]
+        if stacked and flush(r) > 0:
+            w2 = max(0.0, plot_w * flush(r) / vmax - 2)  # 2px surface gap
             segs.append((label_w + w1 + 2, w2, "bar2"))
         seg_ctx = []
         for j, (x, w, cls) in enumerate(segs):
@@ -226,7 +242,12 @@ def hbars(rows, chart_id, stacked=False):
                              vx=f"{label_w + plot_w * total / vmax + 6:.1f}",
                              value=fmt_us(total)))
     ctx = dict(_frame(W, h), id=chart_id, label_w=label_w, rows=out_rows)
-    payload = [dict(label=r[0], v=r[1], flush=(r[2] if stacked else None))
+    # A maintenance bar is a single serial magnitude -- no work/flush split --
+    # so it reports flush=None (a plain bar) and carries a `maint` note.
+    payload = [dict(label=r[0], v=work(r),
+                    flush=(flush(r) if (stacked and kind(r) != "maint")
+                           else None),
+                    maint=(kind(r) == "maint"))
                for r in rows]
     return ctx, payload
 

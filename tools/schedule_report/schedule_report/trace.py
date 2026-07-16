@@ -1,10 +1,11 @@
 """Load and summarize a ScheduleTrace CSV (see tools/schedule_trace.hpp).
 
 Columns:
-    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us,
-    maint_us
-`maint_us` is optional -- traces written before maintenance observability
-existed lack it, and load treats it as 0 so old traces still render."""
+    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us
+
+A row whose `wave` is the literal `maint` is a maintenance-hook row -- the
+frame's opening serial phase, modeled as a pseudo-system (see load's `maint`
+return). Traces written before maintenance observability simply have none."""
 
 from __future__ import annotations
 
@@ -13,28 +14,34 @@ import math
 import sys
 from collections import Counter
 
-# Required columns; maint_us is optional (added with maintenance observability)
-# so pre-existing traces still load -- absent, it reads as 0.
 COLUMNS = {"tick", "wave", "system", "busy_us", "prepare_us",
            "finish_us", "items", "wave_us", "flush_us", "tick_us"}
 
+MAINT = "maint"  # the wave-column sentinel that marks a maintenance-hook row
+
 
 def load(path, warmup=0):
-    """Parse the trace into per-system, per-tick, per-wave, and per-tick
-    maintenance series.
+    """Parse the trace into per-system, per-tick, per-wave, and maintenance
+    series.
 
     warmup: drop the first `warmup` ticks (by tick index) from everything --
     the profiler convention of discarding cold-start iterations so the
     distributions reflect steady state, not the first frame's cache/frequency
     warm-up.
 
-    Returns (systems, ticks, waves, maint) where `ticks` maps tick -> tick_us
-    (systems only) and `maint` maps tick -> maint_us (0 on ticks with no
-    maintenance). The true frame wall of a tick is ticks[t] + maint[t]."""
+    Returns (systems, ticks, waves, maint):
+      systems  name -> dict(busy=[], prep=[], fin=[], ticks=[], items, waves)
+      ticks    tick -> tick_us (systems only, excludes maintenance)
+      waves    wave -> {tick: (wave_us, flush_us)}
+      maint    dict(per_tick={tick: phase_wall_us},
+                    hooks={name: dict(busy=[], ticks=[])})
+    Maintenance hooks are modeled like systems (same busy/ticks shape) so they
+    rank and chart alongside them. The true frame wall of a tick is
+    ticks[t] + maint['per_tick'].get(t, 0)."""
     systems = {}   # name -> dict(busy=[], prep=[], fin=[], items, wave, ticks=[])
     ticks = {}     # tick -> tick_us (systems only)
     waves = {}     # wave -> {tick: (wave_us, flush_us)}
-    maint = {}     # tick -> maint_us (0 when no maintenance ran)
+    maint = {"per_tick": {}, "hooks": {}}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         missing = COLUMNS - set(reader.fieldnames or [])
@@ -44,6 +51,15 @@ def load(path, warmup=0):
         for row in reader:
             tick = int(row["tick"])
             if tick < warmup:
+                continue
+            if row["wave"] == MAINT:
+                # A maintenance hook: keyed by name, a serial pre-wave phase.
+                h = maint["hooks"].setdefault(row["system"],
+                                              {"busy": [], "ticks": []})
+                h["busy"].append(float(row["busy_us"]))
+                h["ticks"].append(tick)
+                # wave_us is the whole phase wall this tick (== sum of hooks).
+                maint["per_tick"][tick] = float(row["wave_us"])
                 continue
             wave = int(row["wave"])
             name = row["system"]
@@ -58,7 +74,6 @@ def load(path, warmup=0):
             s["items"] = max(s["items"], int(row["items"]))
             s["waves"][wave] += 1  # one-shot phases shift placements
             ticks[tick] = float(row["tick_us"])
-            maint[tick] = float(row.get("maint_us") or 0.0)
             waves.setdefault(wave, {})[tick] = (float(row["wave_us"]),
                                                 float(row["flush_us"]))
     if not ticks:

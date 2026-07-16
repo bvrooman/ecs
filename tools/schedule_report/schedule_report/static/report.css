@@ -7,6 +7,7 @@
     --ink-3: #8a897f;
     --accent: #2a78d6;
     --accent-soft: #86b6ef;
+    --maint: #eda100; /* serial maintenance phase (categorical amber) */
     --band: rgba(42, 120, 214, .10);
     /* status pair for compare deltas; a sign or verdict word always
        accompanies the color, so color is never the only channel */
@@ -34,6 +35,7 @@
         --ink-3: #8a897f;
         --accent: #3987e5;
         --accent-soft: #1c5cab;
+        --maint: #c98500; /* serial maintenance phase (categorical amber) */
         --band: rgba(57, 135, 229, .14);
         --good: #0ca30c;
         --bad: #d03b3b;
@@ -117,6 +119,20 @@ h2 {
     font-size: 14px;
 }
 
+/* maintenance-hook card badge: amber to match its phase/overview bars */
+.card h3 .tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--maint);
+    border: 1px solid var(--maint);
+    border-radius: 4px;
+    padding: 1px 5px;
+    vertical-align: 1px;
+    margin-left: 6px;
+}
+
 .card .sub {
     color: var(--ink-2);
     font-size: 12px;
@@ -190,7 +206,13 @@ svg.chart {
     fill: var(--accent-soft);
 }
 
-.bar:hover, .bar2:hover {
+/* the serial maintenance phase -- a distinct hue so it never reads as a
+   parallel wave (amber, from the validated categorical order) */
+.bar-maint {
+    fill: var(--maint);
+}
+
+.bar:hover, .bar2:hover, .bar-maint:hover {
     filter: brightness(1.12);
 }
 
