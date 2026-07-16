@@ -148,6 +148,55 @@ def multiline_chart(series, lane_labels, chart_id, ideal=None):
     return ctx, None
 
 
+def stacked_area(xs, bands, chart_id):
+    """Stacked area: bands summed bottom-to-top over a shared x axis, so the
+    top edge traces the total. Here it shows how each wave's wall time composes
+    the tick: waves run sequentially behind barriers, so per tick their walls
+    sum to (nearly) the tick wall, and the top band is the residual tick time
+    outside any wave (barrier/dispatch overhead).
+
+    bands: list of dict(label=, ys=[per-x value], slot=int, over=bool) ordered
+    bottom (wave 0) to top (overhead). Every band's ys shares xs. A wave that
+    sits out a tick contributes 0 there, so a per-N-tick phase shows as a
+    periodic spike rather than a smooth band."""
+    h = 240
+    n = len(xs)
+    totals = [sum(b["ys"][i] for b in bands) for i in range(n)]
+    ymax = (max(totals) if totals else 1) * 1.05 or 1
+    x0, x1 = xs[0], xs[-1]
+    span = (x1 - x0) or 1
+
+    def px(x):
+        return PAD_L + (W - PAD_L - PAD_R) * (x - x0) / span
+
+    def py(v):
+        return PAD_T + (h - PAD_T - PAD_B) * (1 - v / ymax)
+
+    # walk upward, each band a filled ribbon between the running lower edge and
+    # the new cumulative upper edge (top edge forward, lower edge back).
+    lower = [0.0] * n
+    areas = []
+    for b in bands:
+        upper = [lower[i] + b["ys"][i] for i in range(n)]
+        top = [f"{px(x):.1f},{py(v):.1f}" for x, v in zip(xs, upper)]
+        bot = [f"{px(x):.1f},{py(v):.1f}"
+               for x, v in zip(reversed(xs), reversed(lower))]
+        areas.append(dict(slot=b["slot"], over=b.get("over", False),
+                          points=" ".join(top + bot)))
+        lower = upper
+    ctx = dict(_frame(W, h), id=chart_id,
+               grid=_gridlines(ymax, h, fmt_us),
+               areas=areas,
+               x_first=f"tick {x0}", x_last=str(x1))
+    payload = dict(xs=xs, x0=x0, span=span, ymax=ymax,
+                   padl=PAD_L, padr=PAD_R, padt=PAD_T, padb=PAD_B, w=W, h=h,
+                   bands=[dict(label=b["label"],
+                              ys=[round(v, 2) for v in b["ys"]])
+                          for b in bands],
+                   totals=[round(v, 2) for v in totals])
+    return ctx, payload
+
+
 def histogram(values, chart_id, bins_cap=40):
     """Distribution of one measure: columns, rounded caps, 2px gaps."""
     n = len(values)
