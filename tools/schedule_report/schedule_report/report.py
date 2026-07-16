@@ -154,14 +154,17 @@ def render(trace_path, out_path, warmup=0):
                       hist=chart("histogram", ctx_h), series=series_svg)
         if e["kind"] == "maint":
             # A serial hook: no lanes, no barrier hooks, no wave. Lead with its
-            # per-occurrence distribution; annotate the amortized per-tick cost.
+            # per-occurrence distribution; annotate the amortized per-tick cost
+            # as a share of the mean frame -- comparable to the systems' "% of
+            # tick" rather than an absolute that says nothing about proportion.
             amort = sum(e["busy"]) / n_ticks
+            amort_pct = 100.0 * amort / ts["mean"] if ts["mean"] else 0.0
             cards.append(dict(common, maint=True, amortized=fmt_us(amort),
-                              stats=base_stats))
+                              amortized_pct=f"{amort_pct:.1f}", stats=base_stats))
             table.append([e["name"], "maint", "—", st["n"],
                           fmt_us(st["mean"]), fmt_us(st["sd"]),
                           fmt_us(st["p50"]), fmt_us(st["p99"]), fmt_us(st["mx"]),
-                          "—", "—", "amortized " + fmt_us(amort)])
+                          "—", "—", f"{amort_pct:.1f}%"])
             continue
         prep = sum(e["prep"]) / len(e["prep"])
         fin = sum(e["fin"]) / len(e["fin"])

@@ -75,7 +75,7 @@
     {%- if c.maint %}
     <div class="sub">serial phase (world-quiescent, before the waves) &middot;
       ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
-      <span class="hint" data-hint="the whole-run cost of this hook spread over every tick; the distribution and series below show the real per-occurrence cost, concentrated in the ticks it runs">amortized {{ c.amortized }} / tick</span></div>
+      <span class="hint" data-hint="the whole-run cost of this hook spread over every tick, as a share of the mean frame; the distribution and series below show the real per-occurrence cost, concentrated in the ticks it runs">amortized {{ c.amortized_pct }}% of frame ({{ c.amortized }} / tick)</span></div>
     {%- else %}
     <div class="sub">wave {{ c.wave }} &middot;
       {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;

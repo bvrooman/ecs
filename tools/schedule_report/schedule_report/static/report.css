@@ -235,12 +235,17 @@ svg.chart {
     margin: 4px 0 8px;
 }
 
-.legend .sw {
+/* colour swatch: renders standalone (e.g. inline in prose), the legend/meta
+   variants only tune spacing */
+.sw {
     display: inline-block;
     width: 12px;
     height: 12px;
     border-radius: 3px;
     vertical-align: -2px;
+}
+
+.legend .sw {
     margin-right: 5px;
 }
 
