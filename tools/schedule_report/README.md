@@ -98,3 +98,23 @@ lanes (CPU time), so a fanned wave's systems legitimately sum past the wave's
 wall time. `prepare_us`/`finish_us` bracket the single-threaded barrier hooks
 (Reduce folds, Extract pre-sizing); `wave_us` includes the command flush,
 reported separately as `flush_us`.
+
+**Maintenance** (`Schedule::add_maintenance` hooks — e.g. `sort_rows`) runs
+world-quiescent *before* a tick's waves. Each hook that fires emits a trace row
+with `wave=maint`, keyed by the hook name — the frame's opening serial phase,
+modeled as a pseudo-system so it ranks and charts alongside real systems. It is
+excluded from `tick_us` (which an observer clocks from `TickBegin`, after
+maintenance) and from per-system shares, but it surfaces in three places:
+
+- the headline **mean/p50/p99 tick** and the tick-wall chart report the whole
+  frame (`tick_us` + the tick's maintenance-phase wall), so p99 captures the
+  maintenance spike, with a breakdown line splitting the mean into systems vs
+  amortized maintenance;
+- the **Frame phases** chart shows the maintenance phase as a distinct
+  (amber, serial) bar with its per-occurrence cost and a "ran n of N" count;
+- the **systems overview**, **cards**, and **table** include each hook, ranked
+  amortized among the systems, its card leading with the per-run distribution
+  and time series.
+
+Traces written before maintenance observability simply have no `maint` rows and
+render unchanged.

@@ -11,6 +11,7 @@
 #include "sink.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional> // std::ref
 #include <string>
 #include <string_view>
@@ -98,12 +99,12 @@ static void trace_writes_one_row_per_system_per_tick() {
 
     CHECK(!rows.empty());
     CHECK(rows.front() == "tick,wave,system,busy_us,prepare_us,finish_us,items,"
-                          "wave_us,flush_us,tick_us"); // header on construction
+                          "wave_us,flush_us,tick_us"); // header on ctor
     CHECK(rows.size() == 1 + std::size_t(kTicks) * 2);
     CHECK((rows[1].find(",integrate,") != std::string::npos ||
            rows[1].find(",render,") != std::string::npos));
     // Every measurement column is numeric: the row parses into 10 fields with
-    // no gaps (CSV sinks feed tools/schedule_report_html.py directly).
+    // no gaps (CSV sinks feed tools/schedule_report directly).
     CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 9);
     // Lone-wave systems: busy time is the item's real duration, so the wave's
     // wall time (wave_us) must be >= its one system's busy time. Field 3 is
@@ -195,10 +196,99 @@ static void report_and_trace_compose() {
     CHECK(trace_out.size() == 1 + std::size_t(3) * 2); // trace produced rows
 }
 
+// A maintenance hook runs world-quiescent before the tick's waves; the trace
+// emits it as a pseudo-system row keyed by the hook name with wave=`maint`, the
+// frame's opening serial phase.
+static void trace_records_maintenance() {
+    World w;
+    populate(w);
+    Schedule sched = make_sched();
+    // Fire every other tick so we can check both the ran and the idle ticks.
+    sched.add_maintenance("touch", 2, [](World&) {
+        // Spin enough to guarantee the timer reads a nonzero µs (the world is
+        // tiny here; a real hook is sort_rows or similar).
+        volatile std::uint64_t acc = 0;
+        for (std::uint64_t i = 0; i < 200'000; ++i)
+            acc += i * 2654435761u;
+        (void)acc;
+    });
+
+    std::vector<std::string> rows;
+    diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
+    sched.events().add(std::ref(trace));
+
+    WorkerPool pool {1};
+    constexpr int kTicks = 6;
+    for (int t = 0; t < kTicks; ++t)
+        sched.run(w, pool);
+    trace.flush();
+
+    auto field = [](std::string const& r, std::size_t idx) {
+        std::size_t pos = 0;
+        for (std::size_t k = 0; k < idx; ++k)
+            pos = r.find(',', pos) + 1;
+        return r.substr(pos, r.find(',', pos) - pos);
+    };
+    // tick_ counts from 1 inside run(); with every==2 it fires on ticks 2,4,6,
+    // i.e. trace ticks 1,3,5 (0-based). Each firing emits one wave=maint row
+    // named "touch" with busy_us > 0; systems keep numeric waves.
+    int maint_rows = 0;
+    for (std::size_t i = 1; i < rows.size(); ++i)
+        if (field(rows[i], 1) == "maint") {
+            ++maint_rows;
+            CHECK(field(rows[i], 2) == "touch");     // hook name is the key
+            CHECK(std::stod(field(rows[i], 3)) > 0.0); // its cost was measured
+            int const t = std::stoi(field(rows[i], 0));
+            CHECK((t % 2) == 1);                      // only on firing ticks
+        }
+    CHECK(maint_rows == 3); // fired on trace ticks 1, 3, 5
+    // System rows still carry a numeric wave (never the maint sentinel).
+    CHECK(field(rows[1], 1) != "maint");
+}
+
+// ScheduleReport folds the maintenance phase into the whole-frame sim tick and
+// prints a "maintenance" line with each hook grouped beneath it (like a wave).
+static void report_includes_maintenance_phase() {
+    World w;
+    populate(w);
+    Schedule sched = make_sched();
+    sched.add_maintenance("sort-rows", 1, [](World&) {
+        volatile std::uint64_t acc = 0;
+        for (std::uint64_t i = 0; i < 200'000; ++i)
+            acc += i * 2654435761u;
+        (void)acc;
+    });
+
+    std::vector<std::string> out;
+    diag::ScheduleReport report([&](std::string_view s) { out.emplace_back(s); });
+    sched.events().add(std::ref(report));
+
+    WorkerPool pool {1};
+    for (int t = 0; t < 5; ++t)
+        sched.run(w, pool);
+    report.flush(); // 2s cadence never elapses in a test -> force it
+
+    auto idx = [&](std::string_view needle) -> int {
+        for (int i = 0; i < static_cast<int>(out.size()); ++i)
+            if (out[i].find(needle) != std::string::npos)
+                return i;
+        return -1;
+    };
+    int const i_tick  = idx("sim tick");
+    int const i_maint = idx("maintenance");
+    int const i_hook  = idx("sort-rows");
+    CHECK((i_tick == 0 && i_maint > 0 && i_hook > 0));
+    CHECK(i_maint < i_hook);                    // phase line before its hook
+    CHECK(out[i_maint].rfind("  ", 0) == 0);    // phase indented like a wave
+    CHECK(out[i_hook].rfind("    ", 0) == 0);   // hook indented under the phase
+}
+
 int main() {
     RUN_SUITE(report_summarizes_systems);
+    RUN_SUITE(report_includes_maintenance_phase);
     RUN_SUITE(trace_writes_one_row_per_system_per_tick);
     RUN_SUITE(fanned_wave_reports_real_busy_time);
     RUN_SUITE(report_and_trace_compose);
+    RUN_SUITE(trace_records_maintenance);
     return REPORT();
 }
