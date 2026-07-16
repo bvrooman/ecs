@@ -28,13 +28,13 @@ def _env():
                        autoescape=True)
 
 
-def render(trace_path, out_path):
+def render(trace_path, out_path, warmup=0):
     env = _env()
 
     def chart(kind, ctx):
         return Markup(env.get_template(f"charts/{kind}.svg.j2").render(ctx))
 
-    systems, ticks, waves = load(trace_path)
+    systems, ticks, waves = load(trace_path, warmup)
     tick_ids = sorted(ticks)
     tick_vals = [ticks[t] for t in tick_ids]
     ts = stats(tick_vals)

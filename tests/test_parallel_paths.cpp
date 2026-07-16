@@ -789,6 +789,35 @@ static void bin_groups_match_serial_walk() {
     CHECK(total > 0);
 }
 
+// prewarm sizes kernel-param state against the populated world without running
+// any system body or barrier fold, so it must NOT change simulation state (the
+// reduce target stays empty), and a subsequent run must produce the bitwise
+// identical result to an un-prewarmed run. It must also be idempotent.
+static void prewarm_sizes_state_without_changing_results() {
+    auto run_sum = [](bool prewarm, int ticks) {
+        World w;
+        w.emplace_resource<FSum>();
+        populate_mixed(w, 30'000);
+        Schedule s;
+        s.add_kernel("sum", [](Query<const Position> q, Reduce<FSum, FAdd> sum) {
+            q.for_each_serial([&](auto& p) { sum->v += p.x; });
+        });
+        WorkerPool pool {4};
+        if (prewarm) {
+            s.prewarm(w);
+            s.prewarm(w); // idempotent
+            // No body ran and no fold happened: the target is still empty.
+            CHECK(w.resource<FSum>().v == 0.0f);
+        }
+        for (int t = 0; t < ticks; ++t)
+            s.run(w, pool);
+        return w.resource<FSum>().v;
+    };
+    // Bitwise identical with and without prewarm: it changes only when
+    // allocation is paid, never what is computed.
+    CHECK(run_sum(true, 3) == run_sum(false, 3));
+}
+
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
     RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
@@ -808,5 +837,6 @@ int main() {
     RUN_SUITE(bin_groups_match_serial_walk);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
+    RUN_SUITE(prewarm_sizes_state_without_changing_results);
     return REPORT();
 }

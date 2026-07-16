@@ -23,6 +23,15 @@ pip install -e tools/schedule_report
 schedule-report trace.csv -o report.html
 ```
 
+Add `--warmup N` to drop the first `N` ticks from the stats and charts — the
+profiler convention of discarding cold-start iterations so the distributions
+reflect steady state rather than the first frame's cache/CPU-frequency
+warm-up:
+
+```sh
+schedule-report trace.csv -o report.html --warmup 8
+```
+
 Producing a trace: attach the observer in any harness —
 
 ```cpp

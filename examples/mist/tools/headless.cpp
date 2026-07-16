@@ -18,6 +18,14 @@
 //      run(); the last run -- 4 lanes -- wins, like ECS_METRICS.)
 //   ECS_BENCH_OUT=/tmp/b.csv ./build/examples/mist-headless # + results rows
 //     (per-lane us/tick + speedup in the benchmarks/bench.hpp CSV schema)
+//   ECS_PREWARM=0 ./build/examples/mist-headless             # skip prewarm
+//     (A/B the cold vs warm first tick: by default the flock is seeded at load
+//      and Schedule::prewarm pre-pays the kernels' first-tick state sizing, so
+//      tick 0 is steady; =0 leaves it cold for comparison)
+//   ECS_WARMUP=<n> ./build/examples/mist-headless            # n warm-up ticks
+//     (run n untraced/untimed ticks after prewarm to pay the run-only cold
+//      start -- cache, CPU frequency ramp -- that prewarm cannot; the timed
+//      loop and trace then reflect steady state)
 //
 // The schedule registers its own sort-rows maintenance hook (every 64 ticks,
 // see simulation.cpp), so the bitwise checks below also prove determinism
@@ -66,11 +74,31 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     auto& channel = w.emplace_resource<TripleBuffer<RenderSnapshot>>();
     w.emplace_resource<SnapshotTarget>(SnapshotTarget {&channel});
 
-    Schedule s;
-    build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags}, count);
+    // Load-then-loop: seed the flock now (not via a scatter-on-tick-0 system),
+    // so the per-tick schedule below holds only steady work and every traced
+    // tick is a real sim tick. This is what lets prewarm pre-pay the kernels'
+    // first-tick allocation -- the birds already exist when it sizes the state.
+    seed_flock(w, count);
 
-    // Optional schedule trace, truncated per run() so the last run wins (the
-    // 4-lane rerun) -- same convention as ECS_METRICS above.
+    Schedule s;
+    build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags});
+
+    WorkerPool pool {lanes};
+    // Pre-pay the kernels' one-time first-tick state sizing (ECS_PREWARM=0 to
+    // skip it, for an A/B of the cold vs warm first tick).
+    char const* pw = std::getenv("ECS_PREWARM");
+    if (!pw || std::atoi(pw) != 0)
+        s.prewarm(w);
+    // Warm-up ticks (ECS_WARMUP=n): run-only cold start -- cache, CPU frequency
+    // ramp, i-cache -- can't be pre-paid, only run off. These execute BEFORE
+    // the trace attaches and the timer starts, so the timed/traced loop below
+    // is steady state. (The report tool's --warmup drops leading ticks the same
+    // way for a trace that already includes them.)
+    for (int i = 0, wu = env_int("ECS_WARMUP", 0); i < wu; ++i)
+        s.run(w, pool);
+
+    // Optional schedule trace (after warm-up, so tick 0 in the trace is steady),
+    // truncated per run() so the last run wins -- same convention as ECS_METRICS.
     std::ofstream trace_file;
     std::optional<diag::ScheduleTrace> trace;
     std::optional<event::Emitter<ScheduleEvent>::Subscription> trace_sub;
@@ -80,10 +108,8 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
         trace_sub.emplace(s.events().subscribe(std::ref(*trace)));
     }
 
-    WorkerPool pool {lanes};
-    s.run(w, pool); // tick 1: scatter + first sim tick
     auto const t0 = std::chrono::steady_clock::now();
-    for (int t = 1; t < ticks; ++t)
+    for (int t = 0; t < ticks; ++t) // every tick is a real sim tick now
         s.run(w, pool);
     auto const t1 = std::chrono::steady_clock::now();
     if (trace)
@@ -92,7 +118,7 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     RunResult r;
     r.levels = s.level_count();
     r.ms_per_tick =
-        std::chrono::duration<double, std::milli>(t1 - t0).count() / (ticks - 1);
+        std::chrono::duration<double, std::milli>(t1 - t0).count() / ticks;
     query<Position const, Velocity const>(w).for_each_serial([&](auto& p, auto& v) {
         r.state.insert(r.state.end(), {p.x, p.y, p.z, v.x, v.y, v.z});
     });

@@ -6,7 +6,6 @@
 // automatically:
 //
 //   maintenance (every 64 ticks): sort-rows by grid cell (world quiescent)
-//   phase -1: scatter                (one-shot imperative: seed the flock)
 //   wave 0:   input | clock | grid   (grid = kernel Reduce, sparse partials)
 //   wave 1:   goal                   (after input's Cursor + clock's Clock)
 //   wave 2:   steer                  (kernel: boids + goal -> Velocity)
@@ -14,14 +13,18 @@
 //   wave 4:   extract [| metrics]    (kernel, Extract into the back buffer)
 //   wave 5:   publish [| metrics-write]
 //
+// The flock is seeded once at load with seed_flock() (NOT a scatter-on-tick-0
+// system), then the schedule is prewarmed, so every tick the schedule runs is
+// a steady per-bird tick with no cold-start outlier -- the load/frame-loop
+// split a real game uses; see simulation.hpp and the callers.
+//
 // The division of labour the port demonstrates: per-bird data-parallel work
 // (`grid`, `steer`, `integrate`, `extract`, `metrics`) is registered with
 // add_kernel, so the executor slices each system's rows into work items and
 // overlaps everything in a wave across the pool's lanes -- while the small
-// ORDERED resource writers (`input`, `clock`, `goal`, `publish`) and the
-// one-shot Commands setup (`scatter`) stay imperative add() systems. Where a
-// serial system gathered shared output, the kernels use the barrier-merged
-// primitives instead:
+// ORDERED resource writers (`input`, `clock`, `goal`, `publish`) stay
+// imperative add() systems. Where a serial system gathered shared output, the
+// kernels use the barrier-merged primitives instead:
 //
 //   grid     Reduce<FlockGrid, MergeCells, CellAccum>: sparse touched-cells
 //            partials folded into the dense grid at the barrier -- viable
@@ -132,9 +135,14 @@ struct CellAccum {
     std::vector<int> idx; // cell -> entry index + 1; 0 = untouched
     std::vector<std::pair<int, Cell>> entries;
 
+    // Allocate the dense index eagerly (256 KB for a 40^3 grid), NOT lazily on
+    // first at(): with ~64 partials this is ~16 MB, and paying it on the first
+    // tick's item execution was that tick's dominant cost (~3 ms). Constructing
+    // it here means Schedule::prewarm -- which sizes the Reduce slot array
+    // before the timed loop -- pre-pays it, so the first real tick is steady.
+    CellAccum() : idx(std::size_t(FlockGrid::cells), 0) {}
+
     Cell& at(int const c) {
-        if (idx.empty())
-            idx.assign(std::size_t(FlockGrid::cells), 0);
         int& slot = idx[std::size_t(c)];
         if (slot == 0) {
             entries.emplace_back(c, Cell {});
@@ -180,33 +188,56 @@ struct AddStats {
 
 } // namespace
 
-void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
+// Row-sort key: the grid cell a bird falls in. Sorting rows by it keeps
+// birds in the same cell adjacent in storage, so grid's sparse CellAccum
+// partials touch a compact cell range (they compress, and the kernel wins).
+// Shared by the load-time sort in seed_flock() and the periodic maintenance
+// hook in build_mist_schedule(), so both use the identical key.
+static int flock_cell(Position const& p) {
+    return FlockGrid::index(FlockGrid::axis(p.x),
+                            FlockGrid::axis(p.y),
+                            FlockGrid::axis(p.z));
+}
+
+// The flock-seeding body: place the birds in a loose swirling disc. Invoked by
+// seed_flock() (the load step); factored out so the RNG-draw order stays fixed.
+static void scatter_flock(Commands& cmd, Rng& rng, int const count) {
+    auto& g = rng.gen;
+    std::uniform_real_distribution<float> p(-0.45f, 0.45f);
+    std::uniform_real_distribution<float> j(-0.06f, 0.06f);
+    // Start as a gently swirling disc centred on screen, at the working depth
+    // (~kRoamZc). The velocity is a curl (rotational) field, v ~ (-y, x):
+    // locally coherent -- neighbours share a heading, so alignment stays happy
+    // and it reads as a murmuration from t=0 -- but its centre of mass stays
+    // put. A single shared heading instead translated the whole flock
+    // off-screen (it rushed to the top-edge before the goal could rein it
+    // back); the swirl lingers in the middle.
+    for (int i = 0; i < count; ++i) {
+        float const px = p(g), py = p(g);
+        // Swirl (-y, x) + a gentle shared forward drift (+z): the drift gives
+        // the dead-centre birds (whose swirl velocity is ~0) a coherent heading
+        // too, so the centre doesn't evacuate into a ring.
+        cmd.spawn(Position {px, py, cfg::kRoamZc + p(g)},
+                  Velocity {-py + j(g), px + j(g), 0.20f + j(g)});
+    }
+}
+
+void seed_flock(World& world, int const count) {
+    Schedule s;
+    s.add_once("seed_flock", [count](Commands& cmd, ResMut<Rng> rng) {
+        scatter_flock(cmd, *rng, count);
+    });
+    s.run(world); // one flush spawns the birds into their archetype
+    // Sort by grid cell now, so the flock starts as row-coherent as the
+    // maintenance hook keeps it. Spawn order is uncorrelated with cell, so
+    // without this the first ~64 ticks (before the first periodic sort) run on
+    // disordered rows and grid's partials don't compress -- a warm-up hump of
+    // ~2x the steady busy that resolves only at the first maintenance sort.
+    world.sort_rows<Position>(flock_cell);
+}
+
+void build_mist_schedule(Schedule& schedule, MistInput in) {
     Tuning const T = read_tuning(); // steering weights (env-overridable, for sweeps)
-    // scatter: seed the flock once in a loose blob with small random velocities,
-    // then remove itself. phase<-1> runs before the per-tick work.
-    schedule.add_once(
-        "scatter",
-        [count](Commands& cmd, ResMut<Rng> rng) {
-            auto& g = rng->gen;
-            std::uniform_real_distribution<float> p(-0.45f, 0.45f);
-            std::uniform_real_distribution<float> j(-0.06f, 0.06f);
-            // Start as a gently swirling disc centred on screen, at the working
-            // depth (~kRoamZc). The velocity is a curl (rotational) field, v ~
-            // (-y, x): locally coherent -- neighbours share a heading, so
-            // alignment stays happy and it reads as a murmuration from t=0 -- but
-            // its centre of mass stays put. A single shared heading instead
-            // translated the whole flock off-screen (it rushed to the top-edge
-            // before the goal could rein it back); the swirl lingers in the middle.
-            for (int i = 0; i < count; ++i) {
-                float const px = p(g), py = p(g);
-                // Swirl (-y, x) + a gentle shared forward drift (+z): the drift
-                // gives the dead-centre birds (whose swirl velocity is ~0) a
-                // coherent heading too, so the centre doesn't evacuate into a ring.
-                cmd.spawn(Position {px, py, cfg::kRoamZc + p(g)},
-                          Velocity {-py + j(g), px + j(g), 0.20f + j(g)});
-            }
-        },
-        phase<-1> {});
 
     // input: copy the latest cursor into the Cursor resource on the sim thread
     // (single-writer); `goal`/`steer` read it. wave 0.
@@ -269,11 +300,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in, int count) {
     // asserts it). Counting-sort path: ~0.9ms per 40k birds, ~14us/tick
     // amortized at this cadence.
     schedule.add_maintenance("sort-rows", 64, [](World& w) {
-        w.sort_rows<Position>([](Position const& p) {
-            return FlockGrid::index(FlockGrid::axis(p.x),
-                                    FlockGrid::axis(p.y),
-                                    FlockGrid::axis(p.z));
-        });
+        w.sort_rows<Position>(flock_cell);
     });
 
     // grid: reduce every bird into the spatial grid (per-cell count + position
