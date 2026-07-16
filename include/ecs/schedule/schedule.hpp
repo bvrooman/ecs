@@ -210,31 +210,27 @@ public:
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
         std::size_t lvl = 0;
-        for (auto const& wave : waves_) {
-            // Cadence: only the systems due this tick (tick % every == 0) run.
-            // A wave all of whose systems are skipped runs no barrier and emits
-            // no events, but still advances lvl so later waves keep a stable
+        for (auto const& plan : waves_) {
+            // Cadence: run only the systems due this tick. due_wave() returns
+            // the whole plan when nothing is cadenced (the common case, no
+            // copy). A wave emptied by skips runs no barrier and emits no
+            // events, but lvl still advances below so later waves keep a stable
             // index across ticks (a per-N-tick system's wave comes and goes).
-            active_wave_.clear();
-            for (auto const idx : wave)
-                if (tick_ % systems_[idx].every == 0)
-                    active_wave_.push_back(idx);
-            if (active_wave_.empty()) {
-                ++lvl;
-                continue;
+            auto const& wave = due_wave(plan);
+            if (!wave.empty()) {
+                events_.emit(WaveBegin {lvl, wave.size()});
+                run_wave(wave, world, cmds, pool, lvl);
+                double flush_us = 0;
+                try {
+                    auto const t0 = detail::sched_clock::now();
+                    world.apply_commands(); // cleans its own pending on throw
+                    flush_us = detail::elapsed_us(t0);
+                } catch (...) {
+                    events_.emit(TickAbort {lvl, SystemId {0}});
+                    throw;
+                }
+                events_.emit(WaveEnd {lvl, flush_us});
             }
-            events_.emit(WaveBegin {lvl, active_wave_.size()});
-            run_wave(active_wave_, world, cmds, pool, lvl);
-            double flush_us = 0;
-            try {
-                auto const t0 = detail::sched_clock::now();
-                world.apply_commands(); // cleans up its own pending commands on throw
-                flush_us = detail::elapsed_us(t0);
-            } catch (...) {
-                events_.emit(TickAbort {lvl, SystemId {0}});
-                throw;
-            }
-            events_.emit(WaveEnd {lvl, flush_us});
             ++lvl;
         }
         events_.emit(TickEnd {});
@@ -434,6 +430,20 @@ private:
     // ~2 clock reads per >=1024-row item plus a handful per wave, it is
     // within run-to-run noise even on an unobserved schedule, and the
     // constant plumbing keeps every path identical.
+    // The systems in `plan` due this tick (tick % every == 0). When the schedule
+    // has no cadenced system -- has_cadence_, computed once in rebuild() -- that
+    // is the whole plan, returned by reference with no copy. Otherwise the due
+    // subset is filtered into a reused scratch buffer.
+    std::vector<std::size_t> const& due_wave(std::vector<std::size_t> const& plan) {
+        if (!has_cadence_)
+            return plan;
+        active_wave_.clear();
+        for (auto const idx : plan)
+            if (tick_ % systems_[idx].every == 0)
+                active_wave_.push_back(idx);
+        return active_wave_;
+    }
+
     void run_wave(std::vector<std::size_t> const& wave,
                   World& world,
                   Commands& cmds,
@@ -523,6 +533,11 @@ private:
     void rebuild() {
         if (!dirty_)
             return;
+        // Cadence is tick-dependent, so the due subset can't be precomputed
+        // here -- but whether ANY system is cadenced is structural, so detect it
+        // once and let run() skip the per-tick filter entirely when none is.
+        has_cadence_ = std::ranges::any_of(
+            systems_, [](System const& s) { return s.every != 1; });
         for (std::size_t i = 0; i < systems_.size(); ++i) {
             std::size_t lvl = 0;
             for (std::size_t j = 0; j < i; ++j)
@@ -558,6 +573,7 @@ private:
     std::vector<System> systems_;
     std::vector<std::vector<std::size_t>> waves_;
     std::vector<std::size_t> active_wave_;     // per-wave due-system scratch, reused
+    bool has_cadence_ = false;                 // any system with every != 1
     std::vector<detail::WorkItem> items_;      // per-wave scratch, capacity retained
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
