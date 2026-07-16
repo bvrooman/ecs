@@ -1,8 +1,10 @@
 """Load and summarize a ScheduleTrace CSV (see tools/schedule_trace.hpp).
 
 Columns:
-    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us
-"""
+    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us,
+    maint_us
+`maint_us` is optional -- traces written before maintenance observability
+existed lack it, and load treats it as 0 so old traces still render."""
 
 from __future__ import annotations
 
@@ -11,20 +13,28 @@ import math
 import sys
 from collections import Counter
 
+# Required columns; maint_us is optional (added with maintenance observability)
+# so pre-existing traces still load -- absent, it reads as 0.
 COLUMNS = {"tick", "wave", "system", "busy_us", "prepare_us",
            "finish_us", "items", "wave_us", "flush_us", "tick_us"}
 
 
 def load(path, warmup=0):
-    """Parse the trace into per-system, per-tick, and per-wave series.
+    """Parse the trace into per-system, per-tick, per-wave, and per-tick
+    maintenance series.
 
     warmup: drop the first `warmup` ticks (by tick index) from everything --
     the profiler convention of discarding cold-start iterations so the
     distributions reflect steady state, not the first frame's cache/frequency
-    warm-up."""
+    warm-up.
+
+    Returns (systems, ticks, waves, maint) where `ticks` maps tick -> tick_us
+    (systems only) and `maint` maps tick -> maint_us (0 on ticks with no
+    maintenance). The true frame wall of a tick is ticks[t] + maint[t]."""
     systems = {}   # name -> dict(busy=[], prep=[], fin=[], items, wave, ticks=[])
-    ticks = {}     # tick -> tick_us
+    ticks = {}     # tick -> tick_us (systems only)
     waves = {}     # wave -> {tick: (wave_us, flush_us)}
+    maint = {}     # tick -> maint_us (0 when no maintenance ran)
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         missing = COLUMNS - set(reader.fieldnames or [])
@@ -48,12 +58,13 @@ def load(path, warmup=0):
             s["items"] = max(s["items"], int(row["items"]))
             s["waves"][wave] += 1  # one-shot phases shift placements
             ticks[tick] = float(row["tick_us"])
+            maint[tick] = float(row.get("maint_us") or 0.0)
             waves.setdefault(wave, {})[tick] = (float(row["wave_us"]),
                                                 float(row["flush_us"]))
     if not ticks:
         sys.exit(f"error: no rows in {path}"
                  + (f" after dropping {warmup} warmup ticks" if warmup else ""))
-    return systems, ticks, waves
+    return systems, ticks, waves, maint
 
 
 def stats(xs):

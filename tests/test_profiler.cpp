@@ -11,6 +11,7 @@
 #include "sink.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional> // std::ref
 #include <string>
 #include <string_view>
@@ -98,13 +99,13 @@ static void trace_writes_one_row_per_system_per_tick() {
 
     CHECK(!rows.empty());
     CHECK(rows.front() == "tick,wave,system,busy_us,prepare_us,finish_us,items,"
-                          "wave_us,flush_us,tick_us"); // header on construction
+                          "wave_us,flush_us,tick_us,maint_us"); // header on ctor
     CHECK(rows.size() == 1 + std::size_t(kTicks) * 2);
     CHECK((rows[1].find(",integrate,") != std::string::npos ||
            rows[1].find(",render,") != std::string::npos));
-    // Every measurement column is numeric: the row parses into 10 fields with
-    // no gaps (CSV sinks feed tools/schedule_report_html.py directly).
-    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 9);
+    // Every measurement column is numeric: the row parses into 11 fields with
+    // no gaps (CSV sinks feed tools/schedule_report directly).
+    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 10);
     // Lone-wave systems: busy time is the item's real duration, so the wave's
     // wall time (wave_us) must be >= its one system's busy time. Field 3 is
     // busy_us, field 7 is wave_us.
@@ -117,11 +118,12 @@ static void trace_writes_one_row_per_system_per_tick() {
             if (c == std::string::npos)
                 break;
         }
-        CHECK(f.size() == 10);
+        CHECK(f.size() == 11);
         CHECK(std::stod(f[3]) > 0.0);              // busy was measured
         CHECK(std::stod(f[7]) >= std::stod(f[3])); // wave wall >= lone busy
         CHECK(std::stod(f[9]) >= std::stod(f[7])); // tick >= wave
         CHECK(std::stod(f[6]) >= 1.0);             // items
+        CHECK(std::stod(f[10]) == 0.0);            // no maintenance in make_sched
     }
 }
 
@@ -195,10 +197,66 @@ static void report_and_trace_compose() {
     CHECK(trace_out.size() == 1 + std::size_t(3) * 2); // trace produced rows
 }
 
+// A maintenance hook runs world-quiescent before the tick's waves; the trace
+// attributes its cost to the following tick in maint_us (separate from tick_us,
+// which stays systems-only) on every row of that tick.
+static void trace_records_maintenance() {
+    World w;
+    populate(w);
+    Schedule sched = make_sched();
+    // Fire every other tick so we can check both the ran and the idle ticks.
+    sched.add_maintenance("touch", 2, [](World&) {
+        // Spin enough to guarantee the timer reads a nonzero µs (the world is
+        // tiny here; a real hook is sort_rows or similar).
+        volatile std::uint64_t acc = 0;
+        for (std::uint64_t i = 0; i < 200'000; ++i)
+            acc += i * 2654435761u;
+        (void)acc;
+    });
+
+    std::vector<std::string> rows;
+    diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
+    sched.events().add(std::ref(trace));
+
+    WorkerPool pool {1};
+    constexpr int kTicks = 6;
+    for (int t = 0; t < kTicks; ++t)
+        sched.run(w, pool);
+    trace.flush();
+
+    // Field 10 is maint_us. Parse it per row (skip the header).
+    auto maint_of = [&](std::string const& r) {
+        int commas = 0;
+        std::size_t pos = 0;
+        for (std::size_t i = 0; i < r.size(); ++i)
+            if (r[i] == ',' && ++commas == 10) {
+                pos = i + 1;
+                break;
+            }
+        return std::stod(r.substr(pos));
+    };
+    // tick_ counts from 1 inside run(); with every==2 it fires on ticks 2,4,6,
+    // i.e. trace ticks 1,3,5 (0-based). Rows come in pairs (2 systems/tick).
+    bool any_maint = false, all_idle_zero = true;
+    for (std::size_t i = 1; i < rows.size(); ++i) {
+        double const t   = std::stod(rows[i].substr(0, rows[i].find(',')));
+        double const m   = maint_of(rows[i]);
+        bool const fires = (static_cast<int>(t) % 2) == 1;
+        if (fires) {
+            any_maint |= m > 0.0;
+        } else if (m != 0.0) {
+            all_idle_zero = false;
+        }
+    }
+    CHECK(any_maint);       // maintenance ticks carry a nonzero maint_us
+    CHECK(all_idle_zero);   // non-maintenance ticks carry zero
+}
+
 int main() {
     RUN_SUITE(report_summarizes_systems);
     RUN_SUITE(trace_writes_one_row_per_system_per_tick);
     RUN_SUITE(fanned_wave_reports_real_busy_time);
     RUN_SUITE(report_and_trace_compose);
+    RUN_SUITE(trace_records_maintenance);
     return REPORT();
 }

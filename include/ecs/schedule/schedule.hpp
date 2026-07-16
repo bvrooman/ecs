@@ -216,12 +216,20 @@ public:
     void run(World& world, WorkerPool& pool) {
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
-        // Maintenance hooks: world quiescent, before any wave (see
-        // add_maintenance).
-        for (auto& m : maintenance_)
-            if (tick_ % m.every == 0)
-                m.fn(world);
         using namespace sched_event;
+        // Maintenance hooks: world quiescent, before any wave (see
+        // add_maintenance). Timed and emitted BEFORE TickBegin, so the cost is
+        // attributable to this tick yet excluded from its tick_us (an observer
+        // clocks tick_us from TickBegin) -- real frame work, separate phase.
+        for (auto& m : maintenance_)
+            if (tick_ % m.every == 0) {
+                auto const t0 = detail::sched_clock::now();
+                m.fn(world);
+                // sched_event::Maintenance -- Schedule::Maintenance is the
+                // storage struct (member), so qualify to disambiguate.
+                events_.emit(sched_event::Maintenance {m.name,
+                                                       detail::elapsed_us(t0)});
+            }
         events_.emit(TickBegin {waves_.size()});
         auto cmds       = Commands {world};
         std::size_t lvl = 0;

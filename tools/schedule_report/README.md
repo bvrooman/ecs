@@ -98,3 +98,12 @@ lanes (CPU time), so a fanned wave's systems legitimately sum past the wave's
 wall time. `prepare_us`/`finish_us` bracket the single-threaded barrier hooks
 (Reduce folds, Extract pre-sizing); `wave_us` includes the command flush,
 reported separately as `flush_us`.
+
+`maint_us` (optional column): the maintenance phase that ran world-quiescent
+before the tick's waves (`Schedule::add_maintenance` hooks — e.g. `sort_rows`).
+It is excluded from `tick_us` (which an observer clocks from `TickBegin`, after
+maintenance) and from per-system shares, but the headline **mean/p50/p99 tick**
+and the tick-wall chart report the whole frame (`tick_us + maint_us`), with a
+breakdown line splitting the mean into systems vs amortized maintenance. Traces
+written before maintenance observability lack the column; it reads as 0, so
+they render unchanged.

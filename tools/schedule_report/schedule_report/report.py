@@ -34,11 +34,23 @@ def render(trace_path, out_path, warmup=0):
     def chart(kind, ctx):
         return Markup(env.get_template(f"charts/{kind}.svg.j2").render(ctx))
 
-    systems, ticks, waves = load(trace_path, warmup)
+    systems, ticks, waves, maint = load(trace_path, warmup)
     tick_ids = sorted(ticks)
-    tick_vals = [ticks[t] for t in tick_ids]
-    ts = stats(tick_vals)
+    tick_vals = [ticks[t] for t in tick_ids]            # systems only
+    maint_vals = [maint.get(t, 0.0) for t in tick_ids]  # maintenance phase
+    # The frame wall the headline reports: systems + maintenance, so a tick's
+    # tile value is the whole picture even though the two are internally split.
+    total_vals = [c + m for c, m in zip(tick_vals, maint_vals)]
+    ts = stats(total_vals)          # headline distribution (whole frame)
+    cs = stats(tick_vals)           # systems-only (per-system share denominator)
     n_ticks = len(tick_ids)
+
+    # Maintenance amortized across every tick (sum / n_ticks) plus its
+    # per-occurrence profile, shown only when the workload has maintenance.
+    maint_ran = [m for m in maint_vals if m > 0.0]
+    maint_total = sum(maint_vals)
+    has_maint = maint_total > 0.0
+    maint_amortized = maint_total / n_ticks if n_ticks else 0.0
 
     payload = {"lines": {}, "hists": {}, "hbars": {}}
 
@@ -49,6 +61,8 @@ def render(trace_path, out_path, warmup=0):
         return chart("line", ctx), lo is not None
 
     # headline ---------------------------------------------------------------
+    # mean/p50/p99 are the whole frame (systems + maintenance); ticks/s follows
+    # from the same mean, so the rate matches the reported tick cost.
     tiles = [
         ("mean tick", fmt_us(ts["mean"])),
         ("p50 tick", fmt_us(ts["p50"])),
@@ -56,9 +70,27 @@ def render(trace_path, out_path, warmup=0):
         ("ticks / s", f"{1e6 / ts['mean']:,.0f}" if ts["mean"] else "0"),
     ]
 
-    # tick wall time ----------------------------------------------------------
+    # Frame breakdown: how the mean tick splits into systems vs maintenance,
+    # so the headline total is decomposable at a glance. Only when maintenance
+    # actually ran -- otherwise the total IS the systems time.
+    breakdown = None
+    if has_maint:
+        ms = stats(maint_ran)
+        breakdown = dict(
+            total=fmt_us(ts["mean"]),
+            systems=fmt_us(cs["mean"]),
+            maint=fmt_us(maint_amortized),
+            maint_pct=f"{100.0 * maint_amortized / ts['mean']:.1f}"
+                      if ts["mean"] else "0.0",
+            ran=len(maint_ran), of=n_ticks,
+            cadence=round(n_ticks / len(maint_ran)) if maint_ran else 0,
+            per_run=fmt_us(ms["mean"]), per_run_max=fmt_us(ms["mx"]),
+        )
+
+    # tick wall time: the whole frame (systems + maintenance), so the spikes on
+    # maintenance ticks are visible rather than hidden under a systems-only line.
     tick_svg, tick_banded = line_section(
-        *downsample(tick_ids, tick_vals), "tick", "tick wall")
+        *downsample(tick_ids, total_vals), "tick", "frame wall")
 
     # waves: wall vs flush. One-shot phases (a setup system pruned after its
     # tick) shift every wave index on the ticks they run, so a wave may exist
@@ -95,10 +127,10 @@ def render(trace_path, out_path, warmup=0):
         st = stats(s["busy"])
         prep = sum(s["prep"]) / len(s["prep"])
         fin = sum(s["fin"]) / len(s["fin"])
-        # busy vs the tick's WALL time: CPU summed across lanes, so a
-        # well-parallelized system legitimately exceeds 100% (the hover on
-        # the value explains this in the page).
-        share = 100.0 * st["mean"] / ts["mean"] if ts["mean"] else 0
+        # busy vs the systems' tick wall (cs, maintenance excluded): CPU summed
+        # across lanes, so a well-parallelized system legitimately exceeds 100%
+        # (the hover on the value explains this in the page).
+        share = 100.0 * st["mean"] / cs["mean"] if cs["mean"] else 0
         # Dominant wave placement; one-shot phases shift indices on the ticks
         # they run (mist's scatter bumps every wave by one on tick 0), and
         # the Waves section's note + run-count tooltips carry that story.
@@ -130,6 +162,7 @@ def render(trace_path, out_path, warmup=0):
         n_systems=len(systems),
         n_waves=len(waves),
         tiles=tiles,
+        breakdown=breakdown,
         tick_svg=tick_svg,
         tick_banded=tick_banded,
         waves_svg=waves_svg,

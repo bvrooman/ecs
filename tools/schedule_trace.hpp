@@ -26,7 +26,11 @@
 //   wave_us     wall duration of the whole wave (repeated on each of the
 //               wave's rows; includes the flush)
 //   flush_us    command-flush portion of wave_us (repeated likewise)
-//   tick_us     wall duration of the whole tick (repeated on the tick's rows)
+//   tick_us     wall duration of the tick's WAVES (repeated on the tick's
+//               rows); systems only -- excludes maintenance
+//   maint_us    maintenance hooks that fired before this tick (sort-rows etc.),
+//               summed; a separate amortized phase, so the true frame wall is
+//               tick_us + maint_us (repeated on the tick's rows)
 //
 // It is one of the two timing observers the profiler was split into (the other
 // is ScheduleReport, which aggregates instead of tracing); register either,
@@ -67,13 +71,17 @@ public:
               std::chrono::duration<double>(flush_every_s)))
         , last_flush_(clock::now()) {
         sink_("tick,wave,system,busy_us,prepare_us,finish_us,items,"
-              "wave_us,flush_us,tick_us");
+              "wave_us,flush_us,tick_us,maint_us");
     }
 
     void operator()(ScheduleEvent const& e) {
         using namespace sched_event;
         std::visit(
             event::overloaded {
+                [this](Maintenance const& ev) {
+                    // Fires before TickBegin; accumulate for the upcoming tick.
+                    pending_maint_us_ += ev.us;
+                },
                 [this](TickBegin const&) {
                     tick_first_row_ = rows_.size();
                     t_tick_         = clock::now();
@@ -96,6 +104,7 @@ public:
                                          ev.items,
                                          0.0,
                                          0.0,
+                                         0.0,
                                          0.0});
                 },
                 [this](WaveEnd const& ev) {
@@ -107,8 +116,11 @@ public:
                 },
                 [this](TickEnd const&) {
                     double const us = elapsed_us(t_tick_);
-                    for (auto i = tick_first_row_; i < rows_.size(); ++i)
-                        rows_[i].tick_us = us;
+                    for (auto i = tick_first_row_; i < rows_.size(); ++i) {
+                        rows_[i].tick_us  = us;
+                        rows_[i].maint_us = pending_maint_us_;
+                    }
+                    pending_maint_us_ = 0;
                     ++tick_no_;
                     if (clock::now() - last_flush_ >= period_) {
                         flush();
@@ -117,8 +129,10 @@ public:
                 },
                 [this](TickAbort const&) {
                     // Drop the aborted tick's partial rows: a truncated tick
-                    // would skew every downstream distribution.
+                    // would skew every downstream distribution. Its maintenance
+                    // ran but is dropped with the tick it was attributed to.
                     rows_.resize(tick_first_row_);
+                    pending_maint_us_ = 0;
                 },
                 [](auto const&) {}, // SystemBegin/SystemEnd: unused by the trace
             },
@@ -133,7 +147,7 @@ public:
             char const* nm = it != names_.end() ? it->second.c_str() : "?";
             int const k    = std::snprintf(buf,
                                         sizeof(buf),
-                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f",
+                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.1f",
                                         static_cast<unsigned long long>(r.tick),
                                         r.wave,
                                         nm,
@@ -143,7 +157,8 @@ public:
                                         r.items,
                                         r.wave_us,
                                         r.flush_us,
-                                        r.tick_us);
+                                        r.tick_us,
+                                        r.maint_us);
             sink_(std::string_view(buf, k > 0 ? static_cast<std::size_t>(k) : 0));
         }
         rows_.clear();
@@ -169,6 +184,7 @@ private:
         double wave_us;
         double flush_us;
         double tick_us;
+        double maint_us;
     };
 
     Sink sink_;
@@ -182,6 +198,7 @@ private:
     std::size_t tick_first_row_ = 0; // first row of the current tick
     std::size_t wave_first_row_ = 0; // first row of the current wave
     std::uint64_t tick_no_      = 0;
+    double pending_maint_us_    = 0; // maintenance since the last TickEnd
 };
 
 } // namespace ecs::diag

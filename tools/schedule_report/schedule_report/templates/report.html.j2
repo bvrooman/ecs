@@ -19,12 +19,22 @@
     {% endfor %}
   </div>
 
+  {% if breakdown %}
+  <div class="sub" style="margin-top:.4rem">mean frame
+    <b>{{ breakdown.total }}</b> = systems <b>{{ breakdown.systems }}</b> +
+    maintenance <b>{{ breakdown.maint }}</b> ({{ breakdown.maint_pct }}%,
+    amortized). Maintenance ran on {{ "{:,}".format(breakdown.ran) }} of
+    {{ "{:,}".format(breakdown.of) }} ticks (every ~{{ breakdown.cadence }}),
+    <span class="hint" data-hint="maintenance runs world-quiescent before the tick's waves (e.g. sort_rows); it is real frame-thread work but a separate amortized phase, so it is excluded from tick_us and per-system shares and added back here">{{ breakdown.per_run }} per run</span>
+    (max {{ breakdown.per_run_max }}).</div>
+  {% endif %}
+
   <h2>Tick wall time</h2>
   <div class="card">
-    {% if tick_banded %}
-    <div class="sub">mean per bucket; the wash spans each bucket&rsquo;s
-      min&hellip;max</div>
-    {% endif %}
+    <div class="sub">whole frame &mdash; systems{% if breakdown %} plus the
+      maintenance phase, so maintenance ticks show as periodic spikes{% endif %}
+      {%- if tick_banded %}; mean per bucket, the wash spans each
+      bucket&rsquo;s min&hellip;max{% endif %}</div>
     {{ tick_svg }}
   </div>
 
