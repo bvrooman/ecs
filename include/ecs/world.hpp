@@ -297,9 +297,9 @@ private:
     // Compacts the free list first: entries above the cursor were claimed by
     // reserve() during the wave (see reserve()); dropping them before commands
     // push new frees restores the "cursor == free_.size()" rest-state invariant.
-    void apply_commands() {
+    void apply_commands(FlushAttrib* attrib = nullptr) {
         free_.resize(free_cursor_.load(std::memory_order_acquire));
-        commands_.apply(*this);
+        commands_.apply(*this, attrib);
     }
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run

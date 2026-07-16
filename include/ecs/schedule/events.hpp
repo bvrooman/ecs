@@ -46,12 +46,15 @@ namespace sched_event {
         SystemId id;
     };
     // Measured work for one system in one wave -- emitted for EVERY system,
-    // lone or fanned, after the wave's barrier hooks and before its flush.
+    // lone or fanned, after the wave's barrier hooks and its flush.
     // busy_us is the sum of the system's work-item durations across all lanes
     // (CPU time, not wall: a fanned wave's busy times legitimately sum past
     // the wave's wall duration); prepare_us/finish_us bracket the system's
     // single-threaded barrier hooks (Reduce folds, Extract pre-sizing...), so
     // a kernel whose finish fold rivals its dispatch is visible directly.
+    // flush_us is the part of the wave's command flush spent applying THIS
+    // system's commands (spawns/despawns/sort...) -- so a system whose real
+    // cost is a barrier command, not busy work, is attributed directly.
     struct SystemWork {
         SystemId id;
         std::string_view name;
@@ -59,6 +62,7 @@ namespace sched_event {
         double prepare_us   = 0;
         double finish_us    = 0;
         std::uint32_t items = 0; // work items this wave (1 for imperative)
+        double flush_us     = 0; // this system's share of the wave's cmd flush
     };
     // Emitted instead of the remaining SystemEnd/WaveEnd/TickEnd when a system
     // throws and the run unwinds, so observers with open Begin/End pairs can

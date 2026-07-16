@@ -25,8 +25,13 @@
 //   items       work items the system contributed (1 for imperative)
 //   wave_us     wall duration of the whole wave (repeated on each of the
 //               wave's rows; includes the flush)
-//   flush_us    command-flush portion of wave_us (repeated likewise)
+//   flush_us    command-flush portion of wave_us (the WHOLE wave's, repeated
+//               on each of the wave's rows)
 //   tick_us     wall duration of the whole tick (repeated on the tick's rows)
+//   cmd_us      the part of the wave's command flush spent applying THIS
+//               system's commands (spawns/despawns/sort...) -- so a system
+//               whose real cost is a barrier command, not busy work, carries
+//               it here. Sums to flush_us across the wave's systems.
 //
 // A per-N-tick system (Schedule `every`) simply has rows only on the ticks it
 // ran -- like a one-shot phase, its wave exists for a subset of ticks.
@@ -70,7 +75,7 @@ public:
               std::chrono::duration<double>(flush_every_s)))
         , last_flush_(clock::now()) {
         sink_("tick,wave,system,busy_us,prepare_us,finish_us,items,"
-              "wave_us,flush_us,tick_us");
+              "wave_us,flush_us,tick_us,cmd_us");
     }
 
     void operator()(ScheduleEvent const& e) {
@@ -99,7 +104,8 @@ public:
                                          ev.items,
                                          0.0,
                                          0.0,
-                                         0.0});
+                                         0.0,
+                                         ev.flush_us});
                 },
                 [this](WaveEnd const& ev) {
                     double const us = elapsed_us(t_wave_);
@@ -136,7 +142,7 @@ public:
             char const* nm = it != names_.end() ? it->second.c_str() : "?";
             int const k    = std::snprintf(buf,
                                         sizeof(buf),
-                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f",
+                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f",
                                         static_cast<unsigned long long>(r.tick),
                                         r.wave,
                                         nm,
@@ -146,7 +152,8 @@ public:
                                         r.items,
                                         r.wave_us,
                                         r.flush_us,
-                                        r.tick_us);
+                                        r.tick_us,
+                                        r.cmd_us);
             sink_(std::string_view(buf, k > 0 ? static_cast<std::size_t>(k) : 0));
         }
         rows_.clear();
@@ -170,8 +177,9 @@ private:
         double finish_us;
         std::uint32_t items;
         double wave_us;
-        double flush_us;
+        double flush_us; // the whole wave's command flush (repeated per row)
         double tick_us;
+        double cmd_us;   // THIS system's share of the wave's command flush
     };
 
     Sink sink_;

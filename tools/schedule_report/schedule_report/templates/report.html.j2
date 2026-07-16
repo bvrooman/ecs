@@ -42,10 +42,12 @@
 
   <h2>Systems by busy time per tick</h2>
   <div class="card">
-    <div class="sub">total busy across the run / total ticks. busy = sum of
+    <div class="sub">amortized cost across the run / total ticks. busy = sum of
       the system&rsquo;s work items across all lanes (CPU time; a fanned
-      wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall
-      time)</div>
+      wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall time),
+      plus the command <b>flush</b> spent applying this system&rsquo;s own
+      commands at the barrier (e.g. a <code>Commands::sort</code>), measured
+      per system in the core</div>
     {{ overview_svg }}
   </div>
 
@@ -56,7 +58,7 @@
     <div class="sub">wave {{ c.wave }} &middot;
       {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
       ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
-      <span class="hint" data-hint="amortized busy is CPU summed across all lanes over the mean tick, so a well-parallelized system can exceed 100%; it is spread over every tick, including any it sat out (its per-run cost shows in the distribution and series below)">amortized {{ c.amortized_pct }}% of tick ({{ c.amortized }} / tick)</span></div>
+      <span class="hint" data-hint="amortized cost is the system's busy (CPU summed across lanes, so a well-parallelized system can exceed 100%) plus the command flush spent applying its own commands at the barrier (measured per system in the core), spread over every tick including any it sat out (the per-run spike shows in the series below)">amortized {{ c.amortized_pct }}% of tick ({{ c.amortized }} / tick{% if c.has_flush %} &mdash; busy {{ c.amort_busy }} + flush {{ c.amort_flush }}{% endif %})</span></div>
     <div class="statrow">
       {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
     </div>
@@ -64,6 +66,11 @@
     {{ c.hist }}
     <div class="sub">busy over the run</div>
     {{ c.series }}
+    {%- if c.has_flush %}
+    <div class="sub">command flush over the run (applied at the barrier; the
+      per-run spike this system&rsquo;s amortized flush averages)</div>
+    {{ c.flush_series }}
+    {%- endif %}
   </div>
   {% endfor %}
 
@@ -72,7 +79,7 @@
     <table>
       <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
         <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
-        <th>prepare</th><th>finish</th><th>amort % tick</th></tr></thead>
+        <th>prepare</th><th>finish</th><th>flush</th><th>amort % tick</th></tr></thead>
       <tbody>
         {% for row in table %}
         <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>

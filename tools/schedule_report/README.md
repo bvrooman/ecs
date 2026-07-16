@@ -99,10 +99,19 @@ wall time. `prepare_us`/`finish_us` bracket the single-threaded barrier hooks
 (Reduce folds, Extract pre-sizing); `wave_us` includes the command flush,
 reported separately as `flush_us`.
 
-A system's headline cost is its **amortized busy** — the sum of its busy time
-over *all* ticks, shown as a share of the mean tick — so a per-N-tick system
-(Schedule `every`, e.g. a re-sort every 64 ticks) ranks by its true per-tick
-budget rather than its per-run spike; the spike still shows in that card's
-distribution and time series, and its wave carries a "ran n of N" count.
-(Structural upkeep recorded via `Commands::sort` lands in that wave's
-`flush_us`, so the whole cost is visible in the Waves split and in `tick_us`.)
+A system's headline cost is its **amortized cost** — its busy time plus any
+command **flush** it caused, summed over *all* ticks and shown as a share of
+the mean tick — so a per-N-tick system (Schedule `every`, e.g. a re-sort every
+64 ticks) ranks by its true per-tick budget rather than its per-run spike; the
+spike still shows in that card's time series, and its wave carries a "ran n of
+N" count.
+
+**Flush attribution:** a command applies at its wave's barrier, so a
+command-recording system (e.g. `Commands::sort`) shows almost no *busy* — its
+real cost is the flush. The core measures each system's own share of the flush
+(the `cmd_us` trace column: commands are tagged with the system that recorded
+them, and the barrier apply is timed per system), so the report credits it to
+the system exactly — a `flush` column, folded into the amortized cost, with a
+"command flush over the run" spike series on the card. This is per-system even
+when several command-recording systems share one wave; a system that records no
+commands shows no flush.

@@ -79,10 +79,24 @@ def render(trace_path, out_path, warmup=0):
     waves_svg = chart("hbars", ctx)
     payload["hbars"]["waves"] = data
 
-    # systems overview: amortized busy over the whole run (sum / all ticks), so
-    # a one-shot or per-N-tick system compares honestly against every-tick ones.
-    order = sorted(systems, key=lambda n: -sum(systems[n]["busy"]))
-    rows = [(name, sum(systems[name]["busy"]) / n_ticks) for name in order]
+    # Per-system command flush, measured in the core (the cmd_us column): the
+    # part of each wave's barrier flush spent applying THIS system's commands.
+    # A command-recording system (e.g. a re-sort via Commands::sort) shows almost
+    # no busy -- its real cost is the flush -- so crediting it here lets it rank
+    # by its true budget. Exact even when several systems share a wave.
+    flush_by_system = {nm: sum(systems[nm]["cmd"]) for nm in systems}
+    flush_ticks = {nm: dict(zip(systems[nm]["ticks"], systems[nm]["cmd"]))
+                   for nm in systems}
+
+    # A system's cost is its amortized busy PLUS its attributed flush, both
+    # spread over every tick -- so a command system ranks by its real budget.
+    def amort_cost(nm):
+        return (sum(systems[nm]["busy"]) + flush_by_system[nm]) / n_ticks
+
+    # systems overview: amortized cost over the whole run, so a one-shot or
+    # per-N-tick system compares honestly against every-tick ones.
+    order = sorted(systems, key=lambda n: -amort_cost(n))
+    rows = [(name, amort_cost(name)) for name in order]
     ctx, data = charts.hbars(rows, "sys")
     overview_svg = chart("hbars", ctx)
     payload["hbars"]["sys"] = data
@@ -100,25 +114,41 @@ def render(trace_path, out_path, warmup=0):
         payload["hists"][f"h-s{idx}"] = hdata
         series_svg, _ = line_section(*downsample(s["ticks"], s["busy"]),
                                      f"l-s{idx}", f"{name} busy")
-        # One cost metric: amortized busy (sum / all ticks) as a share of the
-        # mean tick, so a rarely-run system reads by its true per-tick budget,
-        # not its per-run spike (which the distribution and series still show).
-        amort = sum(s["busy"]) / n_ticks
-        amort_pct = 100.0 * amort / ts["mean"] if ts["mean"] else 0.0
+        # One cost metric: amortized busy + attributed flush (sum / all ticks)
+        # as a share of the mean tick, so a rarely-run system reads by its true
+        # per-tick budget, not its per-run spike (which the series still shows).
+        a_busy = sum(s["busy"]) / n_ticks
+        a_flush = flush_by_system[name] / n_ticks
+        a_total = a_busy + a_flush
+        amort_pct = 100.0 * a_total / ts["mean"] if ts["mean"] else 0.0
         wave_mode, _ = s["waves"].most_common(1)[0]
+        # "Meaningful" flush: a real command cost, not the ~1us empty-flush
+        # overhead every lone wave's barrier carries. Gate the breakdown, the
+        # flush stat, and the flush time-series on it.
+        flush_big = a_flush > 1.0 and a_flush > 0.02 * a_total
+        flush_svg = None
+        if flush_big:
+            ft = sorted(flush_ticks[name])
+            flush_svg, _ = line_section(
+                *downsample(ft, [flush_ticks[name][t] for t in ft]),
+                f"f-s{idx}", f"{name} command flush")
         cards.append(dict(
             name=name, wave=wave_mode, n_items=s["items"], n=st["n"],
-            amortized=fmt_us(amort), amortized_pct=f"{amort_pct:.1f}",
+            amortized=fmt_us(a_total), amortized_pct=f"{amort_pct:.1f}",
+            has_flush=flush_big, amort_busy=fmt_us(a_busy),
+            amort_flush=fmt_us(a_flush), flush_series=flush_svg,
             stats=[("mean", fmt_us(st["mean"])), ("sd", fmt_us(st["sd"])),
                    ("p50", fmt_us(st["p50"])), ("p99", fmt_us(st["p99"])),
                    ("max", fmt_us(st["mx"])), ("prepare", fmt_us(prep)),
-                   ("finish", fmt_us(fin))],
+                   ("finish", fmt_us(fin))]
+                  + ([("flush", fmt_us(a_flush))] if flush_big else []),
             hist=chart("histogram", ctx_h), series=series_svg,
         ))
         table.append([name, wave_mode, s["items"], st["n"],
                       fmt_us(st["mean"]), fmt_us(st["sd"]), fmt_us(st["p50"]),
                       fmt_us(st["p99"]), fmt_us(st["mx"]), fmt_us(prep),
-                      fmt_us(fin), f"{amort_pct:.1f}%"])
+                      fmt_us(fin), fmt_us(a_flush) if a_flush > 0 else "—",
+                      f"{amort_pct:.1f}%"])
 
     doc = env.get_template("report.html.j2").render(
         source=str(trace_path),

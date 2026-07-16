@@ -34,10 +34,13 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -51,7 +54,22 @@ namespace detail {
         thread_local int idx = counter.fetch_add(1, std::memory_order_relaxed);
         return idx;
     }
+
+    // The "source" (a SystemId) whose commands the calling thread is currently
+    // recording -- set by the executor around each work item and around each
+    // single-threaded barrier finish hook, read by CommandStore::record so each
+    // command carries its recording system. That lets apply() attribute the
+    // flush time per source (see Schedule's per-system flush reporting). 0 means
+    // "unattributed" (setup outside a run, etc.).
+    inline std::uint64_t& recording_source() noexcept {
+        thread_local std::uint64_t src = 0;
+        return src;
+    }
 } // namespace detail
+
+// Per-source (SystemId) command-apply time accumulated by a flush; keys are
+// whatever recording_source() held when each command was recorded.
+using FlushAttrib = std::unordered_map<std::uint64_t, double>;
 
 class World; // defined in world.hpp
 
@@ -87,10 +105,11 @@ public:
             obj,
             [](void* o, World& w) { (*static_cast<Fn*>(o))(w); },
             [](void* o) noexcept { static_cast<Fn*>(o)->~Fn(); },
+            detail::recording_source(), // the system recording this command
         });
     }
 
-    void apply(World& world) {
+    void apply(World& world, FlushAttrib* attrib = nullptr) {
         // Invoke-and-destroy in ONE pass. If a command throws, the remaining
         // (uninvoked) commands are destroyed and the store rewound on unwind --
         // already-applied commands can never replay on the next flush (which
@@ -98,10 +117,36 @@ public:
         // and replay adds).
         std::size_t i = 0;
         try {
-            for (; i < cmds_.size(); ++i) {
-                auto const& c = cmds_[i];
-                c.invoke(c.obj, world);
-                c.destroy(c.obj);
+            if (attrib == nullptr) {
+                for (; i < cmds_.size(); ++i) {
+                    auto const& c = cmds_[i];
+                    c.invoke(c.obj, world);
+                    c.destroy(c.obj);
+                }
+            } else if (!cmds_.empty()) {
+                // Attribute apply time per recording source. Commands from one
+                // work item are contiguous (same source), so time each run
+                // rather than each command -- a handful of clock reads, not one
+                // per command.
+                using clock = std::chrono::steady_clock;
+                auto batch  = clock::now();
+                auto src    = cmds_[0].source;
+                for (; i < cmds_.size(); ++i) {
+                    auto const& c = cmds_[i];
+                    if (c.source != src) {
+                        auto const now = clock::now();
+                        (*attrib)[src] +=
+                            std::chrono::duration<double, std::micro>(now - batch)
+                                .count();
+                        batch = now;
+                        src   = c.source;
+                    }
+                    c.invoke(c.obj, world);
+                    c.destroy(c.obj);
+                }
+                (*attrib)[src] +=
+                    std::chrono::duration<double, std::micro>(clock::now() - batch)
+                        .count();
             }
         } catch (...) {
             for (; i < cmds_.size(); ++i)
@@ -132,6 +177,7 @@ private:
         void* obj;
         void (*invoke)(void*, World&);
         void (*destroy)(void*) noexcept;
+        std::uint64_t source; // SystemId that recorded it (flush attribution)
     };
     struct Block {
         std::unique_ptr<std::byte[]> data;
@@ -201,13 +247,13 @@ public:
     // are executing. Drains shards in creation order; within a shard, in record
     // order. Takes each shard's (uncontended) mutex so a stray recording thread
     // is excluded rather than racing the drain.
-    void apply(World& world) {
+    void apply(World& world, FlushAttrib* attrib = nullptr) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.apply(world);
+                shard->store.apply(world, attrib);
             }
         } catch (...) {
             // The throwing shard already cleaned itself up; discard the
