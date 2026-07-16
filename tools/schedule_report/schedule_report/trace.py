@@ -15,8 +15,13 @@ COLUMNS = {"tick", "wave", "system", "busy_us", "prepare_us",
            "finish_us", "items", "wave_us", "flush_us", "tick_us"}
 
 
-def load(path):
-    """Parse the trace into per-system, per-tick, and per-wave series."""
+def load(path, warmup=0):
+    """Parse the trace into per-system, per-tick, and per-wave series.
+
+    warmup: drop the first `warmup` ticks (by tick index) from everything --
+    the profiler convention of discarding cold-start iterations so the
+    distributions reflect steady state, not the first frame's cache/frequency
+    warm-up."""
     systems = {}   # name -> dict(busy=[], prep=[], fin=[], items, wave, ticks=[])
     ticks = {}     # tick -> tick_us
     waves = {}     # wave -> {tick: (wave_us, flush_us)}
@@ -28,6 +33,8 @@ def load(path):
                      "is this a tools/schedule_trace.hpp CSV?")
         for row in reader:
             tick = int(row["tick"])
+            if tick < warmup:
+                continue
             wave = int(row["wave"])
             name = row["system"]
             s = systems.setdefault(name, {
@@ -44,7 +51,8 @@ def load(path):
             waves.setdefault(wave, {})[tick] = (float(row["wave_us"]),
                                                 float(row["flush_us"]))
     if not ticks:
-        sys.exit(f"error: no rows in {path}")
+        sys.exit(f"error: no rows in {path}"
+                 + (f" after dropping {warmup} warmup ticks" if warmup else ""))
     return systems, ticks, waves
 
 

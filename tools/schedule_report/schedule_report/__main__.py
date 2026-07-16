@@ -27,11 +27,16 @@ def _render_main(argv):
     p.add_argument("trace", help="ScheduleTrace CSV file")
     p.add_argument("-o", "--out",
                    help="output HTML path (default: <trace>.html)")
+    p.add_argument("--warmup", type=int, default=0, metavar="N",
+                   help="drop the first N ticks (cold-start warm-up) from the "
+                        "stats and charts, so they reflect steady state -- the "
+                        "profiler convention of discarding warm-up iterations")
     args = p.parse_args(argv)
     out = args.out or args.trace.rsplit(".", 1)[0] + ".html"
-    info = render(args.trace, out)
+    info = render(args.trace, out, warmup=args.warmup)
     print(f"wrote {out} ({info['bytes'] / 1024:.0f} KB): "
-          f"{info['ticks']:,} ticks, {info['systems']} systems")
+          f"{info['ticks']:,} ticks, {info['systems']} systems"
+          + (f" (dropped {args.warmup} warmup)" if args.warmup else ""))
 
 
 def _compare_main(argv):

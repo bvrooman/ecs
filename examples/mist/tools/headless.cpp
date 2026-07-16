@@ -22,6 +22,10 @@
 //     (A/B the cold vs warm first tick: by default the flock is seeded at load
 //      and Schedule::prewarm pre-pays the kernels' first-tick state sizing, so
 //      tick 0 is steady; =0 leaves it cold for comparison)
+//   ECS_WARMUP=<n> ./build/examples/mist-headless            # n warm-up ticks
+//     (run n untraced/untimed ticks after prewarm to pay the run-only cold
+//      start -- cache, CPU frequency ramp -- that prewarm cannot; the timed
+//      loop and trace then reflect steady state)
 //
 // The schedule registers its own sort-rows maintenance hook (every 64 ticks,
 // see simulation.cpp), so the bitwise checks below also prove determinism
@@ -79,8 +83,22 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     Schedule s;
     build_mist_schedule(s, MistInput {&g_wstate.cursor, &g_wstate.flags});
 
-    // Optional schedule trace, truncated per run() so the last run wins (the
-    // 4-lane rerun) -- same convention as ECS_METRICS above.
+    WorkerPool pool {lanes};
+    // Pre-pay the kernels' one-time first-tick state sizing (ECS_PREWARM=0 to
+    // skip it, for an A/B of the cold vs warm first tick).
+    char const* pw = std::getenv("ECS_PREWARM");
+    if (!pw || std::atoi(pw) != 0)
+        s.prewarm(w);
+    // Warm-up ticks (ECS_WARMUP=n): run-only cold start -- cache, CPU frequency
+    // ramp, i-cache -- can't be pre-paid, only run off. These execute BEFORE
+    // the trace attaches and the timer starts, so the timed/traced loop below
+    // is steady state. (The report tool's --warmup drops leading ticks the same
+    // way for a trace that already includes them.)
+    for (int i = 0, wu = env_int("ECS_WARMUP", 0); i < wu; ++i)
+        s.run(w, pool);
+
+    // Optional schedule trace (after warm-up, so tick 0 in the trace is steady),
+    // truncated per run() so the last run wins -- same convention as ECS_METRICS.
     std::ofstream trace_file;
     std::optional<diag::ScheduleTrace> trace;
     std::optional<event::Emitter<ScheduleEvent>::Subscription> trace_sub;
@@ -90,12 +108,6 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
         trace_sub.emplace(s.events().subscribe(std::ref(*trace)));
     }
 
-    WorkerPool pool {lanes};
-    // Pre-pay the kernels' one-time first-tick state sizing (ECS_PREWARM=0 to
-    // skip it, for an A/B of the cold vs warm first tick).
-    char const* pw = std::getenv("ECS_PREWARM");
-    if (!pw || std::atoi(pw) != 0)
-        s.prewarm(w);
     auto const t0 = std::chrono::steady_clock::now();
     for (int t = 0; t < ticks; ++t) // every tick is a real sim tick now
         s.run(w, pool);

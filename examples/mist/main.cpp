@@ -254,6 +254,18 @@ int main() {
             }
         };
         WorkerPool pool {unsigned(std::max(1, pool_n))}; // 1 lane = serial
+        // Warm-up: run a few ticks before the paced loop so the CPU frequency,
+        // caches and i-cache are warm and the first displayed frame isn't a
+        // cold-start hitch. prewarm() above pre-paid the allocation; this pays
+        // the run-only warm-up it cannot. A murmuration pre-rolling a few ticks
+        // is imperceptible. ECS_WARMUP=<n> overrides (0 disables). (The render
+        // thread's own first-frame cost -- GL pipeline/shader -- is separate.)
+        int warmup = 8;
+        if (char const* w = std::getenv("ECS_WARMUP"))
+            if (int n = std::atoi(w); n >= 0)
+                warmup = n;
+        for (int i = 0; i < warmup; ++i)
+            schedule.run(world, pool);
         loop([&] { schedule.run(world, pool); });
         if (report)
             report->flush(); // final partial-window report

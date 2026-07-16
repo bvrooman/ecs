@@ -17,7 +17,17 @@ ECS_PARTICLES=85000 ECS_TICKS=600 ./build/examples/mist-headless
 ECS_METRICS=/tmp/m.csv ./build/examples/mist-headless   # + metrics CSV
 ECS_TRACE=/tmp/t.csv ./build/examples/mist-headless     # + schedule trace CSV
 ECS_BENCH_OUT=/tmp/b.csv ./build/examples/mist-headless # + benchmark results rows
+ECS_WARMUP=8 ./build/examples/mist-headless             # 8 untimed warm-up ticks
+ECS_PREWARM=0 ./build/examples/mist-headless            # skip prewarm (A/B cold tick)
 ```
+
+The demo separates load from the frame loop: it seeds the flock and sorts it
+by grid cell, then `Schedule::prewarm` pre-pays the kernels' first-tick state
+sizing, so tick 0 is steady. `ECS_WARMUP=<n>` additionally runs `n`
+untraced/untimed ticks to pay the *run-only* cold start (cache, CPU-frequency
+ramp) that prewarm cannot; `ECS_PREWARM=0` leaves the first tick cold to A/B
+it. (The report tool's `--warmup N` drops leading ticks from a trace the same
+way — the profiler convention.)
 
 It honours `ECS_METRICS`, `ECS_TRACE` (per-system schedule trace, written by
 the last — 4-lane — run; feed it to `schedule-report`, or diff two runs with
