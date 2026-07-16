@@ -219,16 +219,10 @@ public:
             auto const& wave = due_wave(plan);
             if (!wave.empty()) {
                 events_.emit(WaveBegin {lvl, wave.size()});
-                run_wave(wave, world, cmds, pool, lvl);
-                double flush_us = 0;
-                try {
-                    auto const t0 = detail::sched_clock::now();
-                    world.apply_commands(); // cleans its own pending on throw
-                    flush_us = detail::elapsed_us(t0);
-                } catch (...) {
-                    events_.emit(TickAbort {lvl, SystemId {0}});
-                    throw;
-                }
+                // run_wave runs the wave AND applies its command flush (so it
+                // can attribute the flush per system), returning the wave's
+                // flush wall; it emits TickAbort and rethrows on any failure.
+                double const flush_us = run_wave(wave, world, cmds, pool, lvl);
                 events_.emit(WaveEnd {lvl, flush_us});
             }
             ++lvl;
@@ -444,15 +438,17 @@ private:
         return active_wave_;
     }
 
-    void run_wave(std::vector<std::size_t> const& wave,
-                  World& world,
-                  Commands& cmds,
-                  WorkerPool& pool,
-                  std::size_t lvl) {
+    double run_wave(std::vector<std::size_t> const& wave,
+                    World& world,
+                    Commands& cmds,
+                    WorkerPool& pool,
+                    std::size_t lvl) {
         using namespace sched_event;
         detail::build_wave_items(items_, wave, systems_, world);
         prepare_hooks(wave, world);
         finish_us_.assign(wave.size(), 0.0);
+        flush_attrib_.clear();
+        double flush_us = 0;
         auto const lone = wave.size() == 1;
         if (lone)
             events_.emit(SystemBegin {systems_[wave[0]].id, systems_[wave[0]].name});
@@ -465,10 +461,20 @@ private:
                 auto& s = systems_[wave[wi]];
                 if (!s.finish_items)
                     continue;
-                auto const t0 = detail::sched_clock::now();
+                // Tag any command a kernel-command barrier enqueues (the replay
+                // of its per-item store) with this system, so the flush below
+                // attributes it correctly.
+                detail::recording_source() = s.id;
+                auto const t0              = detail::sched_clock::now();
                 s.finish_items(world);
                 finish_us_[wi] = detail::elapsed_us(t0);
             }
+            // Command flush, attributed per recording system (flush_attrib_):
+            // reads each command's stamped source, so nothing here depends on
+            // the thread-local. cleans its own pending commands on throw.
+            auto const tf = detail::sched_clock::now();
+            world.apply_commands(&flush_attrib_);
+            flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();
             events_.emit(TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId {0}});
@@ -486,13 +492,17 @@ private:
                     busy += it.busy_us;
                     ++items;
                 }
+            auto const fit    = flush_attrib_.find(systems_[idx].id);
+            double const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {systems_[idx].id,
                                      systems_[idx].name,
                                      busy,
                                      prepare_us_[wi],
                                      finish_us_[wi],
-                                     items});
+                                     items,
+                                     flsh});
         }
+        return flush_us;
     }
 
     // Drive stateful kernel parameters' prepare hooks: for each hooked system,
@@ -575,6 +585,7 @@ private:
     std::vector<std::size_t> active_wave_;     // per-wave due-system scratch, reused
     bool has_cadence_ = false;                 // any system with every != 1
     std::vector<detail::WorkItem> items_;      // per-wave scratch, capacity retained
+    FlushAttrib flush_attrib_;                 // per-system flush time, per wave
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;

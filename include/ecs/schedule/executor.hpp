@@ -127,6 +127,11 @@ inline void run_work_item(WorkItem const& it,
                           Commands& cmds,
                           WorkerPool& pool) {
     auto& s = systems[it.system];
+    // Tag any command this item records with its system, so the barrier flush
+    // can be attributed per system (see Schedule's flush reporting). Set on the
+    // claiming lane's thread; each lane runs one item at a time, so this is the
+    // correct source for every record() the body makes.
+    detail::recording_source() = s.id;
     if (it.archetype == kImperative)
         s.run(world, cmds, pool);
     else

@@ -377,8 +377,12 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      command. So a re-sort cadence is just a `phase<-1>` system that records a
      sort command every N ticks: it inherits the schedule's timing, reporting,
      and exception handling with no maintenance-specific path. (The sort's cost
-     then lands in that wave's `flush_us`; per-command flush attribution is a
-     reporting follow-up.)
+     lands in that wave's `flush_us`; commands are tagged with their recording
+     system and the barrier apply is timed **per system** (the `cmd_us` trace
+     column), so the report attributes each system's own flush exactly — a
+     `flush` column folded into the amortized cost plus a spike time-series —
+     even when several command systems share a wave. So a command system ranks
+     by its real budget rather than its ~0 busy.)
    - End-to-end (mist, grid flipped to the kernel Reduce + a 64-tick sort
      cadence): 4-lane tick 0.83 → 0.77 ms at 40k, 1.63 → 1.54 ms at 85k
      (lane-scaling 2.6-2.8× → 3.1-3.3×), at the documented cost of ~10% at

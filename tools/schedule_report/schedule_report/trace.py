@@ -39,12 +39,16 @@ def load(path, warmup=0):
             wave = int(row["wave"])
             name = row["system"]
             s = systems.setdefault(name, {
-                "busy": [], "prep": [], "fin": [], "ticks": [],
+                "busy": [], "prep": [], "fin": [], "cmd": [], "ticks": [],
                 "items": 0, "waves": Counter(),
             })
             s["busy"].append(float(row["busy_us"]))
             s["prep"].append(float(row["prepare_us"]))
             s["fin"].append(float(row["finish_us"]))
+            # cmd_us (this system's share of the wave's command flush) is
+            # optional -- traces from before per-system flush attribution lack
+            # it and read as 0.
+            s["cmd"].append(float(row.get("cmd_us") or 0.0))
             s["ticks"].append(tick)
             s["items"] = max(s["items"], int(row["items"]))
             s["waves"][wave] += 1  # one-shot / per-N-tick phases shift placements

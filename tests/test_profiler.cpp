@@ -99,13 +99,13 @@ static void trace_writes_one_row_per_system_per_tick() {
 
     CHECK(!rows.empty());
     CHECK(rows.front() == "tick,wave,system,busy_us,prepare_us,finish_us,items,"
-                          "wave_us,flush_us,tick_us"); // header on ctor
+                          "wave_us,flush_us,tick_us,cmd_us"); // header on ctor
     CHECK(rows.size() == 1 + std::size_t(kTicks) * 2);
     CHECK((rows[1].find(",integrate,") != std::string::npos ||
            rows[1].find(",render,") != std::string::npos));
-    // Every measurement column is numeric: the row parses into 10 fields with
+    // Every measurement column is numeric: the row parses into 11 fields with
     // no gaps (CSV sinks feed tools/schedule_report directly).
-    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 9);
+    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 10);
     // Lone-wave systems: busy time is the item's real duration, so the wave's
     // wall time (wave_us) must be >= its one system's busy time. Field 3 is
     // busy_us, field 7 is wave_us.
@@ -118,11 +118,12 @@ static void trace_writes_one_row_per_system_per_tick() {
             if (c == std::string::npos)
                 break;
         }
-        CHECK(f.size() == 10);
+        CHECK(f.size() == 11);
         CHECK(std::stod(f[3]) > 0.0);              // busy was measured
         CHECK(std::stod(f[7]) >= std::stod(f[3])); // wave wall >= lone busy
         CHECK(std::stod(f[9]) >= std::stod(f[7])); // tick >= wave
         CHECK(std::stod(f[6]) >= 1.0);             // items
+        CHECK(std::stod(f[10]) == 0.0);            // no commands -> no cmd flush
     }
 }
 
@@ -239,8 +240,40 @@ static void trace_records_every_cadence_system() {
     CHECK(ran == 3); // body ran on exactly the 3 due ticks
 }
 
+// A wave's command flush is attributed per system: two command-recording
+// systems share one wave (both take only Commands&, so disjoint access), and
+// the one that records far more commands is charged far more flush -- the case
+// a wave-level flush number cannot separate.
+static void flush_attributed_per_system() {
+    World w;
+    Schedule s;
+    s.add("cheap", [](Commands& c) { c.spawn(Position {1, 0}); });
+    s.add("heavy", [](Commands& c) {
+        for (int i = 0; i < 20'000; ++i)
+            c.spawn(Position {float(i), 0});
+    });
+    CHECK(s.level_count() == 1); // no access conflict -> one shared wave
+
+    double heavy_flush = 0, cheap_flush = 0;
+    s.events().add([&](ScheduleEvent const& e) {
+        if (auto const* sw = std::get_if<sched_event::SystemWork>(&e)) {
+            if (sw->name == "heavy")
+                heavy_flush += sw->flush_us;
+            else if (sw->name == "cheap")
+                cheap_flush += sw->flush_us;
+        }
+    });
+    WorkerPool pool {4};
+    s.run(w, pool);
+
+    CHECK(w.size() == 20'001);         // both systems' spawns applied
+    CHECK(heavy_flush > 0.0);          // heavy's commands were timed
+    CHECK(heavy_flush > cheap_flush);  // and charged more than the cheap system
+}
+
 int main() {
     RUN_SUITE(report_summarizes_systems);
+    RUN_SUITE(flush_attributed_per_system);
     RUN_SUITE(trace_writes_one_row_per_system_per_tick);
     RUN_SUITE(fanned_wave_reports_real_busy_time);
     RUN_SUITE(report_and_trace_compose);
