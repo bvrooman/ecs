@@ -294,7 +294,7 @@ public:
         auto run = [query, blobStr, values, sid, np](World& w,
                                                      Commands&,
                                                      WorkerPool& pool) {
-            Signature const required(query.begin(), query.end());
+            Signature const required(query);
             for (auto const ai : w.matching_archetypes(required)) {
                 auto& arch       = WorldOps::archetype_at(w, ai);
                 auto const count = arch.size();

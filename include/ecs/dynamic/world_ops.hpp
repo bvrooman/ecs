@@ -149,8 +149,7 @@ struct WorldOps {
             require_dynamic(id, "spawn");
         if (e.index >= w.records_.size())
             w.records_.resize(e.index + 1);
-        auto const keys = bundle | std::views::keys;
-        Signature const sig(keys.begin(), keys.end()); // ctor sorts + dedups
+        Signature const sig(bundle | std::views::keys); // ctor sorts + dedups
         auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
             b.columns.reserve(b.signature.size());
             for (auto const id : b.signature)

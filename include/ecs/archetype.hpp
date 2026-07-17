@@ -23,11 +23,13 @@
 #include "soa.hpp"
 #include <algorithm>
 #include <cassert>
+#include <concepts>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
@@ -111,9 +113,18 @@ public:
         : ids_(ids) {
         normalize();
     }
-    template <class It>
-    Signature(It first, It last)
-        : ids_(first, last) {
+    // Construct from any range of ComponentId (a std::vector, a views::keys of
+    // a component bundle, ...). Constrained off Signature itself so it can't
+    // shadow the copy/move constructors.
+    template <class R>
+        requires std::ranges::input_range<R> &&
+                 std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
+                 (!std::same_as<std::remove_cvref_t<R>, Signature>)
+    explicit Signature(R&& ids) {
+        if constexpr (std::ranges::sized_range<R>)
+            ids_.reserve(std::ranges::size(ids));
+        for (ComponentId const id : ids)
+            ids_.push_back(id);
         normalize();
     }
 

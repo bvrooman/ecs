@@ -29,6 +29,22 @@ static void normalizes_on_construction() {
     CHECK(s.size() == 2);
 }
 
+// Constructs from any range of ComponentId (not just an init-list); the range
+// ctor is constrained off Signature, so copy/move still copy rather than
+// re-iterating.
+static void constructs_from_a_range() {
+    auto const a = ecs::component_id<A>;
+    auto const b = ecs::component_id<B>;
+    std::vector<ComponentId> const v {b, a, b}; // unsorted, dup
+    Signature const s(v);                       // range ctor
+    CHECK(s == Signature({a, b}));
+    CHECK(s.size() == 2);
+
+    Signature const copy = s; // copy ctor, not the range ctor
+    CHECK(copy == s);
+    CHECK(copy.hash() == s.hash());
+}
+
 // find yields the column slot (position in the sorted set); contains mirrors it.
 static void find_gives_column_slot() {
     auto const a = ecs::component_id<A>;
@@ -102,6 +118,7 @@ static void hash_and_equality() {
 
 int main() {
     RUN_SUITE(normalizes_on_construction);
+    RUN_SUITE(constructs_from_a_range);
     RUN_SUITE(find_gives_column_slot);
     RUN_SUITE(with_and_without);
     RUN_SUITE(includes_is_superset);
