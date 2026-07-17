@@ -4,8 +4,10 @@
 
 #include "check.hpp"
 #include "ecs/detail/free_list.hpp"
+#include "ecs/entity.hpp"
 #include <cstdint>
 
+using ecs::Entity;
 using ecs::detail::FreeList;
 
 // With nothing freed, allocate() mints brand-new handles 0, 1, 2, ...
@@ -44,9 +46,22 @@ static void compact_drops_claimed_tail() {
     CHECK(fl.allocate() == 2); // then mints anew
 }
 
+// A composite handle round-trips: free() stores it whole and allocate()
+// recycles it verbatim (so an Entity's generation survives), while a minted
+// handle is built from the index counter as {index, 0}.
+static void round_trips_composite_handles() {
+    FreeList<Entity, std::uint32_t> fl;
+    CHECK(fl.allocate() == (Entity {0, 0})); // minted from the index counter
+    CHECK(fl.allocate() == (Entity {1, 0}));
+    fl.free(Entity {0, 7});                   // freed with a bumped generation
+    CHECK(fl.allocate() == (Entity {0, 7}));  // recycled verbatim
+    CHECK(fl.allocate() == (Entity {2, 0}));  // drained -> mint next index
+}
+
 int main() {
     RUN_SUITE(mints_new_handles);
     RUN_SUITE(recycles_before_minting);
     RUN_SUITE(compact_drops_claimed_tail);
+    RUN_SUITE(round_trips_composite_handles);
     return REPORT();
 }

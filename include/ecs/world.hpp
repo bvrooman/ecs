@@ -314,7 +314,9 @@ private:
         remove_row(*archetypes_[rec.archetype()], rec.row);
         rec.set_alive(false);
         ++rec.generation;
-        slots_.free(e.index);
+        // Free the slot carrying its bumped generation, so the next reserve()
+        // that recycles it hands back a handle distinct from every stale one.
+        slots_.free(Entity {e.index, rec.generation});
         --alive_count_;
     }
 
@@ -388,12 +390,10 @@ private:
     // it), so claimed entries are compacted away at the next apply_commands.
     // Reused indices carry the slot's already-bumped generation.
     Entity reserve() {
-        auto const idx = slots_.allocate();
-        // A recycled index is already in records_ (with its bumped generation);
-        // a brand-new one is beyond records_.size() until spawn_now grows it, so
-        // it starts at generation 0. The bound check distinguishes the two.
-        return Entity {idx,
-                       idx < records_.size() ? records_[idx].generation : 0};
+        // slots_ carries the full handle: a recycled entity comes back with the
+        // generation it was freed with (bumped at destroy_now), a brand-new one
+        // as {index, 0}. So reserve() needs nothing from records_.
+        return slots_.allocate();
     }
 
     // Place a reserved entity directly into its final archetype with all of its
@@ -552,11 +552,12 @@ private:
     mutable std::unordered_map<Signature, std::vector<ArchetypeId>> query_cache_;
     mutable std::mutex query_cache_mutex_;
     std::vector<Record> records_;
-    // The entity-index allocator: hands out record slots, recycling destroyed
-    // ones (lock-free during a wave) before minting new ones. reserve() attaches
-    // the generation from records_; slots_ owns only index lifecycle. Its
-    // high-water mark == records_.size() when no reservations are outstanding.
-    using EntitySlots = detail::FreeList<std::uint32_t>;
+    // The entity allocator: hands out entity handles, recycling destroyed ones
+    // (lock-free during a wave) before minting new ones. It carries the full
+    // handle -- a recycled slot round-trips the generation it was freed with --
+    // so reserve() reads nothing from records_. Its index high-water mark ==
+    // records_.size() when no reservations are outstanding.
+    using EntitySlots = detail::FreeList<Entity, std::uint32_t>;
     EntitySlots slots_;
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
