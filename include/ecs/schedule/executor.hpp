@@ -41,8 +41,8 @@ namespace ecs::detail {
 // barrier-time folds walk ordinals so results are canonical-ordered no matter
 // which lane ran what.
 struct WorkItem {
-    std::uint32_t system;    // index into the schedule's system list
-    std::uint32_t archetype; // world archetype index, or kImperative
+    std::uint32_t system;  // index into the schedule's system list
+    ArchetypeId archetype; // world archetype, or kImperative
     std::uint32_t begin, end;
     std::uint32_t ordinal;
     // Measured execution time of this item, written by the lane that ran it
@@ -50,7 +50,7 @@ struct WorkItem {
     // items up per system into a SystemWork event.
     double busy_us = 0;
 };
-inline constexpr std::uint32_t kImperative = 0xFFFF'FFFFu;
+inline constexpr ArchetypeId kImperative {0xFFFF'FFFFu};
 // A slice below this many rows is not worth a separate claim.
 inline constexpr std::size_t kMinItemRows = 1024;
 // Target item count per kernel system. Deliberately a CONSTANT, not a
@@ -78,7 +78,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
         auto const& matches = s.match.resolve(world, s.query_sig);
         std::size_t total   = 0;
         for (auto const ai : matches)
-            total += world.archetypes()[ai]->size();
+            total += world.archetypes()[ai.value]->size();
         if (total == 0)
             continue;
         // ~kTargetItemsPerKernel items per kernel system: enough
@@ -91,7 +91,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
             std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
         std::uint32_t ordinal = 0; // generation order == serial-walk order
         for (auto const ai : matches) {
-            auto const n = world.archetypes()[ai]->size();
+            auto const n = world.archetypes()[ai.value]->size();
             for (std::size_t b = 0; b < n; b += grain) {
                 auto const e = std::min(n, b + grain);
                 items.push_back({std::uint32_t(idx),

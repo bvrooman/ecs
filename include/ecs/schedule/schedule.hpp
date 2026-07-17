@@ -388,7 +388,7 @@ private:
                 sys.run_range = [fn = std::forward<Fn>(fn),
                                  states](World& w,
                                          Commands& cmds,
-                                         std::uint32_t ai,
+                                         ArchetypeId ai,
                                          std::size_t b,
                                          std::size_t e,
                                          std::uint32_t ord) mutable {

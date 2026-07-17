@@ -203,7 +203,7 @@ template <class... Cs>
 struct query_param_traits<Query<Cs...>> {
     static Signature const& signature() { return Query<Cs...>::required(); }
     static Query<Cs...>
-    bind_slice(World& w, std::uint32_t archetype, std::size_t b, std::size_t e) {
+    bind_slice(World& w, ArchetypeId archetype, std::size_t b, std::size_t e) {
         return Query<Cs...>(w, parallel::serial_pool(), archetype, b, e);
     }
 };
@@ -231,11 +231,11 @@ struct KernelWaveContext {
 // generation) -- the per-record counterpart of Query's per-type thread_local
 // memo, for kernel systems whose component set is a runtime value.
 struct MatchCache {
-    std::vector<std::uint32_t> const* list = nullptr;
-    std::uint64_t world                    = 0;
-    std::uint64_t gen                      = ~std::uint64_t {0};
+    std::vector<ArchetypeId> const* list = nullptr;
+    std::uint64_t world                  = 0;
+    std::uint64_t gen                    = ~std::uint64_t {0};
 
-    std::vector<std::uint32_t> const& resolve(World const& w, Signature const& sig) {
+    std::vector<ArchetypeId> const& resolve(World const& w, Signature const& sig) {
         if (world != w.instance_id() || gen != w.archetype_generation()) {
             list  = &w.matching_archetypes(sig);
             world = w.instance_id();
@@ -262,7 +262,7 @@ struct SystemRecord {
     // per-item slots of stateful parameters (Reduce/Extract -- see
     // kernel_params.hpp). Null for imperative systems.
     move_only_function<
-        void(World&, Commands&, std::uint32_t, std::size_t, std::size_t, std::uint32_t)>
+        void(World&, Commands&, ArchetypeId, std::size_t, std::size_t, std::uint32_t)>
         run_range;
     // Barrier hooks for stateful kernel parameters (null when the system has
     // none): prepare runs single-threaded before the wave's dispatch with the

@@ -37,7 +37,7 @@ struct WorldOps {
         rec.generation = e.generation;
         rec.set_archetype(w.empty_archetype_);
         rec.set_alive(true);
-        auto& a = *w.archetypes_[w.empty_archetype_];
+        auto& a = *w.archetypes_[w.empty_archetype_.value];
         rec.row = static_cast<std::uint32_t>(a.entities.size());
         a.entities.push_back(e);
         ++w.alive_count_;
@@ -45,7 +45,7 @@ struct WorldOps {
     }
 
     static bool has(World const& w, Entity e, ComponentId id) {
-        return w.alive(e) && w.archetypes_[w.records_[e.index].archetype()]->has(id);
+        return w.alive(e) && w.archetypes_[w.records_[e.index].archetype().value]->has(id);
     }
 
     // Add a dynamic component (moving the entity to the matching archetype). If
@@ -55,12 +55,12 @@ struct WorldOps {
         if (!w.alive(e))
             return;
         auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& a   = *w.archetypes_[rec.archetype().value];
         if (a.has(id)) {
             col(a, id).scatter(rec.row, blob);
             return;
         }
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.add_edge.find(id); it != a.add_edge.end()) {
             to = it->second;
         } else {
@@ -69,7 +69,7 @@ struct WorldOps {
             auto const from  = rec.archetype();
             auto const& desc = registry().desc(id);
             to = w.get_or_create_archetype(sig, [&](Archetype& b) {
-                auto& src = *w.archetypes_[from];
+                auto& src = *w.archetypes_[from.value];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
                     b.columns.push_back(cid == id
@@ -86,7 +86,7 @@ struct WorldOps {
         require_dynamic(id, "get");
         if (!w.alive(e))
             return false;
-        auto const& a = *w.archetypes_[w.records_[e.index].archetype()];
+        auto const& a = *w.archetypes_[w.records_[e.index].archetype().value];
         if (!a.has(id))
             return false;
         static_cast<DynamicColumn const&>(a.column_at(id))
@@ -100,7 +100,7 @@ struct WorldOps {
         if (!w.alive(e))
             return false;
         auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& a   = *w.archetypes_[rec.archetype().value];
         if (!a.has(id))
             return false;
         col(a, id).scatter(rec.row, blob);
@@ -111,10 +111,10 @@ struct WorldOps {
         if (!w.alive(e))
             return;
         auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& a   = *w.archetypes_[rec.archetype().value];
         if (!a.has(id))
             return;
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.remove_edge.find(id); it != a.remove_edge.end()) {
             to = it->second;
         } else {
@@ -125,7 +125,7 @@ struct WorldOps {
                     sig.push_back(cid);
             auto const from = rec.archetype();
             to = w.get_or_create_archetype(sig, [&](Archetype& b) {
-                auto& src = *w.archetypes_[from];
+                auto& src = *w.archetypes_[from.value];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
                     b.columns.push_back(src.column_at(cid).clone_empty());
@@ -168,7 +168,7 @@ struct WorldOps {
                 b.columns.push_back(
                     std::make_unique<DynamicColumn>(registry().desc(id)));
         });
-        auto& arch     = *w.archetypes_[to];
+        auto& arch     = *w.archetypes_[to.value];
         auto& rec      = w.records_[e.index];
         rec.generation = e.generation;
         rec.set_archetype(to);
@@ -202,8 +202,8 @@ struct WorldOps {
     // matching_archetypes() indices. World's mutable archetype accessor is
     // private -- the dynamic layer reaches it via friendship, keeping the escape
     // hatch scoped to this module rather than the public World API.
-    static Archetype& archetype_at(World& w, std::uint32_t i) {
-        return *w.archetypes_[i];
+    static Archetype& archetype_at(World& w, ArchetypeId i) {
+        return *w.archetypes_[i.value];
     }
 
     // The first archetype that contains `id`, and its DynamicColumn -- the base

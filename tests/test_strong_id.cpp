@@ -92,6 +92,19 @@ static void system_ids_are_monotonic_and_nonzero() {
     CHECK(seen.size() == 3);
 }
 
+// Every core id space is a distinct, non-interconvertible type -- SystemId,
+// ComponentId, ResourceId, and ArchetypeId can never be crossed even though
+// several share std::uint32_t as their underlying rep.
+static void id_spaces_are_distinct() {
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ResourceId>);
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ArchetypeId>);
+    static_assert(!std::is_same_v<ecs::ResourceId, ecs::ArchetypeId>);
+    static_assert(!std::is_same_v<ecs::SystemId, ecs::ArchetypeId>);
+    static_assert(!std::is_convertible_v<ecs::ArchetypeId, ecs::ComponentId>);
+    static_assert(!std::is_convertible_v<ecs::ArchetypeId, std::uint32_t>);
+    CHECK(true);
+}
+
 // ComponentId and ResourceId are separate id spaces: distinct types that a
 // component and a resource may share a numeric value across without crossing.
 static void component_and_resource_ids() {
@@ -118,6 +131,7 @@ static void component_and_resource_ids() {
 
 int main() {
     RUN_SUITE(zero_overhead_layout);
+    RUN_SUITE(id_spaces_are_distinct);
     RUN_SUITE(component_and_resource_ids);
     RUN_SUITE(construct_and_read);
     RUN_SUITE(comparable);
