@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -140,16 +141,20 @@ public:
     Signature with(ComponentId const id) const {
         Signature s   = *this;
         auto const it = std::ranges::lower_bound(s.ids_, id);
-        if (it == s.ids_.end() || *it != id)
+        if (it == s.ids_.end() || *it != id) {
             s.ids_.insert(it, id);
+            s.rehash();
+        }
         return s;
     }
     [[nodiscard]]
     Signature without(ComponentId const id) const {
         Signature s   = *this;
         auto const it = std::ranges::lower_bound(s.ids_, id);
-        if (it != s.ids_.end() && *it == id)
+        if (it != s.ids_.end() && *it == id) {
             s.ids_.erase(it);
+            s.rehash();
+        }
         return s;
     }
 
@@ -162,27 +167,41 @@ public:
     [[nodiscard]] auto begin() const noexcept { return ids_.begin(); }
     [[nodiscard]] auto end() const noexcept { return ids_.end(); }
 
-    friend bool operator==(Signature const&, Signature const&) = default;
+    // The set's hash, computed once at construction and cached (a signature is
+    // immutable after construction; with()/without() build a fresh one). Feeds
+    // std::hash<Signature> so a Signature is a drop-in unordered_map key.
+    [[nodiscard]] std::size_t hash() const noexcept { return hash_; }
+
+    // Equality is element-wise. The cached hash is only a fast reject (unequal
+    // hashes => unequal signatures); it is NOT the equality itself -- FNV-1a can
+    // collide, and a hash-only compare would silently alias distinct signatures
+    // in the archetype maps (a wrong-archetype lookup). So a hash match falls
+    // through to the authoritative id compare.
+    friend bool operator==(Signature const& a, Signature const& b) noexcept {
+        return a.hash_ == b.hash_ && a.ids_ == b.ids_;
+    }
 
 private:
+    // FNV-1a over the ids. Accumulate in an explicit 64-bit type: the offset
+    // basis and prime are 64-bit, which would truncate into a 32-bit std::size_t
+    // on ILP32 targets (e.g. wasm32); narrow to size_t only at the end.
+    static constexpr std::uint64_t kFnvBasis = 1469598103934665603ull;
+    void rehash() noexcept {
+        std::uint64_t h = kFnvBasis;
+        for (auto const id : ids_) {
+            h ^= id.value;
+            h *= 1099511628211ull;
+        }
+        hash_ = static_cast<std::size_t>(h);
+    }
     void normalize() {
         std::ranges::sort(ids_);
         ids_.erase(std::ranges::unique(ids_).begin(), ids_.end());
+        rehash();
     }
-    std::vector<ComponentId> ids_; // sorted, unique
+    std::vector<ComponentId> ids_;                          // sorted, unique
+    std::size_t hash_ = static_cast<std::size_t>(kFnvBasis); // empty-set hash
 };
-
-inline std::size_t hash_signature(Signature const& s) noexcept {
-    // Accumulate in an explicit 64-bit type: the FNV-1a offset basis and prime
-    // are 64-bit, which would truncate into a 32-bit std::size_t on ILP32 targets
-    // (e.g. wasm32). Narrow to size_t only for the returned bucket index.
-    std::uint64_t h = 1469598103934665603ull; // FNV-1a
-    for (auto const id : s) {
-        h ^= id.value;
-        h *= 1099511628211ull;
-    }
-    return static_cast<std::size_t>(h);
-}
 
 struct Archetype {
     Signature signature;
@@ -259,3 +278,12 @@ struct Archetype {
 };
 
 } // namespace ecs
+
+// Signature is a drop-in unordered_map key: its hash is the cached set hash, so
+// no bespoke hasher is needed at the use site.
+template <>
+struct std::hash<ecs::Signature> {
+    std::size_t operator()(ecs::Signature const& s) const noexcept {
+        return s.hash();
+    }
+};

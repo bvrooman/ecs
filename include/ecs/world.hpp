@@ -29,11 +29,6 @@
 namespace ecs {
 
 namespace detail {
-    struct SigHash {
-        std::size_t operator()(Signature const& s) const noexcept {
-            return hash_signature(s);
-        }
-    };
 
     // True iff the types in the pack are pairwise distinct.
     template <class...>
@@ -557,10 +552,9 @@ private:
     CommandBuffer commands_;
     ResourceRegistry resources_;
     detail::IdVector<ArchetypeId, std::unique_ptr<Archetype>> archetypes_;
-    std::unordered_map<Signature, ArchetypeId, detail::SigHash> sig_index_;
+    std::unordered_map<Signature, ArchetypeId> sig_index_;
     // required-signature -> matching archetype indices (lazy, append-only).
-    mutable std::unordered_map<Signature, std::vector<ArchetypeId>, detail::SigHash>
-        query_cache_;
+    mutable std::unordered_map<Signature, std::vector<ArchetypeId>> query_cache_;
     mutable std::mutex query_cache_mutex_;
     std::vector<Record> records_;
     std::vector<std::uint32_t> free_;

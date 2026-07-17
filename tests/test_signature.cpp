@@ -4,6 +4,7 @@
 
 #include "check.hpp"
 #include "ecs/ecs.hpp"
+#include <unordered_map>
 #include <vector>
 
 using ecs::ColumnId;
@@ -74,10 +75,36 @@ static void includes_is_superset() {
     CHECK(abc.includes(abc));
 }
 
+// Equal signatures (however built) compare equal and hash equal; the cached
+// hash tracks with()/without() edits. Usable as an unordered_map key with no
+// bespoke hasher.
+static void hash_and_equality() {
+    auto const a = ecs::component_id<A>;
+    auto const b = ecs::component_id<B>;
+    Signature const s1 {a, b};
+    Signature const s2 {b, a, a}; // same set, different input order + dup
+    CHECK(s1 == s2);
+    CHECK(s1.hash() == s2.hash());
+    CHECK(std::hash<Signature> {}(s1) == s1.hash());
+
+    Signature const just_a {a};
+    CHECK(just_a != s1);
+    // building up to the same set reproduces the same cached hash
+    CHECK(just_a.with(b) == s1);
+    CHECK(just_a.with(b).hash() == s1.hash());
+    CHECK(s1.without(b) == just_a);
+    CHECK(s1.without(b).hash() == just_a.hash());
+
+    std::unordered_map<Signature, int> m; // no explicit hasher
+    m[s1] = 7;
+    CHECK(m.at(s2) == 7); // s2 finds s1's entry
+}
+
 int main() {
     RUN_SUITE(normalizes_on_construction);
     RUN_SUITE(find_gives_column_slot);
     RUN_SUITE(with_and_without);
     RUN_SUITE(includes_is_superset);
+    RUN_SUITE(hash_and_equality);
     return REPORT();
 }
