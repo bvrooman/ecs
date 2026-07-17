@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "../system_id.hpp" // SystemId
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -18,8 +19,6 @@ namespace ecs {
 // phase<-1> is a startup phase, phase<1> a teardown/late phase.
 template <int>
 struct phase {};
-
-using SystemId = std::uint64_t;
 
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with

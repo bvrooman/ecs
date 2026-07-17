@@ -90,7 +90,7 @@ namespace detail {
                             KernelWaveContext const& ctx) {
             auto const* seed = w.try_resource<RandomSeed>();
             auto const base  = seed ? seed->value : RandomSeed {}.value;
-            s.stream_base    = mix64(base) ^ mix64(ctx.tick) ^ mix64(ctx.system);
+            s.stream_base    = mix64(base) ^ mix64(ctx.tick) ^ mix64(ctx.system.value);
         }
 
         static void finish(state&, World&) {}

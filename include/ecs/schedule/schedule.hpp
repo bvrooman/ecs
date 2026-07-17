@@ -590,7 +590,7 @@ private:
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
-    SystemId next_id_ = 0;
+    SystemId next_id_ = {}; // ++ before each assignment; first system gets id 1
     bool dirty_       = true;
 };
 

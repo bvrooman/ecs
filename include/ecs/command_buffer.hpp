@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "system_id.hpp" // SystemId (the recording-source tag)
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -55,21 +56,21 @@ namespace detail {
         return idx;
     }
 
-    // The "source" (a SystemId) whose commands the calling thread is currently
-    // recording -- set by the executor around each work item and around each
-    // single-threaded barrier finish hook, read by CommandStore::record so each
-    // command carries its recording system. That lets apply() attribute the
-    // flush time per source (see Schedule's per-system flush reporting). 0 means
-    // "unattributed" (setup outside a run, etc.).
-    inline std::uint64_t& recording_source() noexcept {
-        thread_local std::uint64_t src = 0;
+    // The system whose commands the calling thread is currently recording --
+    // set by the executor around each work item and around each single-threaded
+    // barrier finish hook, read by CommandStore::record so each command carries
+    // its recording system. That lets apply() attribute the flush time per
+    // system (see Schedule's per-system flush reporting). A default SystemId{}
+    // (id 0) means "unattributed" (setup outside a run, etc.).
+    inline SystemId& recording_source() noexcept {
+        thread_local SystemId src {};
         return src;
     }
 } // namespace detail
 
-// Per-source (SystemId) command-apply time accumulated by a flush; keys are
-// whatever recording_source() held when each command was recorded.
-using FlushAttrib = std::unordered_map<std::uint64_t, double>;
+// Per-system command-apply time accumulated by a flush; keys are whatever
+// recording_source() held when each command was recorded.
+using FlushAttrib = std::unordered_map<SystemId, double>;
 
 class World; // defined in world.hpp
 
@@ -177,7 +178,7 @@ private:
         void* obj;
         void (*invoke)(void*, World&);
         void (*destroy)(void*) noexcept;
-        std::uint64_t source; // SystemId that recorded it (flush attribution)
+        SystemId source; // the system that recorded it (flush attribution)
     };
     struct Block {
         std::unique_ptr<std::byte[]> data;
