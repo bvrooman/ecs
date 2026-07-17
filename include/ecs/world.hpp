@@ -8,6 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
+#include "detail/free_list.hpp"
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
@@ -292,11 +293,11 @@ private:
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    // Compacts the free list first: entries above the cursor were claimed by
-    // reserve() during the wave (see reserve()); dropping them before commands
-    // push new frees restores the "cursor == free_.size()" rest-state invariant.
+    // Compacts the free list first: slots reserve() claimed during the wave are
+    // now live, so dropping them before commands push new frees restores the
+    // rest state (see EntitySlots).
     void apply_commands(FlushAttrib* attrib = nullptr) {
-        free_.resize(free_cursor_.load(std::memory_order_acquire));
+        slots_.compact();
         commands_.apply(*this, attrib);
     }
 
@@ -313,8 +314,7 @@ private:
         remove_row(*archetypes_[rec.archetype()], rec.row);
         rec.set_alive(false);
         ++rec.generation;
-        free_.push_back(e.index);
-        free_cursor_.store(free_.size(), std::memory_order_release);
+        slots_.free(e.index);
         --alive_count_;
     }
 
@@ -388,17 +388,12 @@ private:
     // it), so claimed entries are compacted away at the next apply_commands.
     // Reused indices carry the slot's already-bumped generation.
     Entity reserve() {
-        auto n = free_cursor_.load(std::memory_order_acquire);
-        while (n > 0) {
-            if (free_cursor_.compare_exchange_weak(n,
-                                                   n - 1,
-                                                   std::memory_order_acq_rel,
-                                                   std::memory_order_acquire)) {
-                auto const idx = free_[n - 1];
-                return Entity {idx, records_[idx].generation};
-            }
-        }
-        return Entity {reserve_high_.fetch_add(1, std::memory_order_relaxed), 0};
+        auto const idx = slots_.allocate();
+        // A recycled index is already in records_ (with its bumped generation);
+        // a brand-new one is beyond records_.size() until spawn_now grows it, so
+        // it starts at generation 0. The bound check distinguishes the two.
+        return Entity {idx,
+                       idx < records_.size() ? records_[idx].generation : 0};
     }
 
     // Place a reserved entity directly into its final archetype with all of its
@@ -557,9 +552,14 @@ private:
     mutable std::unordered_map<Signature, std::vector<ArchetypeId>> query_cache_;
     mutable std::mutex query_cache_mutex_;
     std::vector<Record> records_;
-    std::vector<std::uint32_t> free_;
+    // The entity-index allocator: hands out record slots, recycling destroyed
+    // ones (lock-free during a wave) before minting new ones. reserve() attaches
+    // the generation from records_; slots_ owns only index lifecycle. Its
+    // high-water mark == records_.size() when no reservations are outstanding.
+    using EntitySlots = detail::FreeList<std::uint32_t>;
+    EntitySlots slots_;
     ArchetypeId empty_archetype_ = {};
-    std::size_t alive_count_       = 0;
+    std::size_t alive_count_     = 0;
 
     static std::uint64_t next_world_id() noexcept {
         static std::atomic<std::uint64_t> counter {1};
@@ -567,15 +567,6 @@ private:
     }
     std::uint64_t const instance_id_ = next_world_id();
     std::atomic<std::uint64_t> archetype_gen_ {0};
-
-    std::atomic<std::uint32_t> reserve_high_ {0}; // next brand-new index; ==
-                                                  // records_.size() when no
-                                                  // reservations are outstanding
-    // Number of free_ entries still claimable. reserve() claims by CAS-
-    // decrementing; free_ itself only mutates at flush (single-threaded), which
-    // first compacts away the claimed tail (see apply_commands). Padded away
-    // from reserve_high_: both are hammered by concurrent reservers.
-    alignas(128) std::atomic<std::size_t> free_cursor_ {0};
 };
 
 // ===========================================================================
