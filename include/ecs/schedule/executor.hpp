@@ -78,7 +78,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
         auto const& matches = s.match.resolve(world, s.query_sig);
         std::size_t total   = 0;
         for (auto const ai : matches)
-            total += world.archetypes()[ai.value]->size();
+            total += world.archetypes()[ai]->size();
         if (total == 0)
             continue;
         // ~kTargetItemsPerKernel items per kernel system: enough
@@ -91,7 +91,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
             std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
         std::uint32_t ordinal = 0; // generation order == serial-walk order
         for (auto const ai : matches) {
-            auto const n = world.archetypes()[ai.value]->size();
+            auto const n = world.archetypes()[ai]->size();
             for (std::size_t b = 0; b < n; b += grain) {
                 auto const e = std::min(n, b + grain);
                 items.push_back({std::uint32_t(idx),

@@ -8,6 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
+#include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
 #include <algorithm>
@@ -179,7 +180,7 @@ public:
     template <class C>
     bool has(Entity const e) const {
         return alive(e) &&
-               archetypes_[records_[e.index].archetype().value]->has(component_id<C>);
+               archetypes_[records_[e.index].archetype()]->has(component_id<C>);
     }
 
     // Read a component by value (gathered from its per-field columns).
@@ -190,7 +191,7 @@ public:
     C get(Entity const e) const {
         assert(has<C>(e) && "World::get<C>(e): entity has no component C");
         auto const& rec = records_[e.index];
-        return archetypes_[rec.archetype().value]->column<C>().store.gather(rec.row);
+        return archetypes_[rec.archetype()]->column<C>().store.gather(rec.row);
     }
 
     // --- resources (singletons not owned by any entity) -------------------
@@ -251,9 +252,11 @@ public:
         if (auto const it = query_cache_.find(required); it != query_cache_.end())
             return it->second;
         auto matches = std::vector<ArchetypeId> {};
-        for (std::uint32_t i = 0; i < archetypes_.size(); ++i)
-            if (includes_signature(archetypes_[i]->signature, required))
-                matches.push_back(ArchetypeId {i});
+        for (std::uint32_t i = 0; i < archetypes_.size(); ++i) {
+            ArchetypeId const id {i};
+            if (includes_signature(archetypes_[id]->signature, required))
+                matches.push_back(id);
+        }
         return query_cache_.emplace(required, std::move(matches)).first->second;
     }
 
@@ -312,7 +315,7 @@ private:
         if (!alive(e))
             return;
         auto& rec = records_[e.index];
-        remove_row(*archetypes_[rec.archetype().value], rec.row);
+        remove_row(*archetypes_[rec.archetype()], rec.row);
         rec.set_alive(false);
         ++rec.generation;
         free_.push_back(e.index);
@@ -325,7 +328,7 @@ private:
         assert(alive(e));
         auto& rec      = records_[e.index];
         auto const cid = component_id<C>;
-        auto& a        = *archetypes_[rec.archetype().value]; // heap-stable across growth
+        auto& a        = *archetypes_[rec.archetype()]; // heap-stable across growth
         if (a.has(cid)) {
             a.column<C>().store.set(rec.row, std::move(value));
             return;
@@ -341,7 +344,7 @@ private:
             sig.insert(std::ranges::upper_bound(sig, cid), cid);
             auto const from = rec.archetype();
             to = get_or_create_archetype(sig, [&](Archetype& b) {
-                auto& src = *archetypes_[from.value];
+                auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
                     b.columns.push_back(id == cid ? std::make_unique<Column<C>>()
@@ -359,7 +362,7 @@ private:
         assert(alive(e));
         auto& rec      = records_[e.index];
         auto const cid = component_id<C>;
-        auto& a        = *archetypes_[rec.archetype().value];
+        auto& a        = *archetypes_[rec.archetype()];
         if (!a.has(cid))
             return;
 
@@ -374,7 +377,7 @@ private:
                     sig.push_back(id);
             auto const from = rec.archetype();
             to = get_or_create_archetype(sig, [&](Archetype& b) {
-                auto& src = *archetypes_[from.value];
+                auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
                     b.columns.push_back(src.column_at(id).clone_empty());
@@ -387,7 +390,7 @@ private:
     template <class C>
     void set_now(Entity const e, C value) {
         auto const& rec = records_[e.index];
-        archetypes_[rec.archetype().value]->column<C>().store.set(rec.row, std::move(value));
+        archetypes_[rec.archetype()]->column<C>().store.set(rec.row, std::move(value));
     }
 
     // Hand out a fresh entity handle without creating storage. Thread-safe and
@@ -446,7 +449,7 @@ private:
         // roll the archetype back to a consistent state (every column as long
         // as `entities`) and leave the record dead, rather than registering a
         // half-materialized entity.
-        auto& a            = *archetypes_[to.value];
+        auto& a            = *archetypes_[to];
         auto const new_row = static_cast<std::uint32_t>(a.entities.size());
         try {
             (a.template column<Cs>().store.push_back(std::move(comps)), ...);
@@ -466,14 +469,14 @@ private:
 
     template <class Factory>
     auto make_archetype(Signature const& sig, Factory&& makeColumns) -> ArchetypeId {
-        auto const idx  = ArchetypeId {static_cast<std::uint32_t>(archetypes_.size())};
         auto arch       = std::make_unique<Archetype>();
         arch->signature = sig;
         makeColumns(*arch);
-        // Publish the archetype before indexing it: if the index insertion ran
-        // first and push_back then threw, sig_index_ would map this signature
-        // to an out-of-bounds slot forever.
-        archetypes_.push_back(std::move(arch));
+        // Publish the archetype (push() assigns its id = its position) before
+        // indexing it: if the index insertion ran first and the append then
+        // threw, sig_index_ would map this signature to an out-of-bounds slot
+        // forever.
+        auto const idx = archetypes_.push(std::move(arch));
         try {
             sig_index_.emplace(sig, idx);
         } catch (...) {
@@ -526,8 +529,8 @@ private:
     void relocate(Entity const e, auto const to, AddExtra&& addExtra) {
         auto& rec       = records_[e.index];
         auto const from = rec.archetype();
-        auto& a         = *archetypes_[from.value];
-        auto& b         = *archetypes_[to.value];
+        auto& a         = *archetypes_[from];
+        auto& b         = *archetypes_[to];
 
         try {
             // Both signatures are sorted: shared columns via two-pointer merge.
@@ -564,7 +567,7 @@ private:
 
     CommandBuffer commands_;
     ResourceRegistry resources_;
-    std::vector<std::unique_ptr<Archetype>> archetypes_;
+    detail::IdVector<ArchetypeId, std::unique_ptr<Archetype>> archetypes_;
     std::unordered_map<Signature, ArchetypeId, detail::SigHash> sig_index_;
     // required-signature -> matching archetype indices (lazy, append-only).
     mutable std::unordered_map<Signature, std::vector<ArchetypeId>, detail::SigHash>

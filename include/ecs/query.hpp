@@ -137,7 +137,7 @@ public:
     template <class F>
     void for_each_serial(F&& fn) {
         if (slice_arch_ != kNoSlice) {
-            auto& arch = *world_.archetypes()[slice_arch_.value];
+            auto& arch = *world_.archetypes()[slice_arch_];
             detail::for_each_row(fn,
                                  std::span(arch.entities)
                                      .subspan(slice_b_, slice_e_ - slice_b_),
@@ -146,7 +146,7 @@ public:
         }
         auto const& archs = world_.archetypes();
         for (auto const ai : matches()) {
-            auto& arch      = *archs[ai.value];
+            auto& arch      = *archs[ai];
             auto const ents = std::span(arch.entities);
             detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
         }
@@ -197,7 +197,7 @@ public:
         if (slice_arch_ != kNoSlice) {
             // Sliced (kernel-item) query: exactly this row range, inline on
             // the calling lane -- the executor already parallelized the items.
-            auto& arch = *world_.archetypes()[slice_arch_.value];
+            auto& arch = *world_.archetypes()[slice_arch_];
             fn(std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
                chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
             return;
@@ -213,13 +213,13 @@ public:
         // kernel with zero rows.
         std::size_t total = 0;
         for (auto const ai : matched)
-            total += archs[ai.value]->size();
+            total += archs[ai]->size();
         if (total == 0)
             return;
         auto run = [&](std::size_t b, std::size_t e) {
             std::size_t base = 0;
             for (auto const ai : matched) {
-                auto& arch          = *archs[ai.value];
+                auto& arch          = *archs[ai];
                 std::size_t const n = arch.size();
                 if (base + n > b) {
                     std::size_t const lo = b > base ? b - base : 0;
@@ -242,7 +242,7 @@ public:
             return slice_e_ - slice_b_;
         std::size_t n = 0;
         for (auto const ai : matches())
-            n += world_.archetypes()[ai.value]->size();
+            n += world_.archetypes()[ai]->size();
         return n;
     }
 
