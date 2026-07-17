@@ -69,11 +69,7 @@ class Query {
     // stable after first use, so this is computed on the first query of this
     // type.
     static Signature const& required() {
-        static auto const s = [] {
-            auto v = Signature {component_id<bare<Cs>>...};
-            std::ranges::sort(v);
-            return v;
-        }();
+        static Signature const s {component_id<bare<Cs>>...}; // ctor sorts + dedups
         return s;
     }
 

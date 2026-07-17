@@ -102,8 +102,11 @@ static void id_spaces_are_distinct() {
     static_assert(!std::is_same_v<ecs::ComponentId, ecs::ArchetypeId>);
     static_assert(!std::is_same_v<ecs::ResourceId, ecs::ArchetypeId>);
     static_assert(!std::is_same_v<ecs::SystemId, ecs::ArchetypeId>);
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ColumnId>);
+    static_assert(!std::is_same_v<ecs::ArchetypeId, ecs::ColumnId>);
     static_assert(!std::is_convertible_v<ecs::ArchetypeId, ecs::ComponentId>);
     static_assert(!std::is_convertible_v<ecs::ArchetypeId, std::uint32_t>);
+    static_assert(!std::is_convertible_v<ecs::ColumnId, ecs::ComponentId>);
     CHECK(true);
 }
 

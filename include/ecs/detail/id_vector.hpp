@@ -30,6 +30,8 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return v_.size(); }
     [[nodiscard]] bool empty() const noexcept { return v_.empty(); }
 
+    void reserve(std::size_t const n) { v_.reserve(n); }
+
     // Range-for yields the elements (the ids are their positions); use size()
     // + Id{i} when the id itself is needed while scanning.
     auto begin() noexcept { return v_.begin(); }

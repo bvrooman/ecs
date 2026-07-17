@@ -254,7 +254,7 @@ public:
         auto matches = std::vector<ArchetypeId> {};
         for (std::uint32_t i = 0; i < archetypes_.size(); ++i) {
             ArchetypeId const id {i};
-            if (includes_signature(archetypes_[id]->signature, required))
+            if (archetypes_[id]->signature.includes(required))
                 matches.push_back(id);
         }
         return query_cache_.emplace(required, std::move(matches)).first->second;
@@ -340,15 +340,13 @@ private:
         if (auto const it = a.add_edge.find(cid); it != a.add_edge.end()) {
             to = it->second;
         } else {
-            auto sig = a.signature;
-            sig.insert(std::ranges::upper_bound(sig, cid), cid);
             auto const from = rec.archetype();
-            to = get_or_create_archetype(sig, [&](Archetype& b) {
+            to = get_or_create_archetype(a.signature.with(cid), [&](Archetype& b) {
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
-                    b.columns.push_back(id == cid ? std::make_unique<Column<C>>()
-                                                  : src.column_at(id).clone_empty());
+                    b.columns.push(id == cid ? std::make_unique<Column<C>>()
+                                             : src.column_at(id).clone_empty());
             });
             a.add_edge.emplace(cid, to);
         }
@@ -370,17 +368,12 @@ private:
         if (auto const it = a.remove_edge.find(cid); it != a.remove_edge.end()) {
             to = it->second;
         } else {
-            auto sig = Signature {};
-            sig.reserve(a.signature.size() - 1);
-            for (auto id : a.signature)
-                if (id != cid)
-                    sig.push_back(id);
             auto const from = rec.archetype();
-            to = get_or_create_archetype(sig, [&](Archetype& b) {
+            to = get_or_create_archetype(a.signature.without(cid), [&](Archetype& b) {
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
-                    b.columns.push_back(src.column_at(id).clone_empty());
+                    b.columns.push(src.column_at(id).clone_empty());
             });
             a.remove_edge.emplace(cid, to);
         }
@@ -426,11 +419,7 @@ private:
         // than allocating a Signature vector on every spawn -- the last
         // per-spawn heap allocation on the steady-state path. Same idiom as
         // Query::required().
-        static Signature const sig = [] {
-            auto s = Signature {component_id<Cs>...};
-            std::ranges::sort(s);
-            return s;
-        }();
+        static Signature const sig = Signature {component_id<Cs>...};
         auto const to = get_or_create_archetype(sig, [](Archetype& b) {
             // One column per component, ordered to match the sorted signature.
             std::array<std::pair<ComponentId, std::unique_ptr<IColumn>>, sizeof...(Cs)>
@@ -439,7 +428,7 @@ private:
             std::ranges::sort(cols, {}, [](auto const& p) { return p.first; });
             b.columns.reserve(cols.size());
             for (auto& [id, col] : cols)
-                b.columns.push_back(std::move(col));
+                b.columns.push(std::move(col));
         });
 
         if (e.index >= records_.size())
@@ -488,15 +477,11 @@ private:
         {
             auto lock = std::lock_guard(query_cache_mutex_);
             for (auto& [required, list] : query_cache_)
-                if (includes_signature(sig, required))
+                if (sig.includes(required))
                     list.push_back(idx);
         }
         archetype_gen_.fetch_add(1, std::memory_order_release);
         return idx;
-    }
-
-    static bool includes_signature(Signature const& super, Signature const& sub) {
-        return std::ranges::includes(super, sub);
     }
 
     template <class Factory>
@@ -533,15 +518,19 @@ private:
         auto& b         = *archetypes_[to];
 
         try {
-            // Both signatures are sorted: shared columns via two-pointer merge.
-            for (std::size_t ia = 0, ib = 0;
-                 ia < a.signature.size() && ib < b.signature.size();) {
+            // Both signatures are sorted: shared columns via two-pointer merge
+            // over column slots (a signature position is its ColumnId).
+            for (ColumnId ia {0}, ib {0};
+                 ia.value < a.signature.size() && ib.value < b.signature.size();) {
                 if (a.signature[ia] < b.signature[ib])
                     ++ia;
                 else if (b.signature[ib] < a.signature[ia])
                     ++ib;
-                else
-                    a.columns[ia++]->move_row_to(*b.columns[ib++], rec.row);
+                else {
+                    a.columns[ia]->move_row_to(*b.columns[ib], rec.row);
+                    ++ia;
+                    ++ib;
+                }
             }
             addExtra(b);
             b.entities.push_back(e);
