@@ -223,7 +223,7 @@ inline double elapsed_us(sched_clock::time_point const t0) {
 // per-item stream seeds from these (deterministic, lane-count-independent);
 // most parameters ignore it.
 struct KernelWaveContext {
-    SystemId system    = 0;
+    SystemId system    = {};
     std::uint64_t tick = 0;
 };
 
@@ -247,7 +247,7 @@ struct MatchCache {
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
-    SystemId id = 0;
+    SystemId id = {};
     std::string name;
     SystemAccess access;
     // Imperative body (add/add_once/add_dynamic): opaque to the scheduler,

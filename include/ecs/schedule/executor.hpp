@@ -131,7 +131,7 @@ inline void run_work_item(WorkItem const& it,
     // can be attributed per system (see Schedule's flush reporting). Set on the
     // claiming lane's thread; each lane runs one item at a time, so this is the
     // correct source for every record() the body makes.
-    detail::recording_source() = s.id;
+    detail::recording_source() = s.id.value;
     if (it.archetype == kImperative)
         s.run(world, cmds, pool);
     else

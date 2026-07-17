@@ -9,6 +9,7 @@ function(ecs_add_test name)
   set_tests_properties(${name} PROPERTIES TIMEOUT 120)
 endfunction()
 
+ecs_add_test(test_strong_id)
 ecs_add_test(test_soa)
 ecs_add_test(test_emitter)
 ecs_add_test(test_world)

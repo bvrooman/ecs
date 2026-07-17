@@ -208,7 +208,7 @@ public:
     // and spawns via this world's spawn(). Runs main-thread. See js_system.hpp.
     int defineSystem(std::string name, val spec, val kernel) {
         return static_cast<int>(
-            web::add_js_system(schedule_, std::move(name), spec, kernel));
+            web::add_js_system(schedule_, std::move(name), spec, kernel).value);
     }
 
     // Register a *parallel* JS system. Same access spec { write?, read? } as
@@ -372,7 +372,8 @@ public:
         };
         return static_cast<int>(schedule_.add_dynamic(std::move(name),
                                                       std::move(access),
-                                                      std::move(run)));
+                                                      std::move(run))
+                                    .value);
     }
 
     // Run the schedule once. First snapshot every parallel system's params object

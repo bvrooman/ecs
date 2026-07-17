@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "../detail/strong_id.hpp" // StrongId
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -19,7 +20,12 @@ namespace ecs {
 template <int>
 struct phase {};
 
-using SystemId = std::uint64_t;
+// Stable, monotonic id assigned to each registered system (0 is the "no
+// system" sentinel the scheduler never hands out). A strong type so a system
+// id can't be mixed up with a raw counter, a component id, or any other
+// integer; read `.value` at the few boundaries that stay untyped (the command
+// buffer's opaque source tag, the RNG seed mix).
+using SystemId = StrongId<struct SystemIdTag, std::uint64_t>;
 
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with
