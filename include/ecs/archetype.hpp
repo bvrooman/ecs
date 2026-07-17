@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "archetype_id.hpp"
 #include "entity.hpp"
 #include "soa.hpp"
 #include <algorithm>
@@ -122,7 +123,7 @@ struct Archetype {
     // in when component `cid` is added to / removed from this one. Makes the
     // steady-state add/remove transition a single map hit instead of a
     // signature build + hash + global index lookup (World maintains these).
-    std::unordered_map<ComponentId, std::uint32_t> add_edge, remove_edge;
+    std::unordered_map<ComponentId, ArchetypeId> add_edge, remove_edge;
 
     // Index of `id` within signature/columns, or npos.
     [[nodiscard]]

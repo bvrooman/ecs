@@ -60,7 +60,7 @@ struct WorldOps {
             col(a, id).scatter(rec.row, blob);
             return;
         }
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.add_edge.find(id); it != a.add_edge.end()) {
             to = it->second;
         } else {
@@ -114,7 +114,7 @@ struct WorldOps {
         auto& a   = *w.archetypes_[rec.archetype()];
         if (!a.has(id))
             return;
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.remove_edge.find(id); it != a.remove_edge.end()) {
             to = it->second;
         } else {
@@ -202,7 +202,7 @@ struct WorldOps {
     // matching_archetypes() indices. World's mutable archetype accessor is
     // private -- the dynamic layer reaches it via friendship, keeping the escape
     // hatch scoped to this module rather than the public World API.
-    static Archetype& archetype_at(World& w, std::uint32_t i) {
+    static Archetype& archetype_at(World& w, ArchetypeId i) {
         return *w.archetypes_[i];
     }
 

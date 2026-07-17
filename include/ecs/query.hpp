@@ -83,11 +83,11 @@ class Query {
     // matching archetype (created at flush; the generation only changes there)
     // or a different World forces one locked re-lookup. The world instance id
     // guards against a destroyed World's address being reused.
-    std::vector<std::uint32_t> const& matches() const {
+    std::vector<ArchetypeId> const& matches() const {
         struct Cache {
             std::uint64_t world = 0;
             std::uint64_t gen   = ~std::uint64_t {0};
-            std::vector<std::uint32_t> const* list = nullptr;
+            std::vector<ArchetypeId> const* list = nullptr;
         };
         thread_local Cache cache;
         auto const gen = world_.archetype_generation();
@@ -105,7 +105,7 @@ class Query {
     // detail::query_param_traits (befriended above).
     Query(World& world,
           WorkerPool& pool,
-          std::uint32_t slice_archetype,
+          ArchetypeId slice_archetype,
           std::size_t slice_begin,
           std::size_t slice_end)
         : world_(world)
@@ -114,7 +114,7 @@ class Query {
         , slice_b_(slice_begin)
         , slice_e_(slice_end) {}
 
-    static constexpr std::uint32_t kNoSlice = 0xFFFF'FFFFu;
+    static constexpr ArchetypeId kNoSlice {0xFFFF'FFFFu};
 
 public:
     // `pool` is the data-parallel WorkerPool the executor binds. Ad-hoc queries
@@ -258,7 +258,7 @@ private:
     WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
     // Slice restriction for kernel-item queries (kNoSlice = iterate all
     // matching archetypes, the normal mode).
-    std::uint32_t slice_arch_ = kNoSlice;
+    ArchetypeId slice_arch_ = kNoSlice;
     std::size_t slice_b_      = 0;
     std::size_t slice_e_      = 0;
 };

@@ -8,6 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
+#include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
 #include <algorithm>
@@ -250,10 +251,12 @@ public:
         auto lock = std::lock_guard(query_cache_mutex_);
         if (auto const it = query_cache_.find(required); it != query_cache_.end())
             return it->second;
-        auto matches = std::vector<std::uint32_t> {};
-        for (std::uint32_t i = 0; i < archetypes_.size(); ++i)
-            if (includes_signature(archetypes_[i]->signature, required))
-                matches.push_back(i);
+        auto matches = std::vector<ArchetypeId> {};
+        for (std::uint32_t i = 0; i < archetypes_.size(); ++i) {
+            ArchetypeId const id {i};
+            if (includes_signature(archetypes_[id]->signature, required))
+                matches.push_back(id);
+        }
         return query_cache_.emplace(required, std::move(matches)).first->second;
     }
 
@@ -282,14 +285,14 @@ private:
             return (arch_bits & kAliveBit) != 0;
         }
         [[nodiscard]]
-        std::uint32_t archetype() const noexcept {
-            return arch_bits & ~kAliveBit;
+        ArchetypeId archetype() const noexcept {
+            return ArchetypeId {arch_bits & ~kAliveBit};
         }
         void set_alive(bool const v) noexcept {
             arch_bits = v ? (arch_bits | kAliveBit) : (arch_bits & ~kAliveBit);
         }
-        void set_archetype(std::uint32_t const a) noexcept {
-            arch_bits = (arch_bits & kAliveBit) | a;
+        void set_archetype(ArchetypeId const a) noexcept {
+            arch_bits = (arch_bits & kAliveBit) | a.value;
         }
     };
 
@@ -333,7 +336,7 @@ private:
         // Steady state: the destination is cached on the archetype's add edge,
         // so the transition costs one hash hit -- no signature vector build, no
         // allocation, no global index lookup.
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.add_edge.find(cid); it != a.add_edge.end()) {
             to = it->second;
         } else {
@@ -363,7 +366,7 @@ private:
         if (!a.has(cid))
             return;
 
-        std::uint32_t to;
+        ArchetypeId to;
         if (auto const it = a.remove_edge.find(cid); it != a.remove_edge.end()) {
             to = it->second;
         } else {
@@ -465,15 +468,15 @@ private:
     }
 
     template <class Factory>
-    auto make_archetype(Signature const& sig, Factory&& makeColumns) -> std::uint32_t {
-        auto const idx  = static_cast<std::uint32_t>(archetypes_.size());
+    auto make_archetype(Signature const& sig, Factory&& makeColumns) -> ArchetypeId {
         auto arch       = std::make_unique<Archetype>();
         arch->signature = sig;
         makeColumns(*arch);
-        // Publish the archetype before indexing it: if the index insertion ran
-        // first and push_back then threw, sig_index_ would map this signature
-        // to an out-of-bounds slot forever.
-        archetypes_.push_back(std::move(arch));
+        // Publish the archetype (push() assigns its id = its position) before
+        // indexing it: if the index insertion ran first and the append then
+        // threw, sig_index_ would map this signature to an out-of-bounds slot
+        // forever.
+        auto const idx = archetypes_.push(std::move(arch));
         try {
             sig_index_.emplace(sig, idx);
         } catch (...) {
@@ -564,15 +567,15 @@ private:
 
     CommandBuffer commands_;
     ResourceRegistry resources_;
-    std::vector<std::unique_ptr<Archetype>> archetypes_;
-    std::unordered_map<Signature, std::uint32_t, detail::SigHash> sig_index_;
+    detail::IdVector<ArchetypeId, std::unique_ptr<Archetype>> archetypes_;
+    std::unordered_map<Signature, ArchetypeId, detail::SigHash> sig_index_;
     // required-signature -> matching archetype indices (lazy, append-only).
-    mutable std::unordered_map<Signature, std::vector<std::uint32_t>, detail::SigHash>
+    mutable std::unordered_map<Signature, std::vector<ArchetypeId>, detail::SigHash>
         query_cache_;
     mutable std::mutex query_cache_mutex_;
     std::vector<Record> records_;
     std::vector<std::uint32_t> free_;
-    std::uint32_t empty_archetype_ = 0;
+    ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_       = 0;
 
     static std::uint64_t next_world_id() noexcept {

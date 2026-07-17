@@ -128,14 +128,17 @@ namespace detail {
     decltype(auto) kernel_bind(State& s,
                                World& w,
                                Commands& c,
-                               std::uint32_t archetype,
+                               ArchetypeId archetype,
                                std::size_t b,
                                std::size_t e,
                                std::uint32_t ordinal) {
         if constexpr (Sliced) {
             return query_param_traits<P>::bind_slice(w, archetype, b, e);
         } else {
-            return kernel_param<P>::bind(s, w, c, archetype, b, e, ordinal);
+            // Non-query parameters take the archetype as an ignored placeholder
+            // slot in the uniform bind signature (see the `/*archetype*/` args
+            // above) -- pass the raw index; only the sliced query path uses it.
+            return kernel_param<P>::bind(s, w, c, archetype.value, b, e, ordinal);
         }
     }
 
@@ -175,7 +178,7 @@ namespace detail {
                        States& st,
                        World& w,
                        Commands& c,
-                       std::uint32_t archetype,
+                       ArchetypeId archetype,
                        std::size_t b,
                        std::size_t e,
                        std::uint32_t ordinal,

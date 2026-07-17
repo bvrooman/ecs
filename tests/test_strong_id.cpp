@@ -3,9 +3,11 @@
 // and that distinct tags are distinct, non-interconvertible types.
 
 #include "check.hpp"
+#include "ecs/detail/id_vector.hpp"
 #include "ecs/detail/strong_id.hpp"
 #include "ecs/ecs.hpp"
 #include <cstdint>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 
@@ -92,6 +94,19 @@ static void system_ids_are_monotonic_and_nonzero() {
     CHECK(seen.size() == 3);
 }
 
+// Every core id space is a distinct, non-interconvertible type -- SystemId,
+// ComponentId, ResourceId, and ArchetypeId can never be crossed even though
+// several share std::uint32_t as their underlying rep.
+static void id_spaces_are_distinct() {
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ResourceId>);
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ArchetypeId>);
+    static_assert(!std::is_same_v<ecs::ResourceId, ecs::ArchetypeId>);
+    static_assert(!std::is_same_v<ecs::SystemId, ecs::ArchetypeId>);
+    static_assert(!std::is_convertible_v<ecs::ArchetypeId, ecs::ComponentId>);
+    static_assert(!std::is_convertible_v<ecs::ArchetypeId, std::uint32_t>);
+    CHECK(true);
+}
+
 // ComponentId and ResourceId are separate id spaces: distinct types that a
 // component and a resource may share a numeric value across without crossing.
 static void component_and_resource_ids() {
@@ -116,8 +131,33 @@ static void component_and_resource_ids() {
     CHECK(res.at(ecs::resource_id<A>) == 2);
 }
 
+// IdVector: indexed only by its id type, and owns id assignment (push returns
+// the appended element's id == its position).
+static void id_vector_basics() {
+    ecs::detail::IdVector<Ticket, std::string> v;
+    CHECK(v.empty());
+    Ticket const a = v.push("a");
+    Ticket const b = v.push("b");
+    CHECK(a == Ticket {0});     // ids are positions, assigned on append
+    CHECK(b == Ticket {1});
+    CHECK(v.size() == 2);
+    CHECK(v[a] == "a");         // operator[] takes the id, not a raw int
+    CHECK(v[b] == "b");
+    v[a] = "A";
+    CHECK(v[a] == "A");
+    // range-for yields the elements
+    std::string joined;
+    for (auto const& s : v)
+        joined += s;
+    CHECK(joined == "Ab");
+    v.pop_back();
+    CHECK(v.size() == 1);
+}
+
 int main() {
     RUN_SUITE(zero_overhead_layout);
+    RUN_SUITE(id_vector_basics);
+    RUN_SUITE(id_spaces_are_distinct);
     RUN_SUITE(component_and_resource_ids);
     RUN_SUITE(construct_and_read);
     RUN_SUITE(comparable);
