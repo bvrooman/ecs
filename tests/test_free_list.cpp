@@ -8,15 +8,12 @@
 
 using ecs::detail::FreeList;
 
-// With nothing freed, allocate() mints brand-new handles 0, 1, 2, ... and
-// high_water() tracks the count handed out.
+// With nothing freed, allocate() mints brand-new handles 0, 1, 2, ...
 static void mints_new_handles() {
     FreeList<std::uint32_t> fl;
-    CHECK(fl.high_water() == 0);
     CHECK(fl.allocate() == 0);
     CHECK(fl.allocate() == 1);
     CHECK(fl.allocate() == 2);
-    CHECK(fl.high_water() == 3);
 }
 
 // Freed handles are recycled before new ones are minted, most-recently-freed
@@ -25,13 +22,12 @@ static void recycles_before_minting() {
     FreeList<std::uint32_t> fl;
     (void)fl.allocate(); // 0
     (void)fl.allocate(); // 1
-    (void)fl.allocate(); // 2  (high_water == 3)
+    (void)fl.allocate(); // 2
     fl.free(1);
     fl.free(2);
     CHECK(fl.allocate() == 2); // LIFO
     CHECK(fl.allocate() == 1);
     CHECK(fl.allocate() == 3); // free list drained -> mint
-    CHECK(fl.high_water() == 4);
 }
 
 // compact() drops the slots allocate() claimed (their handles are now live),
@@ -39,7 +35,7 @@ static void recycles_before_minting() {
 static void compact_drops_claimed_tail() {
     FreeList<std::uint32_t> fl;
     (void)fl.allocate(); // 0
-    (void)fl.allocate(); // 1  (high_water == 2)
+    (void)fl.allocate(); // 1
     fl.free(0);
     fl.free(1);              // free = [0, 1]
     CHECK(fl.allocate() == 1); // claims the tail; free vector still holds [0,1]

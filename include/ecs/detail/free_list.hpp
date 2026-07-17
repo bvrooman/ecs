@@ -62,14 +62,6 @@ public:
     // the wave's free()s run.
     void compact() { free_.resize(cursor_.load(std::memory_order_acquire)); }
 
-    // The next brand-new handle that would be minted -- i.e. the count of
-    // handles ever handed out via the high-water path (the caller sizes its
-    // per-slot storage to this).
-    [[nodiscard]]
-    T high_water() const noexcept {
-        return high_.load(std::memory_order_relaxed);
-    }
-
 private:
     std::vector<T> free_;                                 // frozen while allocating
     std::atomic<T> high_ {0};                             // next brand-new handle
