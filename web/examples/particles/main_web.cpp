@@ -434,10 +434,10 @@ int main() {
 emscripten::val ecs_components() {
     using emscripten::val;
     val o = val::object();
-    o.set("Position", static_cast<int>(component_id<Position>));
-    o.set("Velocity", static_cast<int>(component_id<Velocity>));
-    o.set("Color", static_cast<int>(component_id<Color>));
-    o.set("Age", static_cast<int>(component_id<Age>));
+    o.set("Position", static_cast<int>(component_id<Position>.value));
+    o.set("Velocity", static_cast<int>(component_id<Velocity>.value));
+    o.set("Color", static_cast<int>(component_id<Color>.value));
+    o.set("Age", static_cast<int>(component_id<Age>.value));
     return o;
 }
 

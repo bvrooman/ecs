@@ -101,7 +101,7 @@ inline std::size_t hash_signature(Signature const& s) noexcept {
     // (e.g. wasm32). Narrow to size_t only for the returned bucket index.
     std::uint64_t h = 1469598103934665603ull; // FNV-1a
     for (auto const id : s) {
-        h ^= id;
+        h ^= id.value;
         h *= 1099511628211ull;
     }
     return static_cast<std::size_t>(h);

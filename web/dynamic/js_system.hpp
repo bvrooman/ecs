@@ -50,7 +50,7 @@ inline SystemId add_js_system(Schedule& schedule,
     using emscripten::val;
     SystemAccess access;
     std::vector<ComponentId> query;
-    auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+    auto collect = [&](char const* key, std::vector<ComponentId>& into) {
         val arr = spec[key];
         if (arr.isUndefined() || arr.isNull())
             return;

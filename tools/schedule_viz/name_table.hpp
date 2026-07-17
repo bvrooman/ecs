@@ -19,7 +19,8 @@
 namespace viz {
 
 struct NameTable {
-    std::unordered_map<std::uint32_t, std::string> comp, res;
+    std::unordered_map<ecs::ComponentId, std::string> comp;
+    std::unordered_map<ecs::ResourceId, std::string> res;
 
     template <class C>
     NameTable& component(std::string n) {
@@ -31,19 +32,19 @@ struct NameTable {
         res[ecs::resource_id<R>] = std::move(n);
         return *this;
     }
-    std::string comp_name(std::uint32_t id) const {
+    std::string comp_name(ecs::ComponentId id) const {
         if (auto it = comp.find(id); it != comp.end())
             return it->second; // explicit override
         if (auto n = ecs::component_name(id); !n.empty())
             return std::string(n); // reflected (ECS_REFLECT_NAMES)
-        return "c" + std::to_string(id);
+        return "c" + std::to_string(id.value);
     }
-    std::string res_name(std::uint32_t id) const {
+    std::string res_name(ecs::ResourceId id) const {
         if (auto it = res.find(id); it != res.end())
             return it->second; // explicit override
         if (auto n = ecs::resource_name(id); !n.empty())
             return std::string(n); // reflected (ECS_REFLECT_NAMES)
-        return "r" + std::to_string(id);
+        return "r" + std::to_string(id.value);
     }
 };
 

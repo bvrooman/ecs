@@ -128,7 +128,7 @@ public:
             fs.emplace_back(f["name"].as<std::string>(),
                             parse_type(f["type"].as<std::string>()));
         }
-        return static_cast<int>(registry().define(std::move(name), fs));
+        return static_cast<int>(registry().define(std::move(name), fs).value);
     }
 
     val createEntity() { return to_val(WorldOps::create_entity(world_)); }
@@ -220,7 +220,7 @@ public:
     int defineParallelSystem(std::string name, val spec, val kernel) {
         SystemAccess access;
         std::vector<ComponentId> query;
-        auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+        auto collect = [&](char const* key, std::vector<ComponentId>& into) {
             val arr = spec[key];
             if (arr.isUndefined() || arr.isNull())
                 return;

@@ -48,7 +48,7 @@ struct Field {
 enum class StorageKind : std::uint8_t { dynamic_column, native_column };
 
 struct ComponentDesc {
-    ComponentId id = 0;
+    ComponentId id = {};
     std::string name;
     std::vector<Field> fields;
     std::size_t stride = 0; // packed blob size == sum of field sizes

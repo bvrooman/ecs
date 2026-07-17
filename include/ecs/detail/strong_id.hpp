@@ -28,6 +28,10 @@ namespace ecs {
 
 template <class Tag, class Rep>
 struct StrongId {
+    // The underlying integer type, exposed so generic code (e.g. an atomic
+    // counter that mints ids) can spell it without naming Rep -- `Id::type`.
+    using type = Rep;
+
     Rep value {};
 
     StrongId() = default;

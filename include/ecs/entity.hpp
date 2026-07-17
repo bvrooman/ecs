@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "component_id.hpp" // ComponentId
 #include "reflection/type_names.hpp"
 #include <atomic>
 #include <compare>
@@ -36,17 +37,20 @@ struct Entity {
     friend auto operator<=>(Entity, Entity) = default;
 };
 
-// Stable, process-local id assigned to each component type on first use.
-using ComponentId = std::uint32_t;
+// ComponentId is defined in component_id.hpp (a leaf header the storage core
+// and dynamic registry can include without the reflection machinery here).
 
 namespace detail {
     // Atomic: component_id<T> instantiations are magic statics, but each guards
     // only its *own* initialization -- two distinct component types first
     // touched on two threads would otherwise race on the shared counter and
-    // could be handed the same id (silently aliasing their columns).
+    // could be handed the same id (silently aliasing their columns). The counter
+    // is a raw integer (std::atomic has no fetch_add for a class type); each
+    // freshly allocated value is minted into a ComponentId before it is handed
+    // out, so callers only ever see the strong type.
     inline ComponentId next_component_id() noexcept {
-        static std::atomic<ComponentId> counter {0};
-        return counter.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<ComponentId::type> counter {0};
+        return ComponentId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 } // namespace detail
 
