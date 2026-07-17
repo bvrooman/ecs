@@ -23,6 +23,7 @@ static void zero_overhead_layout() {
     static_assert(alignof(Ticket) == alignof(std::uint32_t));
     static_assert(std::is_trivially_copyable_v<Ticket>);
     static_assert(std::is_standard_layout_v<Ticket>);
+    static_assert(std::is_same_v<Ticket::type, std::uint32_t>); // underlying rep
     CHECK(true);
 }
 

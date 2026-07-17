@@ -33,7 +33,7 @@ namespace detail {
     // counter (atomic has no fetch_add for a class type), minted into ResourceId
     // before it is handed out so callers only see the strong type.
     inline ResourceId next_resource_id() noexcept {
-        static std::atomic<std::uint32_t> counter {0};
+        static std::atomic<ResourceId::type> counter {0};
         return ResourceId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 } // namespace detail

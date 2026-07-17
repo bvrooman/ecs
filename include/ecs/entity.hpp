@@ -49,7 +49,7 @@ namespace detail {
     // freshly allocated value is minted into a ComponentId before it is handed
     // out, so callers only ever see the strong type.
     inline ComponentId next_component_id() noexcept {
-        static std::atomic<std::uint32_t> counter {0};
+        static std::atomic<ComponentId::type> counter {0};
         return ComponentId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 } // namespace detail
