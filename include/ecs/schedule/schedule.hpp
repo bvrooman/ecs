@@ -264,7 +264,7 @@ private:
     // Stamp an id, normalize the access sets, and store -- the single funnel
     // every add_* form goes through.
     SystemId register_system(System sys) {
-        sys.id = SystemId {++next_id_};
+        sys.id = ++next_id_;
         detail::normalize_access(sys.access);
         auto const id = sys.id;
         systems_.push_back(std::move(sys));
@@ -464,7 +464,7 @@ private:
                 // Tag any command a kernel-command barrier enqueues (the replay
                 // of its per-item store) with this system, so the flush below
                 // attributes it correctly.
-                detail::recording_source() = s.id.value;
+                detail::recording_source() = s.id;
                 auto const t0              = detail::sched_clock::now();
                 s.finish_items(world);
                 finish_us_[wi] = detail::elapsed_us(t0);
@@ -492,7 +492,7 @@ private:
                     busy += it.busy_us;
                     ++items;
                 }
-            auto const fit    = flush_attrib_.find(systems_[idx].id.value);
+            auto const fit    = flush_attrib_.find(systems_[idx].id);
             double const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {systems_[idx].id,
                                      systems_[idx].name,
@@ -590,7 +590,7 @@ private:
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
-    std::uint64_t next_id_ = 0; // raw counter; ++ then wrapped in SystemId
+    SystemId next_id_ = {}; // ++ before each assignment; first system gets id 1
     bool dirty_       = true;
 };
 

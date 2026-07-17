@@ -42,6 +42,14 @@ static void comparable() {
     CHECK((Ticket {8} <=> Ticket {7}) > 0);
 }
 
+// Pre-increment advances the id in place -- the monotonic allocator's `++next`.
+static void pre_increment() {
+    Ticket t {};
+    CHECK((++t) == Ticket {1}); // returns the new value
+    CHECK(t == Ticket {1});     // and advanced in place
+    CHECK((++t) == Ticket {2});
+}
+
 // Distinct tags are distinct types that never interconvert -- the whole point.
 static void tags_are_distinct_types() {
     static_assert(!std::is_same_v<Ticket, Seat>);
@@ -87,6 +95,7 @@ int main() {
     RUN_SUITE(zero_overhead_layout);
     RUN_SUITE(construct_and_read);
     RUN_SUITE(comparable);
+    RUN_SUITE(pre_increment);
     RUN_SUITE(tags_are_distinct_types);
     RUN_SUITE(hashable_key);
     RUN_SUITE(system_ids_are_monotonic_and_nonzero);

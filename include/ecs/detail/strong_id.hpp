@@ -40,6 +40,14 @@ struct StrongId {
         return value;
     }
 
+    // Advance to the next id in sequence. For a monotonic allocator that hands
+    // out ids by incrementing a running maximum (`id = ++next`), so the counter
+    // can itself be a StrongId rather than a raw integer that has to be wrapped.
+    constexpr StrongId& operator++() noexcept {
+        ++value;
+        return *this;
+    }
+
     friend bool operator==(StrongId, StrongId)  = default;
     friend auto operator<=>(StrongId, StrongId) = default;
 };
