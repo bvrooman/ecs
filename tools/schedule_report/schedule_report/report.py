@@ -40,7 +40,7 @@ def render(trace_path, out_path, warmup=0):
     ts = stats(tick_vals)   # whole-tick distribution (a per-N-tick system's
     n_ticks = len(tick_ids)  # cost is inside tick_us, on the ticks it runs)
 
-    payload = {"lines": {}, "hists": {}, "hbars": {}}
+    payload = {"lines": {}, "hists": {}, "hbars": {}, "stacks": {}}
 
     def line_section(xs, ys, lo, hi, chart_id, label):
         ctx, data = charts.line_chart(xs, ys, lo, hi, chart_id)
@@ -78,6 +78,33 @@ def render(trace_path, out_path, warmup=0):
     waves_partial = any(n < n_ticks for n in ran)
     waves_svg = chart("hbars", ctx)
     payload["hbars"]["waves"] = data
+
+    # wave composition: the same per-wave walls stacked over the run, so the top
+    # edge traces the tick wall (waves run sequentially behind barriers, so per
+    # tick they sum to it). A wave that sits out a tick contributes 0 there, so
+    # a per-N-tick re-sort shows as a periodic spike rather than an averaged
+    # band; the top band is the residual tick time outside any wave (barrier and
+    # dispatch overhead), clamped at 0 when timing noise makes the wave walls
+    # sum just past the tick's.
+    wave_order = sorted(waves)
+    per_wave_ys = [[waves[w].get(t, (0.0, 0.0))[0] for t in tick_ids]
+                   for w in wave_order]
+    overhead = [max(0.0, tick_vals[i] - sum(col[i] for col in per_wave_ys))
+                for i in range(len(tick_ids))]
+    # downsample every band on the shared tick axis: identical length and bucket
+    # count give aligned bucket centres, and the per-bucket mean is linear, so
+    # the stacked means still sum to the mean tick.
+    stack_x, _, _, _ = downsample(tick_ids, tick_vals)
+    bands = [dict(label=f"wave {w}", slot=w % 8,
+                  ys=downsample(tick_ids, ys)[1])
+             for w, ys in zip(wave_order, per_wave_ys)]
+    bands.append(dict(label="scheduler overhead", slot=0, over=True,
+                      ys=downsample(tick_ids, overhead)[1]))
+    ctx, data = charts.stacked_area(stack_x, bands, "wavestack")
+    wavestack_svg = chart("stacked", ctx)
+    wavestack_legend = [dict(label=b["label"], slot=b["slot"],
+                            over=b.get("over", False)) for b in bands]
+    payload["stacks"]["wavestack"] = data
 
     # Per-system command flush, measured in the core (the cmd_us column): the
     # part of each wave's barrier flush spent applying THIS system's commands.
@@ -160,6 +187,8 @@ def render(trace_path, out_path, warmup=0):
         tick_banded=tick_banded,
         waves_svg=waves_svg,
         waves_partial=waves_partial,
+        wavestack_svg=wavestack_svg,
+        wavestack_legend=wavestack_legend,
         overview_svg=overview_svg,
         cards=cards,
         table=table,

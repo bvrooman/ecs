@@ -1,7 +1,8 @@
 # schedule-report
 
 Renders a `ScheduleTrace` CSV (see `tools/schedule_trace.hpp`) into a
-self-contained HTML report — headline tick stats, per-wave wall/flush split,
+self-contained HTML report — headline tick stats, per-wave wall/flush split, a
+stacked wave-composition chart showing how each wave's wall builds the tick,
 systems ranked by amortized busy time, and a card per system with its
 busy-time distribution, time series, and barrier-hook costs. The output is a
 single file with no external requests (CSS/JS/SVG inlined); charts carry
@@ -88,7 +89,7 @@ pool-scaling suite with `ECS_LANES` set (`ECS_LANES="1,2,4,8" ./scale_bench`).
 | `schedule_report/trace.py` | trace CSV loading, summary stats, downsampling |
 | `schedule_report/compare.py` | two-trace delta model + significance test |
 | `schedule_report/bench.py` | results-CSV pivot into per-lane speedup series |
-| `schedule_report/charts.py` | SVG chart builders (lines, histograms, bars, pairs, multiline) |
+| `schedule_report/charts.py` | SVG chart builders (lines, histograms, bars, pairs, multiline, stacked area) |
 | `schedule_report/report.py` | section assembly + Jinja2 rendering (all views) |
 | `schedule_report/templates/*.html.j2` | page layouts (report / compare / bench) |
 | `schedule_report/static/report.css` / `report.js` | styling + hover layer, inlined at render |

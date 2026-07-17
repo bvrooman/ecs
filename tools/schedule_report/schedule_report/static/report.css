@@ -362,6 +362,27 @@ tr.dim td {
 .legend .sw.s5 { background: var(--s5); }
 .legend .sw.s6 { background: var(--s6); }
 .legend .sw.s7 { background: var(--s7); }
+.legend .sw.over { background: var(--ink-3); }
+
+/* --- wave composition (stacked area) ------------------------------------ */
+
+/* Bands tile the plot edge-to-edge: each ribbon's lower edge is the band
+   below's upper edge, so any stroke would paint over the neighbour. No
+   stroke -- the fill-colour change is the boundary. */
+.area {
+    stroke: none;
+}
+
+.area.wv0 { fill: var(--s0); }
+.area.wv1 { fill: var(--s1); }
+.area.wv2 { fill: var(--s2); }
+.area.wv3 { fill: var(--s3); }
+.area.wv4 { fill: var(--s4); }
+.area.wv5 { fill: var(--s5); }
+.area.wv6 { fill: var(--s6); }
+.area.wv7 { fill: var(--s7); }
+/* residual tick time outside any wave: muted, reads as background */
+.area.over { fill: var(--ink-3); opacity: .3; }
 
 .legend .sw.ideal-sw {
     background: repeating-linear-gradient(90deg,

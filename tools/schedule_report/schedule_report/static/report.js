@@ -7,7 +7,7 @@
     // own data attributes); the trace/compare pages embed one.
     const dataEl = document.getElementById('data');
     const D = dataEl ? JSON.parse(dataEl.textContent)
-        : {lines: {}, hists: {}, hbars: {}, pairs: {}};
+        : {lines: {}, hists: {}, hbars: {}, pairs: {}, stacks: {}};
     const tip = document.getElementById('tip');
 
     function fmt(v) {
@@ -107,6 +107,49 @@
                 });
                 rows.push([d.label2 + ' \u2014 tick ' + d.xs2[b2], fmt(d.ys2[b2])]);
             }
+            show(evt, rows);
+        });
+        r.addEventListener('pointerleave', () => {
+            hide();
+            xh.setAttribute('visibility', 'hidden');
+            dot.setAttribute('visibility', 'hidden');
+        });
+    });
+
+    // Stacked wave-composition area: snap to nearest bucket, list the total
+    // (the tick wall the stack meets) then each wave's contribution there.
+    document.querySelectorAll('rect.hover[data-stack]').forEach(r => {
+        const id = r.dataset.stack, d = D.stacks[id];
+        const svg = r.closest('svg');
+        const xh = document.getElementById(id + '-xh');
+        const dot = document.getElementById(id + '-dot');
+        const plotW = d.w - d.padl - d.padr;
+        r.addEventListener('pointermove', evt => {
+            const box = svg.getBoundingClientRect();
+            const fx = (evt.clientX - box.left) / box.width * d.w;
+            const xval = d.x0 + (fx - d.padl) / plotW * d.span;
+            let best = 0, err = Infinity;
+            d.xs.forEach((x, i) => {
+                const e = Math.abs(x - xval);
+                if (e < err) {
+                    err = e;
+                    best = i;
+                }
+            });
+            const px = d.padl + (d.xs[best] - d.x0) / d.span * plotW;
+            const py = d.padt + (d.h - d.padt - d.padb)
+                * (1 - d.totals[best] / d.ymax);
+            xh.setAttribute('x1', px);
+            xh.setAttribute('x2', px);
+            xh.removeAttribute('visibility');
+            dot.setAttribute('cx', px);
+            dot.setAttribute('cy', py);
+            dot.removeAttribute('visibility');
+            const rows = [['tick ' + d.xs[best] + ' — total',
+                fmt(d.totals[best])]];
+            d.bands.forEach(bnd => {
+                if (bnd.ys[best] > 0) rows.push([bnd.label, fmt(bnd.ys[best])]);
+            });
             show(evt, rows);
         });
         r.addEventListener('pointerleave', () => {

@@ -40,6 +40,22 @@
     {{ waves_svg }}
   </div>
 
+  <h2>Wave composition</h2>
+  <div class="card">
+    <div class="legend">
+      {% for l in wavestack_legend %}
+      <span><span class="sw {% if l.over %}over{% else %}s{{ l.slot }}{% endif %}"></span>{{ l.label }}</span>
+      {% endfor %}
+    </div>
+    <div class="sub">each wave&rsquo;s wall time stacked over the run, so the top
+      edge traces the tick wall &mdash; waves run sequentially behind barriers,
+      so per tick their walls sum to it. A one-shot or per-N-tick phase (e.g. a
+      re-sort every 64 ticks) contributes a band only on the ticks it ran, so it
+      reads as a periodic spike; the top band is the residual tick time outside
+      any wave (barrier and dispatch overhead)</div>
+    {{ wavestack_svg }}
+  </div>
+
   <h2>Systems by busy time per tick</h2>
   <div class="card">
     <div class="sub">amortized cost across the run / total ticks. busy = sum of
