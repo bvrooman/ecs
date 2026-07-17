@@ -64,17 +64,15 @@ struct WorldOps {
         if (auto const it = a.add_edge.find(id); it != a.add_edge.end()) {
             to = it->second;
         } else {
-            auto sig = a.signature;
-            sig.insert(std::ranges::upper_bound(sig, id), id);
             auto const from  = rec.archetype();
             auto const& desc = registry().desc(id);
-            to = w.get_or_create_archetype(sig, [&](Archetype& b) {
+            to = w.get_or_create_archetype(a.signature.with(id), [&](Archetype& b) {
                 auto& src = *w.archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
-                    b.columns.push_back(cid == id
-                                            ? std::make_unique<DynamicColumn>(desc)
-                                            : src.column_at(cid).clone_empty());
+                    b.columns.push(cid == id
+                                       ? std::make_unique<DynamicColumn>(desc)
+                                       : src.column_at(cid).clone_empty());
             });
             a.add_edge.emplace(id, to);
         }
@@ -118,17 +116,12 @@ struct WorldOps {
         if (auto const it = a.remove_edge.find(id); it != a.remove_edge.end()) {
             to = it->second;
         } else {
-            Signature sig;
-            sig.reserve(a.signature.size() - 1);
-            for (auto cid : a.signature)
-                if (cid != id)
-                    sig.push_back(cid);
             auto const from = rec.archetype();
-            to = w.get_or_create_archetype(sig, [&](Archetype& b) {
+            to = w.get_or_create_archetype(a.signature.without(id), [&](Archetype& b) {
                 auto& src = *w.archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
-                    b.columns.push_back(src.column_at(cid).clone_empty());
+                    b.columns.push(src.column_at(cid).clone_empty());
             });
             a.remove_edge.emplace(id, to);
         }
@@ -156,16 +149,11 @@ struct WorldOps {
             require_dynamic(id, "spawn");
         if (e.index >= w.records_.size())
             w.records_.resize(e.index + 1);
-        Signature sig;
-        sig.reserve(bundle.size());
-        for (auto const& id : bundle | std::views::keys)
-            sig.push_back(id);
-        std::ranges::sort(sig);
-        sig.erase(std::ranges::unique(sig).begin(), sig.end());
+        Signature const sig(bundle | std::views::keys); // ctor sorts + dedups
         auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
             b.columns.reserve(b.signature.size());
             for (auto const id : b.signature)
-                b.columns.push_back(
+                b.columns.push(
                     std::make_unique<DynamicColumn>(registry().desc(id)));
         });
         auto& arch     = *w.archetypes_[to];

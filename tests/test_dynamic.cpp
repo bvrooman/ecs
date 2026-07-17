@@ -28,7 +28,7 @@ struct NPos {
 // binding does per chunk (minus the typed-array views handed to a JS function).
 template <class Kernel>
 static auto each_chunk(Signature query, Kernel kernel) {
-    std::ranges::sort(query);
+    // Signature normalizes (sorts + dedups) on construction.
     return [query  = std::move(query),
             kernel = std::move(kernel)](World& w, Commands&, WorkerPool&) {
         for (auto const ai : w.matching_archetypes(query)) {

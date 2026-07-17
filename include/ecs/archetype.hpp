@@ -17,12 +17,19 @@
 #pragma once
 
 #include "archetype_id.hpp"
+#include "column_id.hpp"
+#include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "soa.hpp"
 #include <algorithm>
 #include <cassert>
+#include <concepts>
 #include <cstdint>
+#include <functional>
+#include <initializer_list>
 #include <memory>
+#include <optional>
+#include <ranges>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
@@ -93,31 +100,128 @@ struct Column final : IColumn {
     }
 };
 
-// Sorted list of component ids -- the identity of an archetype.
-using Signature = std::vector<ComponentId>;
-
-inline std::size_t hash_signature(Signature const& s) noexcept {
-    // Accumulate in an explicit 64-bit type: the FNV-1a offset basis and prime
-    // are 64-bit, which would truncate into a 32-bit std::size_t on ILP32 targets
-    // (e.g. wasm32). Narrow to size_t only for the returned bucket index.
-    std::uint64_t h = 1469598103934665603ull; // FNV-1a
-    for (auto const id : s) {
-        h ^= id.value;
-        h *= 1099511628211ull;
+// Sorted, de-duplicated set of component ids -- the identity of an archetype.
+// A component's position in this list is its ColumnId (the archetype's parallel
+// `columns` vector is kept in the same order), so the id<->column mapping lives
+// here: find(id) yields the column slot. Kept as a flat sorted vector, not a
+// hash set -- lookup is a binary search over a contiguous array, membership
+// tests are linear merges, and there are no per-node allocations.
+class Signature {
+public:
+    Signature() = default;
+    Signature(std::initializer_list<ComponentId> const ids)
+        : ids_(ids) {
+        normalize();
     }
-    return static_cast<std::size_t>(h);
-}
+    // Construct from any range of ComponentId (a std::vector, a views::keys of
+    // a component bundle, ...). Constrained off Signature itself so it can't
+    // shadow the copy/move constructors.
+    template <class R>
+        requires std::ranges::input_range<R> &&
+                 std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
+                 (!std::same_as<std::remove_cvref_t<R>, Signature>)
+    explicit Signature(R&& ids) {
+        if constexpr (std::ranges::sized_range<R>)
+            ids_.reserve(std::ranges::size(ids));
+        for (ComponentId const id : ids)
+            ids_.push_back(id);
+        normalize();
+    }
+
+    // The column slot of `id` (its position), or nullopt when absent.
+    [[nodiscard]]
+    std::optional<ColumnId> find(ComponentId const id) const noexcept {
+        auto const it = std::ranges::lower_bound(ids_, id);
+        if (it != ids_.end() && *it == id)
+            return ColumnId {static_cast<ColumnId::type>(it - ids_.begin())};
+        return std::nullopt;
+    }
+    [[nodiscard]]
+    bool contains(ComponentId const id) const noexcept {
+        return find(id).has_value();
+    }
+    // Does this signature contain every id in `sub`? (Both are sorted.)
+    [[nodiscard]]
+    bool includes(Signature const& sub) const noexcept {
+        return std::ranges::includes(ids_, sub.ids_);
+    }
+
+    // The signature of the archetype reached by adding / removing one component
+    // (a no-op if `id` is already present / already absent).
+    [[nodiscard]]
+    Signature with(ComponentId const id) const {
+        Signature s   = *this;
+        auto const it = std::ranges::lower_bound(s.ids_, id);
+        if (it == s.ids_.end() || *it != id) {
+            s.ids_.insert(it, id);
+            s.rehash();
+        }
+        return s;
+    }
+    [[nodiscard]]
+    Signature without(ComponentId const id) const {
+        Signature s   = *this;
+        auto const it = std::ranges::lower_bound(s.ids_, id);
+        if (it != s.ids_.end() && *it == id) {
+            s.ids_.erase(it);
+            s.rehash();
+        }
+        return s;
+    }
+
+    // The component id occupying column slot `c`.
+    [[nodiscard]]
+    ComponentId operator[](ColumnId const c) const noexcept { return ids_[c.value]; }
+
+    [[nodiscard]] std::size_t size() const noexcept { return ids_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return ids_.empty(); }
+    [[nodiscard]] auto begin() const noexcept { return ids_.begin(); }
+    [[nodiscard]] auto end() const noexcept { return ids_.end(); }
+
+    // The set's hash, computed once at construction and cached (a signature is
+    // immutable after construction; with()/without() build a fresh one). Feeds
+    // std::hash<Signature> so a Signature is a drop-in unordered_map key.
+    [[nodiscard]] std::size_t hash() const noexcept { return hash_; }
+
+    // Equality is element-wise. The cached hash is only a fast reject (unequal
+    // hashes => unequal signatures); it is NOT the equality itself -- FNV-1a can
+    // collide, and a hash-only compare would silently alias distinct signatures
+    // in the archetype maps (a wrong-archetype lookup). So a hash match falls
+    // through to the authoritative id compare.
+    friend bool operator==(Signature const& a, Signature const& b) noexcept {
+        return a.hash_ == b.hash_ && a.ids_ == b.ids_;
+    }
+
+private:
+    // FNV-1a over the ids. Accumulate in an explicit 64-bit type: the offset
+    // basis and prime are 64-bit, which would truncate into a 32-bit std::size_t
+    // on ILP32 targets (e.g. wasm32); narrow to size_t only at the end.
+    static constexpr std::uint64_t kFnvBasis = 1469598103934665603ull;
+    void rehash() noexcept {
+        std::uint64_t h = kFnvBasis;
+        for (auto const id : ids_) {
+            h ^= id.value;
+            h *= 1099511628211ull;
+        }
+        hash_ = static_cast<std::size_t>(h);
+    }
+    void normalize() {
+        std::ranges::sort(ids_);
+        ids_.erase(std::ranges::unique(ids_).begin(), ids_.end());
+        rehash();
+    }
+    std::vector<ComponentId> ids_;                          // sorted, unique
+    std::size_t hash_ = static_cast<std::size_t>(kFnvBasis); // empty-set hash
+};
 
 struct Archetype {
-    static constexpr std::size_t npos = ~std::size_t {0};
-
     Signature signature;
     std::vector<Entity> entities; // row -> entity
-    // One column per signature entry, in signature (sorted-id) order. A flat
-    // parallel vector instead of a hash map: lookup is a binary search over a
-    // contiguous uint32 array, iteration during relocation is a linear walk,
-    // and there are no per-node heap allocations.
-    std::vector<std::unique_ptr<IColumn>> columns;
+    // One column per signature entry, in signature (sorted-id) order, indexed
+    // by ColumnId. A flat parallel vector instead of a hash map: lookup is a
+    // binary search over the signature, iteration during relocation is a linear
+    // walk, and there are no per-node heap allocations.
+    detail::IdVector<ColumnId, std::unique_ptr<IColumn>> columns;
 
     // Lazily-populated archetype-graph edges: which archetype an entity lands
     // in when component `cid` is added to / removed from this one. Makes the
@@ -125,25 +229,16 @@ struct Archetype {
     // signature build + hash + global index lookup (World maintains these).
     std::unordered_map<ComponentId, ArchetypeId> add_edge, remove_edge;
 
-    // Index of `id` within signature/columns, or npos.
-    [[nodiscard]]
-    std::size_t find(ComponentId const id) const noexcept {
-        auto const it = std::ranges::lower_bound(signature, id);
-        return (it != signature.end() && *it == id)
-                   ? static_cast<std::size_t>(it - signature.begin())
-                   : npos;
-    }
-
     [[nodiscard]]
     bool has(ComponentId const id) const noexcept {
-        return find(id) != npos;
+        return signature.contains(id);
     }
 
     // Type-erased column for `id`; nullptr when absent.
     [[nodiscard]]
     IColumn* column_for(ComponentId const id) noexcept {
-        auto const i = find(id);
-        return i == npos ? nullptr : columns[i].get();
+        auto const c = signature.find(id);
+        return c ? columns[*c].get() : nullptr;
     }
 
     // Type-erased column for `id`. Precondition: has(id). Constness follows
@@ -151,12 +246,12 @@ struct Archetype {
     // out of a const archetype).
     template <class Self>
     auto& column_at(this Self&& self, ComponentId const id) {
-        auto const i = self.find(id);
-        assert(i != Archetype::npos && "Archetype::column_at: component not present");
+        auto const c = self.signature.find(id);
+        assert(c && "Archetype::column_at: component not present");
         using Col = std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>,
                                        IColumn const,
                                        IColumn>;
-        return static_cast<Col&>(*self.columns[i]);
+        return static_cast<Col&>(*self.columns[*c]);
     }
 
     template <class T, class Self>
@@ -194,3 +289,12 @@ struct Archetype {
 };
 
 } // namespace ecs
+
+// Signature is a drop-in unordered_map key: its hash is the cached set hash, so
+// no bespoke hasher is needed at the use site.
+template <>
+struct std::hash<ecs::Signature> {
+    std::size_t operator()(ecs::Signature const& s) const noexcept {
+        return s.hash();
+    }
+};
