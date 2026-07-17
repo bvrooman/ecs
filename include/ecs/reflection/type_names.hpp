@@ -19,6 +19,8 @@
 #define ECS_REFLECT_NAMES 0
 #endif
 
+#include "../component_id.hpp" // ComponentId
+#include "../resource_id.hpp"  // ResourceId
 #include <cstdint>
 #include <string_view>
 
@@ -46,16 +48,16 @@ namespace detail {
     // Called from component_id<T> / resource_id<T> initialisation. Records the
     // reflected name when ECS_REFLECT_NAMES is on; a transparent no-op otherwise.
     template <class T>
-    inline std::uint32_t register_component_name(std::uint32_t id) {
+    inline ComponentId register_component_name(ComponentId id) {
 #if ECS_REFLECT_NAMES
-        component_name_map().emplace(id, reflect::type_name<T>());
+        component_name_map().emplace(id.value, reflect::type_name<T>());
 #endif
         return id;
     }
     template <class T>
-    inline std::uint32_t register_resource_name(std::uint32_t id) {
+    inline ResourceId register_resource_name(ResourceId id) {
 #if ECS_REFLECT_NAMES
-        resource_name_map().emplace(id, reflect::type_name<T>());
+        resource_name_map().emplace(id.value, reflect::type_name<T>());
 #endif
         return id;
     }

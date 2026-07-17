@@ -30,11 +30,11 @@ namespace ecs {
 namespace detail {
     // Atomic for the same reason as next_component_id(): concurrent first-touch
     // of two resource_id<T> instantiations must not hand out the same id. Raw
-    // counter (atomic has no fetch_add for a class type); minted into ResourceId
-    // at the resource_id<T> definition below.
-    inline std::uint32_t next_resource_id() noexcept {
+    // counter (atomic has no fetch_add for a class type), minted into ResourceId
+    // before it is handed out so callers only see the strong type.
+    inline ResourceId next_resource_id() noexcept {
         static std::atomic<std::uint32_t> counter {0};
-        return counter.fetch_add(1, std::memory_order_relaxed);
+        return ResourceId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 } // namespace detail
 
@@ -43,7 +43,7 @@ namespace detail {
 // numeric id without conflict because they are tracked independently.
 template <class T>
 inline ResourceId const resource_id =
-    ResourceId {detail::register_resource_name<T>(detail::next_resource_id())};
+    detail::register_resource_name<T>(detail::next_resource_id());
 
 class ResourceRegistry {
 public:
