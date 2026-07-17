@@ -20,7 +20,8 @@ public:
     // Register a component schema under a fresh id (a JS-defined component).
     ComponentId define(std::string name,
                        std::vector<std::pair<std::string, FieldType>> const& fields) {
-        return define_with_id(ecs::detail::next_component_id(), std::move(name), fields);
+        return define_with_id(ComponentId {ecs::detail::next_component_id()},
+                              std::move(name), fields);
     }
 
     // Register a schema under a *specific* id -- used to describe a native

@@ -91,8 +91,33 @@ static void system_ids_are_monotonic_and_nonzero() {
     CHECK(seen.size() == 3);
 }
 
+// ComponentId and ResourceId are separate id spaces: distinct types that a
+// component and a resource may share a numeric value across without crossing.
+static void component_and_resource_ids() {
+    static_assert(!std::is_same_v<ecs::ComponentId, ecs::ResourceId>);
+    static_assert(!std::is_convertible_v<ecs::ComponentId, ecs::ResourceId>);
+
+    struct A {};
+    struct B {};
+    // Stable per type, distinct across types.
+    CHECK(ecs::component_id<A> == ecs::component_id<A>);
+    CHECK(ecs::component_id<A> != ecs::component_id<B>);
+    CHECK(ecs::resource_id<A> == ecs::resource_id<A>);
+    CHECK(ecs::resource_id<A> != ecs::resource_id<B>);
+
+    // Ids are handed out from 0 up in each space, so a component and a resource
+    // can share a numeric value -- but the types keep them apart.
+    std::unordered_map<ecs::ComponentId, int> comp;
+    std::unordered_map<ecs::ResourceId, int> res;
+    comp[ecs::component_id<A>] = 1;
+    res[ecs::resource_id<A>]   = 2;
+    CHECK(comp.at(ecs::component_id<A>) == 1);
+    CHECK(res.at(ecs::resource_id<A>) == 2);
+}
+
 int main() {
     RUN_SUITE(zero_overhead_layout);
+    RUN_SUITE(component_and_resource_ids);
     RUN_SUITE(construct_and_read);
     RUN_SUITE(comparable);
     RUN_SUITE(pre_increment);

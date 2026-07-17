@@ -7,7 +7,9 @@
 
 #pragma once
 
-#include "../system_id.hpp" // SystemId
+#include "../component_id.hpp" // ComponentId
+#include "../resource_id.hpp"  // ResourceId
+#include "../system_id.hpp"    // SystemId
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -25,7 +27,8 @@ struct phase {};
 // every other system. `reads_all` means it reads everything (a WorldView): it
 // conflicts only with writers, so read-only systems still run in parallel.
 struct SystemAccess {
-    std::vector<std::uint32_t> reads, writes, res_reads, res_writes;
+    std::vector<ComponentId> reads, writes;
+    std::vector<ResourceId> res_reads, res_writes;
     bool exclusive = false;
     bool reads_all = false;
     // Purely informational (does not affect conflict analysis): the system took
@@ -35,13 +38,13 @@ struct SystemAccess {
 
 namespace detail {
 
-    using IdList = std::vector<std::uint32_t>;
-
     // Access id lists are kept sorted + deduplicated (normalize_access is run
     // at registration), so every conflict check is a linear merge rather than
-    // a quadratic scan.
+    // a quadratic scan. Templated over the id type (ComponentId or ResourceId)
+    // so a component list can never be merged against a resource list by
+    // mistake -- the two spaces are checked independently below.
     inline void normalize_access(SystemAccess& a) {
-        auto norm = [](IdList& v) {
+        auto norm = [](auto& v) {
             std::ranges::sort(v);
             v.erase(std::ranges::unique(v).begin(), v.end());
         };
@@ -51,7 +54,8 @@ namespace detail {
         norm(a.res_writes);
     }
 
-    inline bool intersects(IdList const& a, IdList const& b) {
+    template <class Id>
+    inline bool intersects(std::vector<Id> const& a, std::vector<Id> const& b) {
         auto ia = a.begin();
         auto ib = b.begin();
         while (ia != a.end() && ib != b.end()) {
@@ -65,8 +69,11 @@ namespace detail {
         return false;
     }
 
-    inline bool
-    conflicts_on(IdList const& aw, IdList const& ar, IdList const& bw, IdList const& br) {
+    template <class Id>
+    inline bool conflicts_on(std::vector<Id> const& aw,
+                             std::vector<Id> const& ar,
+                             std::vector<Id> const& bw,
+                             std::vector<Id> const& br) {
         return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
     }
 
