@@ -11,7 +11,7 @@ endfunction()
 
 ecs_add_test(test_strong_id)
 ecs_add_test(test_signature)
-ecs_add_test(test_free_list)
+ecs_add_test(test_freelist)
 ecs_add_test(test_soa)
 ecs_add_test(test_emitter)
 ecs_add_test(test_world)

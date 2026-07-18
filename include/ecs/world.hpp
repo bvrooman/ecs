@@ -8,7 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
-#include "detail/free_list.hpp"
+#include "detail/freelist.hpp"
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
@@ -293,11 +293,7 @@ private:
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    // Compacts the free list first: slots reserve() claimed during the wave are
-    // now live, so dropping them before commands push new frees restores the
-    // rest state (see EntitySlots).
     void apply_commands(FlushAttrib* attrib = nullptr) {
-        slots_.compact();
         commands_.apply(*this, attrib);
     }
 
@@ -314,7 +310,7 @@ private:
         remove_row(*archetypes_[rec.archetype()], rec.row);
         rec.set_alive(false);
         ++rec.generation;
-        slots_.free(e.index);
+        slots_.deallocate(e.index);
         --alive_count_;
     }
 
@@ -383,9 +379,8 @@ private:
 
     // Hand out a fresh entity handle without creating storage. Thread-safe and
     // lock-free on BOTH paths: a brand-new index is one atomic fetch_add, and
-    // recycling claims a slot with one CAS on a cursor into free_ -- the vector
-    // itself is frozen while systems run (only destroy_now at flush mutates
-    // it), so claimed entries are compacted away at the next apply_commands.
+    // recycling pops the free chain with one CAS on its head -- the chain links
+    // are frozen while systems run (only destroy_now at flush pushes onto them).
     // Reused indices carry the slot's already-bumped generation.
     Entity reserve() {
         auto const idx = slots_.allocate();
@@ -554,9 +549,9 @@ private:
     std::vector<Record> records_;
     // The entity-index allocator: hands out record slots, recycling destroyed
     // ones (lock-free during a wave) before minting new ones. reserve() attaches
-    // the generation from records_; slots_ owns only index lifecycle. Its
-    // high-water mark == records_.size() when no reservations are outstanding.
-    using EntitySlots = detail::FreeList<std::uint32_t>;
+    // the generation from records_; slots_ owns only index lifecycle. Its mint
+    // counter == records_.size() when no reservations are outstanding.
+    using EntitySlots = detail::Freelist;
     EntitySlots slots_;
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
