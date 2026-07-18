@@ -8,7 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
-#include "detail/free_list.hpp"
+#include "detail/index_recycler.hpp"
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
@@ -556,7 +556,7 @@ private:
     // ones (lock-free during a wave) before minting new ones. reserve() attaches
     // the generation from records_; slots_ owns only index lifecycle. Its
     // high-water mark == records_.size() when no reservations are outstanding.
-    using EntitySlots = detail::FreeList<std::uint32_t>;
+    using EntitySlots = detail::IndexRecycler;
     EntitySlots slots_;
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
