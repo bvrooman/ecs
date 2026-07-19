@@ -1,10 +1,18 @@
 // ecs/detail/handle_vector.hpp
 //
 // A generational handle container: hands out stable Handles {index, generation}
-// while storing the payload T contiguously (dense) for cache-friendly iteration.
+// while storing the payload contiguously (dense) for cache-friendly iteration.
 // A stale handle (its slot recycled) is rejected by a generation mismatch. It is
 // the sparse/dense "slot map": a sparse Slot array absorbs churn (a handle's
 // index never moves), a dense record array stays packed via swap-and-pop.
+//
+// The handle is tagged by a phantom Tag type, decoupled from the stored Payload,
+// so distinct containers hand out incompatible handle types (Handle<EntityTag>
+// cannot be passed where Handle<OtherTag> is expected) even when they store the
+// same payload:
+//
+//   using Entity = detail::Handle<struct EntityTag>;
+//   detail::HandleVector<Record, EntityTag> entities;
 //
 // Allocation is THREAD-SAFE, split into two phases for the "reserve during a
 // wave, materialize at the barrier" pattern:
@@ -26,16 +34,17 @@
 
 #include "index_recycler.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <utility>
 #include <vector>
 
 namespace ecs::detail {
-template <class T>
+template <class Payload, class Tag>
 class HandleVector;
 
-template <class T>
+template <class Tag>
 class Handle {
 public:
     static constexpr uint32_t invalid_index = std::numeric_limits<uint32_t>::max();
@@ -45,6 +54,16 @@ public:
 
     static constexpr Handle null() noexcept {
         return Handle {invalid_index, invalid_index};
+    }
+
+    // Reconstruct a handle from raw fields. For FFI / deserialization boundaries
+    // where an index+generation pair arrives from outside the process (a host
+    // passing an entity id back in, say). Normal code obtains handles only from
+    // a HandleVector; a raw pair is validated on use (is_alive/get) like any
+    // other handle, so a bogus pair simply reads as dead.
+    static constexpr Handle from_raw(uint32_t const index,
+                                     uint32_t const generation) noexcept {
+        return Handle {index, generation};
     }
 
     // True when this handle is not the null() sentinel.
@@ -57,9 +76,10 @@ public:
     friend auto operator<=>(Handle, Handle) = default;
 
 private:
-    friend class HandleVector<T>;
+    template <class, class>
+    friend class HandleVector;
 
-    Handle(uint32_t const index, uint32_t const generation)
+    constexpr Handle(uint32_t const index, uint32_t const generation)
         : index_(index)
         , generation_(generation) {}
 
@@ -67,10 +87,11 @@ private:
     uint32_t generation_;
 };
 
-template <class T>
+template <class Payload, class Tag>
 class HandleVector {
 public:
-    static constexpr uint32_t invalid_index = Handle<T>::invalid_index;
+    using handle_type = Handle<Tag>;
+    static constexpr uint32_t invalid_index = handle_type::invalid_index;
 
     // --- concurrent phase (safe during a wave) -------------------------------
 
@@ -78,42 +99,42 @@ public:
     // concurrently. The record is placed later, at a barrier, by commit(); until
     // then the handle is not alive (get()/is_alive() are false).
     [[nodiscard]]
-    Handle<T> reserve() {
+    handle_type reserve() {
         auto const slot_index = slots_alloc_.allocate();
         // A recycled slot carries its bumped generation in slots_; a freshly
         // minted index sits beyond slots_ until commit() grows it -> generation
         // 0. The bound check distinguishes the two (both frozen during a wave).
         auto const generation =
             slot_index < slots_.size() ? slots_[slot_index].generation : 0u;
-        return Handle<T> {slot_index, generation};
+        return handle_type {slot_index, generation};
     }
 
     // Returns a pointer to the live record, or nullptr for a dead/stale/reserved
     // handle. Read-only; safe concurrently with reserve(). The pointer is
     // invalidated by any subsequent commit()/destroy().
     [[nodiscard]]
-    T* get(Handle<T> handle) {
+    Payload* get(handle_type handle) {
         if (!is_alive(handle)) {
             return nullptr;
         }
-        return &records_[slots_[handle.index_].record_index];
+        return &records_[slots_[handle.index()].record_index];
     }
 
     [[nodiscard]]
-    T const* get(Handle<T> handle) const {
+    Payload const* get(handle_type handle) const {
         if (!is_alive(handle)) {
             return nullptr;
         }
-        return &records_[slots_[handle.index_].record_index];
+        return &records_[slots_[handle.index()].record_index];
     }
 
     [[nodiscard]]
-    bool is_alive(Handle<T> handle) const {
-        if (handle.index_ >= slots_.size()) {
+    bool is_alive(handle_type handle) const {
+        if (handle.index() >= slots_.size()) {
             return false;
         }
-        auto const& slot = slots_[handle.index_];
-        return slot.alive && slot.generation == handle.generation_;
+        auto const& slot = slots_[handle.index()];
+        return slot.alive && slot.generation == handle.generation();
     }
 
     // Number of live records.
@@ -125,14 +146,14 @@ public:
     // Materialize a reserved handle: construct its record in place from `args`.
     // Barrier only. Grows the sparse array to cover a freshly minted slot.
     template <class... Args>
-    void commit(Handle<T> handle, Args&&... args) {
-        auto const slot_index = handle.index_;
+    void commit(handle_type handle, Args&&... args) {
+        auto const slot_index = handle.index();
         if (slot_index >= slots_.size()) {
             slots_.resize(slot_index + 1);
         }
         auto& slot        = slots_[slot_index];
         slot.record_index = static_cast<uint32_t>(records_.size());
-        slot.generation   = handle.generation_;
+        slot.generation   = handle.generation();
         slot.alive        = true;
         handles_.push_back(handle);
         records_.emplace_back(std::forward<Args>(args)...);
@@ -142,7 +163,7 @@ public:
     // outside a wave. Not thread-safe (commit() mutates the dense arrays).
     template <class... Args>
     [[nodiscard]]
-    Handle<T> create(Args&&... args) {
+    handle_type create(Args&&... args) {
         auto const handle = reserve();
         commit(handle, std::forward<Args>(args)...);
         return handle;
@@ -150,17 +171,17 @@ public:
 
     // Remove a live handle, swap-and-popping its record out of the dense arrays.
     // Barrier only. Returns false for a dead/stale handle.
-    bool destroy(Handle<T> handle) {
+    bool destroy(handle_type handle) {
         if (!is_alive(handle)) {
             return false;
         }
-        auto& removed_slot       = slots_[handle.index_];
+        auto& removed_slot       = slots_[handle.index()];
         auto const removed_index = removed_slot.record_index;
         auto const last_index    = static_cast<uint32_t>(records_.size() - 1);
         if (removed_index != last_index) {
-            handles_[removed_index]         = std::move(handles_[last_index]);
+            handles_[removed_index]         = handles_[last_index];
             records_[removed_index]         = std::move(records_[last_index]);
-            auto slot_index                 = handles_[removed_index].index_;
+            auto const slot_index           = handles_[removed_index].index();
             slots_[slot_index].record_index = removed_index;
         }
         handles_.pop_back();
@@ -172,7 +193,7 @@ public:
         // this one -- otherwise free() would resurrect those claimed entries.
         // compact() is idempotent once at rest, so repeated destroys are cheap.
         slots_alloc_.compact();
-        slots_alloc_.free(handle.index_);
+        slots_alloc_.free(handle.index());
         return true;
     }
 
@@ -183,9 +204,21 @@ private:
         bool alive            = false;
     };
 
-    std::vector<Handle<T>> handles_;    // Dense index (record index)
-    std::vector<T> records_;            // Dense index (record index)
-    std::vector<Slot> slots_;           // Sparse index (handle index)
-    IndexRecycler slots_alloc_;         // Lock-free sparse-slot allocation
+    std::vector<handle_type> handles_; // Dense index (record index)
+    std::vector<Payload> records_;     // Dense index (record index)
+    std::vector<Slot> slots_;          // Sparse index (handle index)
+    IndexRecycler slots_alloc_;        // Lock-free sparse-slot allocation
 };
 } // namespace ecs::detail
+
+template <class Tag>
+struct std::hash<ecs::detail::Handle<Tag>> {
+    std::size_t operator()(ecs::detail::Handle<Tag> const h) const noexcept {
+        // Pack into 64 bits first: std::size_t is 32-bit on ILP32 targets (e.g.
+        // wasm32), where `generation << 32` would be undefined and drop the
+        // generation. Narrow to size_t only for the bucket index.
+        std::uint64_t const key =
+            (static_cast<std::uint64_t>(h.generation()) << 32) ^ h.index();
+        return static_cast<std::size_t>(key);
+    }
+};
