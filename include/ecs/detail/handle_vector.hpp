@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace ecs::detail {
@@ -43,17 +44,19 @@ private:
 template <class T>
 class HandleVector {
 public:
-    friend class Handle<T>;
     static constexpr uint32_t invalid_index = Handle<T>::invalid_index;
 
+    // Construct a record in place from `args` and return a handle to it. Accepts
+    // an lvalue (copies), an rvalue (moves), or constructor arguments for T.
+    template <class... Args>
     [[nodiscard]]
-    auto create(T&& data) {
+    Handle<T> create(Args&&... args) {
         auto const slot_index = issue();
         auto& slot            = slots_[slot_index];
-        slot.record_index     = records_.size();
+        slot.record_index     = static_cast<uint32_t>(records_.size());
         slot.alive            = true;
         handles_.push_back({slot_index, slot.generation});
-        records_.push_back(std::move(data));
+        records_.emplace_back(std::forward<Args>(args)...);
         return handles_.back();
     }
 
@@ -118,7 +121,7 @@ private:
             head_      = slot.next;
             slot.next  = invalid_index;
         } else {
-            index = slots_.size();
+            index = static_cast<uint32_t>(slots_.size());
             slots_.emplace_back();
         }
         return index;
