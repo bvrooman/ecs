@@ -31,21 +31,16 @@ struct WorldOps {
     // Create a live entity with no components (in the empty archetype).
     static Entity create_entity(World& w) {
         Entity const e = w.reserve();
-        if (e.index >= w.records_.size())
-            w.records_.resize(e.index + 1);
-        auto& rec      = w.records_[e.index];
-        rec.generation = e.generation;
-        rec.set_archetype(w.empty_archetype_);
-        rec.set_alive(true);
-        auto& a = *w.archetypes_[w.empty_archetype_];
-        rec.row = static_cast<std::uint32_t>(a.entities.size());
+        auto& a        = *w.archetypes_[w.empty_archetype_];
+        auto const row = static_cast<std::uint32_t>(a.entities.size());
         a.entities.push_back(e);
+        w.entities_.commit(e, World::Record {w.empty_archetype_, row});
         ++w.alive_count_;
         return e;
     }
 
     static bool has(World const& w, Entity e, ComponentId id) {
-        return w.alive(e) && w.archetypes_[w.records_[e.index].archetype()]->has(id);
+        return w.alive(e) && w.archetypes_[w.entities_[e].archetype]->has(id);
     }
 
     // Add a dynamic component (moving the entity to the matching archetype). If
@@ -54,8 +49,8 @@ struct WorldOps {
         require_dynamic(id, "add");
         if (!w.alive(e))
             return;
-        auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& rec = w.entities_[e];
+        auto& a   = *w.archetypes_[rec.archetype];
         if (a.has(id)) {
             col(a, id).scatter(rec.row, blob);
             return;
@@ -64,7 +59,7 @@ struct WorldOps {
         if (auto const it = a.add_edge.find(id); it != a.add_edge.end()) {
             to = it->second;
         } else {
-            auto const from  = rec.archetype();
+            auto const from  = rec.archetype;
             auto const& desc = registry().desc(id);
             to = w.get_or_create_archetype(a.signature.with(id), [&](Archetype& b) {
                 auto& src = *w.archetypes_[from];
@@ -84,11 +79,11 @@ struct WorldOps {
         require_dynamic(id, "get");
         if (!w.alive(e))
             return false;
-        auto const& a = *w.archetypes_[w.records_[e.index].archetype()];
+        auto const& a = *w.archetypes_[w.entities_[e].archetype];
         if (!a.has(id))
             return false;
         static_cast<DynamicColumn const&>(a.column_at(id))
-            .gather(w.records_[e.index].row, out);
+            .gather(w.entities_[e].row, out);
         return true;
     }
 
@@ -97,8 +92,8 @@ struct WorldOps {
         require_dynamic(id, "set");
         if (!w.alive(e))
             return false;
-        auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& rec = w.entities_[e];
+        auto& a   = *w.archetypes_[rec.archetype];
         if (!a.has(id))
             return false;
         col(a, id).scatter(rec.row, blob);
@@ -108,15 +103,15 @@ struct WorldOps {
     static void remove(World& w, Entity e, ComponentId id) {
         if (!w.alive(e))
             return;
-        auto& rec = w.records_[e.index];
-        auto& a   = *w.archetypes_[rec.archetype()];
+        auto& rec = w.entities_[e];
+        auto& a   = *w.archetypes_[rec.archetype];
         if (!a.has(id))
             return;
         ArchetypeId to;
         if (auto const it = a.remove_edge.find(id); it != a.remove_edge.end()) {
             to = it->second;
         } else {
-            auto const from = rec.archetype();
+            auto const from = rec.archetype;
             to = w.get_or_create_archetype(a.signature.without(id), [&](Archetype& b) {
                 auto& src = *w.archetypes_[from];
                 b.columns.reserve(b.signature.size());
@@ -147,8 +142,6 @@ struct WorldOps {
     static void build_now(World& w, Entity e, Bundle const& bundle) {
         for (auto const& id : bundle | std::views::keys)
             require_dynamic(id, "spawn");
-        if (e.index >= w.records_.size())
-            w.records_.resize(e.index + 1);
         Signature const sig(bundle | std::views::keys); // ctor sorts + dedups
         auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
             b.columns.reserve(b.signature.size());
@@ -157,14 +150,11 @@ struct WorldOps {
                     std::make_unique<DynamicColumn>(registry().desc(id)));
         });
         auto& arch     = *w.archetypes_[to];
-        auto& rec      = w.records_[e.index];
-        rec.generation = e.generation;
-        rec.set_archetype(to);
-        rec.set_alive(true);
-        rec.row = static_cast<std::uint32_t>(arch.entities.size());
+        auto const row = static_cast<std::uint32_t>(arch.entities.size());
         arch.entities.push_back(e);
         for (auto const& [id, bytes] : bundle)
             col(arch, id).push(bytes.data());
+        w.entities_.commit(e, World::Record {to, row});
         ++w.alive_count_;
     }
 

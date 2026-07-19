@@ -17,7 +17,7 @@ struct Frozen {}; // tag
 
 static void create_and_query() {
     World w;
-    Entity a, b, c;
+    Entity a = Entity::null(), b = Entity::null(), c = Entity::null();
     setup(w, [&](Commands& cmd) {
         a = cmd.spawn(Position {0, 0}, Velocity {1, 2});
         b = cmd.spawn(Position {10, 10});
@@ -41,7 +41,7 @@ static void create_and_query() {
 
 static void add_remove_moves_archetype_preserving_data() {
     World w;
-    Entity b;
+    Entity b = Entity::null();
     setup(w, [&](Commands& cmd) { b = cmd.spawn(Position {10, 20}); });
     CHECK((query<Position, Velocity>(w).count() == 0));
 
@@ -58,7 +58,7 @@ static void add_remove_moves_archetype_preserving_data() {
 
 static void destroy_and_generation_reuse() {
     World w;
-    Entity a, a2;
+    Entity a = Entity::null(), a2 = Entity::null();
     setup(w, [&](Commands& cmd) {
         a  = cmd.spawn(Position {1, 1});
         a2 = cmd.spawn(Position {2, 2});
@@ -69,10 +69,10 @@ static void destroy_and_generation_reuse() {
     CHECK(!w.alive(old));
     CHECK(w.size() == 1);
 
-    Entity d;
+    Entity d = Entity::null();
     setup(w, [&](Commands& cmd) { d = cmd.spawn(); });
-    CHECK(d.index == old.index);           // slot reused
-    CHECK(d.generation != old.generation); // stale handle won't match
+    CHECK(d.index() == old.index());           // slot reused
+    CHECK(d.generation() != old.generation()); // stale handle won't match
     CHECK(!w.alive(old));
 }
 
@@ -134,7 +134,7 @@ static void for_each_rows() {
 
 static void const_query_marks_read_only() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
     // Velocity read-only (const), Position mutable: only Position is written back.
     query<Velocity const, Position>(w).for_each_serial([](auto& v, auto& p) {
@@ -188,7 +188,7 @@ static void query_cache_sees_archetypes_created_after_first_query() {
 // survive every hop and the row bookkeeping must stay exact.
 static void add_remove_churn_preserves_data() {
     World w;
-    Entity a, b;
+    Entity a = Entity::null(), b = Entity::null();
     setup(w, [&](Commands& cmd) {
         a = cmd.spawn(Position {1, 2});
         b = cmd.spawn(Position {3, 4});
@@ -220,7 +220,7 @@ struct Label {
 };
 static void heap_owning_component_survives_transitions() {
     World w;
-    Entity keep {}, dead {};
+    Entity keep = Entity::null(), dead = Entity::null();
     setup(w, [&](Commands& cmd) {
         keep = cmd.spawn(Position {0, 0},
                          Label {"the quick brown fox jumps over strings' SSO",
@@ -239,12 +239,12 @@ static void heap_owning_component_survives_transitions() {
 
 static void entity_null_sentinel() {
     CHECK(!Entity::null());
-    CHECK(static_cast<bool>(Entity {0, 0})); // the FIRST entity is not null
+    CHECK(static_cast<bool>(Entity::from_raw(0, 0))); // the FIRST entity is not null
     CHECK(Entity::null() == Entity::null());
     World w;
     CHECK(!w.alive(Entity::null()));
     // operator<=> so handles sort / work in ordered containers.
-    CHECK((Entity {0, 0} < Entity {1, 0}));
+    CHECK((Entity::from_raw(0, 0) < Entity::from_raw(1, 0)));
 }
 
 int main() {

@@ -123,6 +123,13 @@ public:
     [[nodiscard]]
     std::size_t size() const noexcept { return records_.size(); }
 
+    // Pre-size the dense storage for n live records (a capacity hint for bulk
+    // setup). Single-threaded.
+    void reserve_capacity(std::size_t const n) {
+        handles_.reserve(n);
+        records_.reserve(n);
+    }
+
     // --- barrier phase (single-threaded, world-quiescent) --------------------
 
     // Materialize a reserved handle: construct its record in place from `args`.

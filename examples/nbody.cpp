@@ -197,7 +197,7 @@ int main() {
                 audio_frames.load(),
                 audio_items.load());
 
-    Position p = world.get<Position>(Entity {0, 0});
+    Position p = world.get<Position>(Entity::from_raw(0, 0));
     std::printf("entity 0 final position = (%.3f, %.3f, %.3f)\n", p.x, p.y, p.z);
     return 0;
 }

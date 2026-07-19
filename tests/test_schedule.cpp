@@ -71,7 +71,7 @@ static void run_on_thread_pool_executes_all_systems() {
     sched.run(w, pool);
     sched.run(w, pool);
 
-    Entity first {0, 0};
+    Entity first = Entity::from_raw(0, 0);
     CHECK(w.get<Position>(first).x == 2.f); // physics ran twice
     CHECK(w.get<Health>(first).hp == 98);   // damage ran twice
     CHECK(render_calls.load() == 2);        // render ran each tick

@@ -5,37 +5,20 @@
 #pragma once
 
 #include "component_id.hpp" // ComponentId
+#include "detail/handle.hpp"
 #include "reflection/type_names.hpp"
 #include <atomic>
-#include <compare>
-#include <cstdint>
-#include <functional>
 
 namespace ecs {
 
-// A generational handle. `index` selects a slot in the world's entity table;
-// `generation` is bumped on destruction so stale handles compare unequal to the
-// live entity that later reuses the slot.
-struct Entity {
-    std::uint32_t index      = 0;
-    std::uint32_t generation = 0;
-
-    // A sentinel that can never be handed out by the world (indices are
-    // allocated from 0 upward and 2^32-1 is unreachable in practice), for "no
-    // entity" fields. Note Entity{} is NOT null -- it is a valid handle for the
-    // first entity ever spawned.
-    static constexpr Entity null() noexcept {
-        return Entity {0xFFFF'FFFFu, 0xFFFF'FFFFu};
-    }
-    // True when this handle is not the null() sentinel.
-    [[nodiscard]]
-    explicit constexpr operator bool() const noexcept {
-        return !(*this == null());
-    }
-
-    friend bool operator==(Entity, Entity)  = default;
-    friend auto operator<=>(Entity, Entity) = default;
-};
+// An entity is a generational handle into the world's entity table: a tagged
+// detail::Handle whose `index` selects a slot and whose `generation` is bumped
+// on destruction, so stale handles compare unequal to the live entity that
+// later reuses the slot. The world (via its HandleVector) is the only minter;
+// Entity::from_raw rebuilds one from an external index+generation pair (e.g. a
+// JS host passing an id back in). Handle provides null()/operator bool, the
+// comparisons, and std::hash.
+using Entity = detail::Handle<struct EntityTag>;
 
 // ComponentId is defined in component_id.hpp (a leaf header the storage core
 // and dynamic registry can include without the reflection machinery here).
@@ -61,15 +44,3 @@ inline ComponentId const component_id =
     detail::register_component_name<T>(detail::next_component_id());
 
 } // namespace ecs
-
-template <>
-struct std::hash<ecs::Entity> {
-    auto operator()(ecs::Entity const e) const noexcept {
-        // Pack into a 64-bit key first: std::size_t is 32-bit on ILP32 targets
-        // (e.g. wasm32), where `generation << 32` would be undefined and drop the
-        // generation. Narrow to size_t only for the bucket index.
-        std::uint64_t const key =
-            (static_cast<std::uint64_t>(e.generation) << 32) ^ e.index;
-        return static_cast<std::size_t>(key);
-    }
-};

@@ -8,7 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
-#include "detail/index_recycler.hpp"
+#include "detail/handle_vector.hpp"
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
@@ -74,8 +74,7 @@ public:
     // passes to each system -- so mutation is reachable only inside a system,
     // enforced at compile time rather than by a runtime check.
     bool alive(Entity const e) const {
-        return e.index < records_.size() && records_[e.index].alive() &&
-               records_[e.index].generation == e.generation;
+        return entities_.is_alive(e);
     }
 
     std::size_t size() const noexcept { return alive_count_; }
@@ -83,7 +82,7 @@ public:
     // Capacity hint: pre-size the entity record table for n entities. Purely an
     // allocation optimization for bulk setup (per-archetype component storage
     // is pre-grown separately via Archetype::reserve).
-    void reserve_entities(std::size_t n) { records_.reserve(n); }
+    void reserve_entities(std::size_t n) { entities_.reserve_capacity(n); }
 
     // --- maintenance: row sorting ------------------------------------------
     // Stable-sort the rows of every archetype containing C by key(component
@@ -168,7 +167,7 @@ public:
             }
             arch.permute_rows(perm);
             for (std::uint32_t r = 0; r < n; ++r)
-                records_[arch.entities[r].index].row = r;
+                entities_[arch.entities[r]].row = r;
         }
     }
 
@@ -176,7 +175,7 @@ public:
     template <class C>
     bool has(Entity const e) const {
         return alive(e) &&
-               archetypes_[records_[e.index].archetype()]->has(component_id<C>);
+               archetypes_[entities_[e].archetype]->has(component_id<C>);
     }
 
     // Read a component by value (gathered from its per-field columns).
@@ -186,8 +185,8 @@ public:
     template <class C>
     C get(Entity const e) const {
         assert(has<C>(e) && "World::get<C>(e): entity has no component C");
-        auto const& rec = records_[e.index];
-        return archetypes_[rec.archetype()]->column<C>().store.gather(rec.row);
+        auto const& rec = entities_[e];
+        return archetypes_[rec.archetype]->column<C>().store.gather(rec.row);
     }
 
     // --- resources (singletons not owned by any entity) -------------------
@@ -266,38 +265,16 @@ private:
     // Mutable archetype access for the friends above.
     auto& archetypes() { return archetypes_; }
 
+    // An entity's location: which archetype table holds it and its row there.
+    // Stored as the payload of entities_ (a HandleVector), which owns the
+    // liveness flag and generation, so a Record no longer carries either.
     struct Record {
-        // 12 bytes, not 16: `alive` lives in the top bit of the archetype index
-        // (2^31 archetypes is unreachable), so a cache line holds a third more
-        // records for the alive() check every read performs.
-        static constexpr std::uint32_t kAliveBit = 0x8000'0000u;
-
-        std::uint32_t arch_bits  = 0;
-        std::uint32_t row        = 0;
-        std::uint32_t generation = 0;
-
-        [[nodiscard]]
-        bool alive() const noexcept {
-            return (arch_bits & kAliveBit) != 0;
-        }
-        [[nodiscard]]
-        ArchetypeId archetype() const noexcept {
-            return ArchetypeId {arch_bits & ~kAliveBit};
-        }
-        void set_alive(bool const v) noexcept {
-            arch_bits = v ? (arch_bits | kAliveBit) : (arch_bits & ~kAliveBit);
-        }
-        void set_archetype(ArchetypeId const a) noexcept {
-            arch_bits = (arch_bits & kAliveBit) | a.value;
-        }
+        ArchetypeId archetype {};
+        std::uint32_t row = 0;
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    // Compacts the free list first: slots reserve() claimed during the wave are
-    // now live, so dropping them before commands push new frees restores the
-    // rest state (see EntitySlots).
     void apply_commands(FlushAttrib* attrib = nullptr) {
-        slots_.compact();
         commands_.apply(*this, attrib);
     }
 
@@ -310,20 +287,20 @@ private:
     void destroy_now(Entity const e) {
         if (!alive(e))
             return;
-        auto& rec = records_[e.index];
-        remove_row(*archetypes_[rec.archetype()], rec.row);
-        rec.set_alive(false);
-        ++rec.generation;
-        slots_.free(e.index);
+        auto const& rec = entities_[e];
+        remove_row(*archetypes_[rec.archetype], rec.row);
+        // entities_.destroy() bumps the generation, recycles the slot, and
+        // swap-pops the Record from the dense array -- so use `rec` before it.
+        entities_.destroy(e);
         --alive_count_;
     }
 
     template <class C>
     void add_now(Entity const e, C value) {
         assert(alive(e));
-        auto& rec      = records_[e.index];
+        auto& rec      = entities_[e];
         auto const cid = component_id<C>;
-        auto& a        = *archetypes_[rec.archetype()]; // heap-stable across growth
+        auto& a        = *archetypes_[rec.archetype]; // heap-stable across growth
         if (a.has(cid)) {
             a.column<C>().store.set(rec.row, std::move(value));
             return;
@@ -335,7 +312,7 @@ private:
         if (auto const it = a.add_edge.find(cid); it != a.add_edge.end()) {
             to = it->second;
         } else {
-            auto const from = rec.archetype();
+            auto const from = rec.archetype;
             to = get_or_create_archetype(a.signature.with(cid), [&](Archetype& b) {
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
@@ -353,9 +330,9 @@ private:
     template <class C>
     void remove_now(Entity e) {
         assert(alive(e));
-        auto& rec      = records_[e.index];
+        auto& rec      = entities_[e];
         auto const cid = component_id<C>;
-        auto& a        = *archetypes_[rec.archetype()];
+        auto& a        = *archetypes_[rec.archetype];
         if (!a.has(cid))
             return;
 
@@ -363,7 +340,7 @@ private:
         if (auto const it = a.remove_edge.find(cid); it != a.remove_edge.end()) {
             to = it->second;
         } else {
-            auto const from = rec.archetype();
+            auto const from = rec.archetype;
             to = get_or_create_archetype(a.signature.without(cid), [&](Archetype& b) {
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
@@ -377,24 +354,15 @@ private:
 
     template <class C>
     void set_now(Entity const e, C value) {
-        auto const& rec = records_[e.index];
-        archetypes_[rec.archetype()]->column<C>().store.set(rec.row, std::move(value));
+        auto const& rec = entities_[e];
+        archetypes_[rec.archetype]->column<C>().store.set(rec.row, std::move(value));
     }
 
     // Hand out a fresh entity handle without creating storage. Thread-safe and
-    // lock-free on BOTH paths: a brand-new index is one atomic fetch_add, and
-    // recycling claims a slot with one CAS on a cursor into free_ -- the vector
-    // itself is frozen while systems run (only destroy_now at flush mutates
-    // it), so claimed entries are compacted away at the next apply_commands.
-    // Reused indices carry the slot's already-bumped generation.
-    Entity reserve() {
-        auto const idx = slots_.allocate();
-        // A recycled index is already in records_ (with its bumped generation);
-        // a brand-new one is beyond records_.size() until spawn_now grows it, so
-        // it starts at generation 0. The bound check distinguishes the two.
-        return Entity {idx,
-                       idx < records_.size() ? records_[idx].generation : 0};
-    }
+    // lock-free: entities_.reserve() claims a slot (recycled with its bumped
+    // generation, or freshly minted at generation 0) without touching the dense
+    // record table, which spawn_now materializes at the barrier.
+    Entity reserve() { return entities_.reserve(); }
 
     // Place a reserved entity directly into its final archetype with all of its
     // components in one step -- no empty-archetype materialization and no
@@ -421,13 +389,10 @@ private:
                 b.columns.push(std::move(col));
         });
 
-        if (e.index >= records_.size())
-            records_.resize(e.index + 1);
-
         // Storage first, record bookkeeping second: if a column push throws,
         // roll the archetype back to a consistent state (every column as long
-        // as `entities`) and leave the record dead, rather than registering a
-        // half-materialized entity.
+        // as `entities`) and leave the entity uncommitted (still not alive),
+        // rather than registering a half-materialized entity.
         auto& a            = *archetypes_[to];
         auto const new_row = static_cast<std::uint32_t>(a.entities.size());
         try {
@@ -438,11 +403,10 @@ private:
             throw;
         }
 
-        auto& rec = records_[e.index];
-        rec.set_archetype(to);
-        rec.set_alive(true);
-        rec.generation = e.generation;
-        rec.row        = new_row;
+        // Materialize the reserved handle: places the Record in the dense table,
+        // marks the slot alive, and grows the sparse array to cover a minted
+        // index.
+        entities_.commit(e, Record {to, new_row});
         ++alive_count_;
     }
 
@@ -490,7 +454,7 @@ private:
             col->swap_remove(row);
         if (row != last) {
             a.entities[row]                     = a.entities[last];
-            records_[a.entities[row].index].row = row;
+            entities_[a.entities[row]].row = row;
         }
         a.entities.pop_back();
     }
@@ -502,8 +466,8 @@ private:
     // entity untouched in `a` (no silent column desynchronization).
     template <class AddExtra>
     void relocate(Entity const e, auto const to, AddExtra&& addExtra) {
-        auto& rec       = records_[e.index];
-        auto const from = rec.archetype();
+        auto& rec       = entities_[e];
+        auto const from = rec.archetype;
         auto& a         = *archetypes_[from];
         auto& b         = *archetypes_[to];
 
@@ -531,7 +495,7 @@ private:
         auto const new_row = static_cast<std::uint32_t>(b.entities.size() - 1);
 
         remove_row(a, rec.row);
-        rec.set_archetype(to);
+        rec.archetype = to;
         rec.row = new_row;
     }
 
@@ -551,13 +515,11 @@ private:
     // required-signature -> matching archetype indices (lazy, append-only).
     mutable std::unordered_map<Signature, std::vector<ArchetypeId>> query_cache_;
     mutable std::mutex query_cache_mutex_;
-    std::vector<Record> records_;
-    // The entity-index allocator: hands out record slots, recycling destroyed
-    // ones (lock-free during a wave) before minting new ones. reserve() attaches
-    // the generation from records_; slots_ owns only index lifecycle. Its
-    // high-water mark == records_.size() when no reservations are outstanding.
-    using EntitySlots = detail::IndexRecycler;
-    EntitySlots slots_;
+    // The entity table: a generational handle container keyed by Entity. It owns
+    // slot lifecycle (lock-free reserve() during a wave, commit()/destroy() at
+    // the barrier), the alive flag, and the generation; the payload is a Record
+    // (archetype + row). Entity is detail::Handle<EntityTag>.
+    detail::HandleVector<Record, EntityTag> entities_;
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
 
