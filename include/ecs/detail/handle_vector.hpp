@@ -82,8 +82,8 @@ public:
         if (!is_alive(handle)) {
             return nullptr;
         }
-        auto const& slot   = slots_[handle.index()];
-        auto const& record = records_[slot.record_index];
+        auto& slot   = slots_[handle.index()];
+        auto& record = records_[slot.record_index];
         return &record;
     }
 
