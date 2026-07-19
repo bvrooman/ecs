@@ -354,8 +354,12 @@ private:
 
     template <class C>
     void set_now(Entity const e, C value) {
-        auto const& rec = entities_[e];
-        archetypes_[rec.archetype]->column<C>().store.set(rec.row, std::move(value));
+        // A set command can outlive its entity if a destroy was recorded earlier
+        // in the same flush; skip a dead/stale handle rather than dereferencing a
+        // recycled slot (which now reads through an invalidated record index).
+        if (auto const* rec = entities_.get(e))
+            archetypes_[rec->archetype]->column<C>().store.set(rec->row,
+                                                               std::move(value));
     }
 
     // Hand out a fresh entity handle without creating storage. Thread-safe and
