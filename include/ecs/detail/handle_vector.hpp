@@ -35,6 +35,7 @@
 #include "handle.hpp"
 #include "index_recycler.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -87,13 +88,15 @@ public:
         return &record;
     }
 
-    // Unchecked indexed access: returns a reference to the handle's record. The
-    // handle MUST be live (issued by this container and not yet destroyed) --
-    // like std::vector::operator[], there is no bounds or liveness check. Use
-    // get() when the handle might be dead/stale. Read-only w.r.t. structure, so
-    // safe concurrently with reserve().
+    // Indexed access: returns a reference to the handle's record. The handle
+    // MUST be live (issued by this container and not yet destroyed) -- like
+    // std::vector::operator[], it is unchecked in release (no liveness branch on
+    // the hot path); a debug assert catches a dead/stale handle. Use get() when
+    // the handle might legitimately be dead. Read-only w.r.t. structure, so safe
+    // concurrently with reserve().
     [[nodiscard]]
     Payload& operator[](handle_type handle) {
+        assert(is_alive(handle) && "operator[] on a dead/stale handle");
         auto& slot   = slots_[handle.index()];
         auto& record = records_[slot.record_index];
         return record;
@@ -101,6 +104,7 @@ public:
 
     [[nodiscard]]
     Payload const& operator[](handle_type handle) const {
+        assert(is_alive(handle) && "operator[] on a dead/stale handle");
         auto const& slot   = slots_[handle.index()];
         auto const& record = records_[slot.record_index];
         return record;
