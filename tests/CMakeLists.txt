@@ -1,17 +1,18 @@
 function(ecs_add_test name)
-  add_executable(${name} ${name}.cpp)
-  target_link_libraries(${name} PRIVATE ecs::ecs)
-  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_compile_options(${name} PRIVATE -Wall -Wextra)
-  add_test(NAME ${name} COMMAND ${name})
-  # The threaded tests' failure mode is a hang (a missed wake, a stuck join);
-  # bound them so CI reports a failure instead of stalling.
-  set_tests_properties(${name} PROPERTIES TIMEOUT 120)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE ecs::ecs)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(${name} PRIVATE -Wall -Wextra)
+    add_test(NAME ${name} COMMAND ${name})
+    # The threaded tests' failure mode is a hang (a missed wake, a stuck join);
+    # bound them so CI reports a failure instead of stalling.
+    set_tests_properties(${name} PROPERTIES TIMEOUT 120)
 endfunction()
 
 ecs_add_test(test_strong_id)
 ecs_add_test(test_signature)
 ecs_add_test(test_index_recycler)
+ecs_add_test(test_handle_vector)
 ecs_add_test(test_soa)
 ecs_add_test(test_emitter)
 ecs_add_test(test_world)
