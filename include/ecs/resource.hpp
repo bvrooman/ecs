@@ -18,7 +18,6 @@
 
 #include "reflection/type_names.hpp"
 #include "resource_id.hpp" // ResourceId
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <type_traits>
@@ -28,14 +27,10 @@
 namespace ecs {
 
 namespace detail {
-    // Atomic for the same reason as next_component_id(): concurrent first-touch
-    // of two resource_id<T> instantiations must not hand out the same id. Raw
-    // counter (atomic has no fetch_add for a class type), minted into ResourceId
-    // before it is handed out so callers only see the strong type.
-    inline ResourceId next_resource_id() noexcept {
-        static std::atomic<ResourceId::type> counter {0};
-        return ResourceId {counter.fetch_add(1, std::memory_order_relaxed)};
-    }
+    // Mint the next resource id. Thread-safe (see StrongId::next), same reason as
+    // next_component_id(): concurrent first-touch of two resource_id<T> types must
+    // not hand out the same id.
+    inline ResourceId next_resource_id() noexcept { return ResourceId::next(); }
 } // namespace detail
 
 // Stable, process-local id assigned to each resource type on first use. This is

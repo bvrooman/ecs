@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <compare>
 #include <cstddef>
 #include <functional>
@@ -50,6 +51,21 @@ struct StrongId {
     constexpr StrongId& operator++() noexcept {
         ++value;
         return *this;
+    }
+
+    // Mint a fresh, process-unique id from a monotonic atomic counter -- one
+    // static counter per (StrongId type, First). Thread-safe with a relaxed
+    // fetch_add: id types are first touched on arbitrary threads (the magic-
+    // static init of component_id<T>, resource_id<T>, ... each guards only its
+    // OWN initialization), and two distinct types minted concurrently must never
+    // be handed the same value. Centralizes the counter boilerplate every
+    // per-type id minter (ComponentId/ResourceId/WorldId) otherwise repeats.
+    // `First` seeds the counter -- e.g. 1 to reserve 0 as a "none" sentinel.
+    template <Rep First = Rep {}>
+    [[nodiscard]]
+    static StrongId next() noexcept {
+        static std::atomic<Rep> counter {First};
+        return StrongId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 
     friend bool operator==(StrongId, StrongId)  = default;

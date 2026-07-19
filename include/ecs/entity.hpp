@@ -7,7 +7,6 @@
 #include "component_id.hpp" // ComponentId
 #include "detail/handle.hpp"
 #include "reflection/type_names.hpp"
-#include <atomic>
 
 namespace ecs {
 
@@ -24,17 +23,10 @@ using Entity = detail::Handle<struct EntityTag>;
 // and dynamic registry can include without the reflection machinery here).
 
 namespace detail {
-    // Atomic: component_id<T> instantiations are magic statics, but each guards
-    // only its *own* initialization -- two distinct component types first
-    // touched on two threads would otherwise race on the shared counter and
-    // could be handed the same id (silently aliasing their columns). The counter
-    // is a raw integer (std::atomic has no fetch_add for a class type); each
-    // freshly allocated value is minted into a ComponentId before it is handed
-    // out, so callers only ever see the strong type.
-    inline ComponentId next_component_id() noexcept {
-        static std::atomic<ComponentId::type> counter {0};
-        return ComponentId {counter.fetch_add(1, std::memory_order_relaxed)};
-    }
+    // Mint the next component id. Thread-safe (see StrongId::next): component_id<T>
+    // magic statics on two threads must never race to the same id and alias their
+    // columns.
+    inline ComponentId next_component_id() noexcept { return ComponentId::next(); }
 } // namespace detail
 
 // Instantiating component_id<T> also registers T's name for tooling when
