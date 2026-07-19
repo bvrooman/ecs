@@ -8,7 +8,7 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
-#include "detail/handle_vector.hpp"
+#include "detail/sparse_handle_vector.hpp"
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
@@ -524,7 +524,7 @@ private:
     // slot lifecycle (lock-free reserve() during a wave, commit()/destroy() at
     // the barrier), the alive flag, and the generation; the payload is a Record
     // (archetype + row). Entity is detail::Handle<EntityTag>.
-    detail::HandleVector<Record, EntityTag> entities_;
+    detail::SparseHandleVector<Record, EntityTag> entities_;
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
 
