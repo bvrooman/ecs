@@ -117,7 +117,9 @@ public:
         if (!is_alive(handle)) {
             return nullptr;
         }
-        return &records_[slots_[handle.index()].record_index];
+        auto& slot   = slots_[handle.index()];
+        auto& record = records_[slot.record_index];
+        return &record;
     }
 
     [[nodiscard]]
@@ -125,7 +127,9 @@ public:
         if (!is_alive(handle)) {
             return nullptr;
         }
-        return &records_[slots_[handle.index()].record_index];
+        auto const& slot   = slots_[handle.index()];
+        auto const& record = records_[slot.record_index];
+        return &record;
     }
 
     [[nodiscard]]
