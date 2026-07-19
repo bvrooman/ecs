@@ -17,6 +17,8 @@
 namespace ecs::detail {
 template <class Payload, class Tag>
 class HandleVector;
+template <class Payload, class Tag>
+class SparseHandleVector;
 
 template <class Tag>
 class Handle {
@@ -52,6 +54,8 @@ public:
 private:
     template <class, class>
     friend class HandleVector;
+    template <class, class>
+    friend class SparseHandleVector;
 
     constexpr Handle(uint32_t const index, uint32_t const generation)
         : index_(index)
