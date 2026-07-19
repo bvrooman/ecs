@@ -1,6 +1,7 @@
 #pragma once
 
-#include <optional>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace ecs::detail {
@@ -79,24 +80,26 @@ public:
         return true;
     }
 
+    // Returns a pointer to the live record, or nullptr for a dead/stale handle.
+    // The pointer is invalidated by any subsequent create()/destroy().
     [[nodiscard]]
-    std::optional<T&> get(Handle<T> handle) {
+    T* get(Handle<T> handle) {
         if (!is_alive(handle)) {
-            return std::nullopt;
+            return nullptr;
         }
         auto const& slot        = slots_[handle.index_];
         auto const record_index = slot.record_index;
-        return records_[record_index];
+        return &records_[record_index];
     }
 
     [[nodiscard]]
-    std::optional<T const&> get(Handle<T> handle) const {
+    T const* get(Handle<T> handle) const {
         if (!is_alive(handle)) {
-            return std::nullopt;
+            return nullptr;
         }
         auto const& slot        = slots_[handle.index_];
         auto const record_index = slot.record_index;
-        return records_[record_index];
+        return &records_[record_index];
     }
 
 private:
