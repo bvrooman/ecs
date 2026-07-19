@@ -1,8 +1,13 @@
 #include "check.hpp"
 #include "ecs/detail/handle_vector.hpp"
 
+#include <cstdint>
 #include <string>
+#include <thread>
+#include <unordered_set>
+#include <vector>
 
+using ecs::detail::Handle;
 using ecs::detail::HandleVector;
 
 static void test_create_returns_valid_handle() {
@@ -84,6 +89,74 @@ static void create_accepts_lvalue_and_args() {
     CHECK(*i.get(h2) == "xxx");
 }
 
+// A reserved handle is not alive until commit() materializes its record; after
+// destroy() it is stale again.
+static void reserve_is_not_alive_until_commit() {
+    auto i       = HandleVector<std::string> {};
+    auto const h = i.reserve();
+    CHECK(!i.is_alive(h));    // reserved, not yet materialized
+    CHECK(i.get(h) == nullptr);
+    i.commit(h, "materialized");
+    CHECK(i.is_alive(h));
+    auto* v = i.get(h);
+    CHECK(v != nullptr && *v == "materialized");
+    CHECK(i.size() == 1);
+    CHECK(i.destroy(h));
+    CHECK(!i.is_alive(h));    // stale after destroy
+    CHECK(i.get(h) == nullptr);
+    CHECK(i.size() == 0);
+}
+
+// A reserved-but-uncommitted handle keeps its slot out of the alive set, and a
+// later commit picks up where the recycler left off.
+static void reserve_without_commit_leaves_no_live_record() {
+    auto i        = HandleVector<int> {};
+    auto const h0 = i.reserve(); // index 0, never committed
+    auto const h1 = i.create(42);
+    CHECK(!i.is_alive(h0));
+    CHECK(i.is_alive(h1));
+    CHECK(i.size() == 1);
+    CHECK(h0.index() != h1.index()); // distinct slots handed out
+}
+
+// reserve() is lock-free and safe under concurrency: every index handed out
+// across threads is unique, whether recycled or freshly minted. Run under TSan
+// this exercises the concurrent allocate() (CAS pop + fetch_add mint) path.
+static void concurrent_reserve_yields_unique_indices() {
+    auto i = HandleVector<int> {};
+    // Seed a free list so reserve() mixes recycled slots with minted ones.
+    std::vector<Handle<int>> seed;
+    for (int n = 0; n < 500; ++n) {
+        seed.push_back(i.create(n));
+    }
+    for (auto const h : seed) {
+        (void)i.destroy(h); // 500 recycled slots on the free list
+    }
+
+    constexpr int threads = 8;
+    constexpr int per     = 500;
+    std::vector<std::vector<Handle<int>>> claimed(threads);
+    std::vector<std::thread> workers;
+    for (int t = 0; t < threads; ++t) {
+        workers.emplace_back([&, t] {
+            for (int n = 0; n < per; ++n) {
+                claimed[t].push_back(i.reserve());
+            }
+        });
+    }
+    for (auto& w : workers) {
+        w.join();
+    }
+
+    std::unordered_set<std::uint32_t> seen;
+    for (auto const& batch : claimed) {
+        for (auto const h : batch) {
+            CHECK(seen.insert(h.index()).second); // no index handed out twice
+        }
+    }
+    CHECK(seen.size() == static_cast<std::size_t>(threads) * per);
+}
+
 int main() {
     RUN_SUITE(test_create_returns_valid_handle);
     RUN_SUITE(test_get_returns_value_for_valid_handle);
@@ -91,5 +164,8 @@ int main() {
     RUN_SUITE(test_create_destroy_create_reuses_slot);
     RUN_SUITE(create_reuses_last_deleted_slots);
     RUN_SUITE(create_accepts_lvalue_and_args);
+    RUN_SUITE(reserve_is_not_alive_until_commit);
+    RUN_SUITE(reserve_without_commit_leaves_no_live_record);
+    RUN_SUITE(concurrent_reserve_yields_unique_indices);
     return REPORT();
 }
