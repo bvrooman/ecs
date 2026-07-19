@@ -87,6 +87,21 @@ public:
         return &record;
     }
 
+    // Unchecked indexed access: returns a reference to the handle's record. The
+    // handle MUST be live (issued by this container and not yet destroyed) --
+    // like std::vector::operator[], there is no bounds or liveness check. Use
+    // get() when the handle might be dead/stale. Read-only w.r.t. structure, so
+    // safe concurrently with reserve().
+    [[nodiscard]]
+    Payload& operator[](handle_type handle) {
+        return records_[slots_[handle.index()].record_index];
+    }
+
+    [[nodiscard]]
+    Payload const& operator[](handle_type handle) const {
+        return records_[slots_[handle.index()].record_index];
+    }
+
     [[nodiscard]]
     bool is_alive(handle_type handle) const {
         if (handle.index() >= slots_.size()) {

@@ -98,6 +98,20 @@ static void create_accepts_lvalue_and_args() {
     CHECK(*i.get(h2) == "xxx");
 }
 
+// operator[] is unchecked reference access for a known-live handle, and is
+// mutable in place; get() is the checked pointer form.
+static void index_operator_gives_mutable_reference() {
+    auto i       = Strings {};
+    auto const h = i.create("hello");
+    CHECK(i[h] == "hello");
+    i[h] += " world"; // mutate in place through the reference
+    CHECK(i[h] == "hello world");
+    CHECK(*i.get(h) == "hello world");
+    // const overload
+    auto const& ci = i;
+    CHECK(ci[h] == "hello world");
+}
+
 // A reserved handle is not alive until commit() materializes its record; after
 // destroy() it is stale again.
 static void reserve_is_not_alive_until_commit() {
@@ -201,6 +215,7 @@ int main() {
     RUN_SUITE(test_create_destroy_create_reuses_slot);
     RUN_SUITE(create_reuses_last_deleted_slots);
     RUN_SUITE(create_accepts_lvalue_and_args);
+    RUN_SUITE(index_operator_gives_mutable_reference);
     RUN_SUITE(reserve_is_not_alive_until_commit);
     RUN_SUITE(reserve_without_commit_leaves_no_live_record);
     RUN_SUITE(from_raw_round_trips_through_get);
