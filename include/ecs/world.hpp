@@ -12,6 +12,7 @@
 #include "detail/id_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
+#include "world_id.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -233,7 +234,7 @@ public:
     }
     // Process-unique id for this World object, so a match-list memo cannot
     // confuse two Worlds (or a new World reusing a destroyed one's address).
-    std::uint64_t instance_id() const noexcept { return instance_id_; }
+    WorldId instance_id() const noexcept { return instance_id_; }
 
     // Indices of the archetypes whose signature contains all of `required`
     // (sorted). Cached per required-signature and kept current as archetypes
@@ -528,11 +529,11 @@ private:
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
 
-    static std::uint64_t next_world_id() noexcept {
-        static std::atomic<std::uint64_t> counter {1};
-        return counter.fetch_add(1, std::memory_order_relaxed);
+    static WorldId next_world_id() noexcept {
+        static std::atomic<WorldId::type> counter {1};
+        return WorldId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
-    std::uint64_t const instance_id_ = next_world_id();
+    WorldId const instance_id_ = next_world_id();
     std::atomic<std::uint64_t> archetype_gen_ {0};
 };
 

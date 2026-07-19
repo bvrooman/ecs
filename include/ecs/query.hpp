@@ -81,7 +81,7 @@ class Query {
     // guards against a destroyed World's address being reused.
     std::vector<ArchetypeId> const& matches() const {
         struct Cache {
-            std::uint64_t world = 0;
+            WorldId world {};
             std::uint64_t gen   = ~std::uint64_t {0};
             std::vector<ArchetypeId> const* list = nullptr;
         };
