@@ -24,8 +24,6 @@ using Entity = detail::Handle<struct EntityTag>;
 
 // Instantiating component_id<T> also registers T's name for tooling when
 // ECS_REFLECT_NAMES is enabled (register_component_name is a no-op otherwise).
-// ComponentId::next() mints a fresh id thread-safely: component_id<T> magic
-// statics on two threads must never race to the same id and alias their columns.
 template <class T>
 inline ComponentId const component_id =
     detail::register_component_name<T>(ComponentId::next());
