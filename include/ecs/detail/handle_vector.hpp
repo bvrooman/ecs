@@ -82,8 +82,8 @@ public:
         if (!is_alive(handle)) {
             return nullptr;
         }
-        auto& slot   = slots_[handle.index()];
-        auto& record = records_[slot.record_index];
+        auto const& slot   = slots_[handle.index()];
+        auto const& record = records_[slot.record_index];
         return &record;
     }
 
@@ -94,12 +94,16 @@ public:
     // safe concurrently with reserve().
     [[nodiscard]]
     Payload& operator[](handle_type handle) {
-        return records_[slots_[handle.index()].record_index];
+        auto& slot   = slots_[handle.index()];
+        auto& record = records_[slot.record_index];
+        return record;
     }
 
     [[nodiscard]]
     Payload const& operator[](handle_type handle) const {
-        return records_[slots_[handle.index()].record_index];
+        auto const& slot   = slots_[handle.index()];
+        auto const& record = records_[slot.record_index];
+        return record;
     }
 
     [[nodiscard]]
