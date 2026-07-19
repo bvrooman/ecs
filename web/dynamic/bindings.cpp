@@ -167,7 +167,7 @@ public:
         WorldOps::spawn_deferred(world_, std::move(packed));
     }
     void destroy(unsigned index, unsigned generation) {
-        WorldOps::destroy_deferred(world_, Entity {index, generation});
+        WorldOps::destroy_deferred(world_, Entity::from_raw(index, generation));
     }
 
     // -> JS array of field values, or null if the entity lacks the component.
@@ -436,12 +436,12 @@ private:
 
     static val to_val(Entity e) {
         val o = val::object();
-        o.set("index", static_cast<unsigned>(e.index));
-        o.set("generation", static_cast<unsigned>(e.generation));
+        o.set("index", static_cast<unsigned>(e.index()));
+        o.set("generation", static_cast<unsigned>(e.generation()));
         return o;
     }
     static Entity from_val(val e) {
-        return Entity {e["index"].as<unsigned>(), e["generation"].as<unsigned>()};
+        return Entity::from_raw(e["index"].as<unsigned>(), e["generation"].as<unsigned>());
     }
 
     // Per parallel system: the JS params object (read each tick), its key names,

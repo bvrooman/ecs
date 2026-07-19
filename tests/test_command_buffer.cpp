@@ -19,7 +19,7 @@ struct Doomed {}; // tag marking entities to delete
 // (WorldView gives the read-only mid-run observation; mutation is Commands.)
 static void setup_applies_after_it_ends() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](WorldView view, Commands& cmd) {
         e = cmd.spawn(Position {1, 1});
         CHECK(!view.alive(e)); // recorded, not yet materialized
@@ -55,7 +55,7 @@ static void destroy_during_iteration_is_safe() {
 
 static void add_and_remove() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 2}); });
 
     setup(w, [&](WorldView view, Commands& cmd) {
@@ -72,7 +72,7 @@ static void add_and_remove() {
 
 static void spawn_returns_usable_handle() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](WorldView view, Commands& cmd) {
         e = cmd.spawn(Position {7, 8});        // handle valid immediately
         cmd.add<Velocity>(e, Velocity {1, 2}); // follow-up edit on it
@@ -88,7 +88,7 @@ static void spawn_returns_usable_handle() {
 // out of the flush). set() on a present component overwrites it.
 static void set_on_missing_component_is_noop() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 2}); });
 
     bool threw = false;
@@ -107,7 +107,7 @@ static void set_on_missing_component_is_noop() {
 
 static void reserved_handles_are_distinct() {
     World w;
-    Entity a, b, c;
+    Entity a = Entity::null(), b = Entity::null(), c = Entity::null();
     setup(w, [&](Commands& cmd) {
         a = cmd.spawn(Position {0, 0});
         b = cmd.spawn(Position {0, 0});
@@ -120,21 +120,21 @@ static void reserved_handles_are_distinct() {
 
 static void reserved_slot_reuse_bumps_generation() {
     World w;
-    Entity first;
+    Entity first = Entity::null();
     setup(w, [&](Commands& cmd) { first = cmd.spawn(Position {1, 1}); });
     setup(w, [&](Commands& cmd) { cmd.destroy(first); });
 
-    Entity reused;
+    Entity reused = Entity::null();
     setup(w, [&](Commands& cmd) { reused = cmd.spawn(Position {2, 2}); });
-    CHECK(reused.index == first.index);           // slot reused
-    CHECK(reused.generation != first.generation); // fresh generation
+    CHECK(reused.index() == first.index());           // slot reused
+    CHECK(reused.generation() != first.generation()); // fresh generation
     CHECK(!w.alive(first));                       // stale handle stays dead
     CHECK(w.alive(reused));
 }
 
 static void destroy_then_add_is_safe() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {0, 0}); });
     setup(w, [&](Commands& cmd) {
         cmd.destroy(e);

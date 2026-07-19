@@ -140,7 +140,7 @@ int main() {
     auto reader = world.resource<SnapshotChannel<Snapshot>>().reader();
     long snap   = reader.poll() ? long(reader.get()->size()) : -1;
 
-    Position p0 = world.get<Position>(Entity {0, 0});
+    Position p0 = world.get<Position>(Entity::from_raw(0, 0));
     std::printf("after %d ticks: %zu entities alive, last snapshot = %ld tracers\n",
                 kTicks,
                 world.size(),

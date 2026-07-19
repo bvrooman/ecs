@@ -277,9 +277,10 @@ struct Archetype {
     void permute_rows(std::span<std::uint32_t const> perm) {
         assert(perm.size() == entities.size() &&
                "Archetype::permute_rows: perm size != row count");
-        std::vector<Entity> next(entities.size());
-        for (std::size_t i = 0; i < perm.size(); ++i)
-            next[i] = entities[perm[i]];
+        std::vector<Entity> next; // Entity (a Handle) is not default-constructible
+        next.reserve(entities.size());
+        for (auto const old : perm)
+            next.push_back(entities[old]);
         entities = std::move(next);
         for (auto const& col : columns)
             col->apply_permutation(perm);

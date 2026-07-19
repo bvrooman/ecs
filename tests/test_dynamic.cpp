@@ -8,6 +8,7 @@
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
 using namespace ecs;
@@ -95,7 +96,8 @@ static void multi_entity_and_view() {
     auto const Pos = define2("PositionC");
     World w;
     constexpr int N = 6;
-    Entity es[N];
+    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
+                               Entity::null(), Entity::null(), Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), float(i * 2)};
@@ -125,7 +127,8 @@ static void destroy_keeps_storage_consistent() {
     auto const Pos = define2("PositionD");
     World w;
     constexpr int N = 4;
-    Entity es[N];
+    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
+                               Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), 0};
@@ -268,7 +271,7 @@ static void native_component_runtime_access() {
 
     CHECK(w.size() == 4);
     for (int i = 0; i < 4; ++i)
-        CHECK((w.get<NPos>(Entity {std::uint32_t(i), 0}).x == float(i) * 10.f));
+        CHECK((w.get<NPos>(Entity::from_raw(std::uint32_t(i), 0)).x == float(i) * 10.f));
 }
 
 int main() {
