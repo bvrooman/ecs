@@ -529,11 +529,7 @@ private:
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
 
-    static WorldId next_world_id() noexcept {
-        static std::atomic<WorldId::type> counter {1};
-        return WorldId {counter.fetch_add(1, std::memory_order_relaxed)};
-    }
-    WorldId const instance_id_ = next_world_id();
+    WorldId const instance_id_ = WorldId::next();
     std::atomic<std::uint64_t> archetype_gen_ {0};
 };
 
