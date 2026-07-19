@@ -22,17 +22,12 @@ using Entity = detail::Handle<struct EntityTag>;
 // ComponentId is defined in component_id.hpp (a leaf header the storage core
 // and dynamic registry can include without the reflection machinery here).
 
-namespace detail {
-    // Mint the next component id. Thread-safe (see StrongId::next): component_id<T>
-    // magic statics on two threads must never race to the same id and alias their
-    // columns.
-    inline ComponentId next_component_id() noexcept { return ComponentId::next(); }
-} // namespace detail
-
 // Instantiating component_id<T> also registers T's name for tooling when
 // ECS_REFLECT_NAMES is enabled (register_component_name is a no-op otherwise).
+// ComponentId::next() mints a fresh id thread-safely: component_id<T> magic
+// statics on two threads must never race to the same id and alias their columns.
 template <class T>
 inline ComponentId const component_id =
-    detail::register_component_name<T>(detail::next_component_id());
+    detail::register_component_name<T>(ComponentId::next());
 
 } // namespace ecs

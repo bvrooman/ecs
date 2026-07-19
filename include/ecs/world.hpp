@@ -529,9 +529,7 @@ private:
     ArchetypeId empty_archetype_ = {};
     std::size_t alive_count_     = 0;
 
-    // instance_id starts at 1 so 0 stays reserved as the "no world" value the
-    // query match caches initialize to (see WorldId).
-    WorldId const instance_id_ = WorldId::next<1>();
+    WorldId const instance_id_ = WorldId::next();
     std::atomic<std::uint64_t> archetype_gen_ {0};
 };
 

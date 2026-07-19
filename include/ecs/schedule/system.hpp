@@ -232,7 +232,7 @@ struct KernelWaveContext {
 // memo, for kernel systems whose component set is a runtime value.
 struct MatchCache {
     std::vector<ArchetypeId> const* list = nullptr;
-    WorldId world                        = {};
+    WorldId world                        = WorldId::none();
     std::uint64_t gen                    = ~std::uint64_t {0};
 
     std::vector<ArchetypeId> const& resolve(World const& w, Signature const& sig) {

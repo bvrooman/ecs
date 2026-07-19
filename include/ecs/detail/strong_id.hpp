@@ -24,6 +24,7 @@
 #include <compare>
 #include <cstddef>
 #include <functional>
+#include <limits>
 
 namespace ecs {
 
@@ -53,18 +54,23 @@ struct StrongId {
         return *this;
     }
 
-    // Mint a fresh, process-unique id from a monotonic atomic counter -- one
-    // static counter per (StrongId type, First). Thread-safe with a relaxed
-    // fetch_add: id types are first touched on arbitrary threads (the magic-
-    // static init of component_id<T>, resource_id<T>, ... each guards only its
-    // OWN initialization), and two distinct types minted concurrently must never
-    // be handed the same value. Centralizes the counter boilerplate every
-    // per-type id minter (ComponentId/ResourceId/WorldId) otherwise repeats.
-    // `First` seeds the counter -- e.g. 1 to reserve 0 as a "none" sentinel.
-    template <Rep First = Rep {}>
+    // A canonical "none" id, distinct from every id next() hands out (which
+    // start at 0 and climb). For fields that mean "no id yet" -- e.g. the query
+    // match caches, which must not match any real World on first use.
+    static constexpr StrongId none() noexcept {
+        return StrongId {std::numeric_limits<Rep>::max()};
+    }
+
+    // Mint a fresh, process-unique id from a monotonic atomic counter (one
+    // static counter per StrongId type), starting at 0. Thread-safe with a
+    // relaxed fetch_add: id types are first touched on arbitrary threads (the
+    // magic-static init of component_id<T>, resource_id<T>, ... each guards only
+    // its OWN initialization), so two distinct types minted concurrently must
+    // never be handed the same value. Centralizes the counter boilerplate the
+    // per-type id minters otherwise repeat.
     [[nodiscard]]
     static StrongId next() noexcept {
-        static std::atomic<Rep> counter {First};
+        static std::atomic<Rep> counter {0};
         return StrongId {counter.fetch_add(1, std::memory_order_relaxed)};
     }
 

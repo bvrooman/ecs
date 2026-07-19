@@ -26,19 +26,14 @@
 
 namespace ecs {
 
-namespace detail {
-    // Mint the next resource id. Thread-safe (see StrongId::next), same reason as
-    // next_component_id(): concurrent first-touch of two resource_id<T> types must
-    // not hand out the same id.
-    inline ResourceId next_resource_id() noexcept { return ResourceId::next(); }
-} // namespace detail
-
 // Stable, process-local id assigned to each resource type on first use. This is
 // a separate id space from component_id; a component and a resource may share a
 // numeric id without conflict because they are tracked independently.
+// ResourceId::next() mints thread-safely (like ComponentId): concurrent
+// first-touch of two resource_id<T> types must not hand out the same id.
 template <class T>
 inline ResourceId const resource_id =
-    detail::register_resource_name<T>(detail::next_resource_id());
+    detail::register_resource_name<T>(ResourceId::next());
 
 class ResourceRegistry {
 public:
