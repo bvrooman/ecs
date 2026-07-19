@@ -5,10 +5,6 @@
 // be passed where Handle<OtherTag> is expected). Handles are minted only by the
 // matching HandleVector<Payload, Tag>; from_raw() is the sole exception, for FFI
 // / deserialization boundaries.
-//
-// Isolated in its own leaf header so lightweight aliases like
-// `using Entity = detail::Handle<struct EntityTag>` can depend on the handle
-// type without pulling in the container (and its allocator / <atomic>).
 
 #pragma once
 
