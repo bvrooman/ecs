@@ -34,9 +34,9 @@
 #include "executor.hpp"
 #include "kernel_params.hpp"
 #include "system.hpp"
-#include <memory>
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <string>
 #include <tuple>
@@ -63,8 +63,7 @@ public:
     //             phase<-1>{}, /*every=*/64);
     template <class Fn, int P = 0>
     SystemId add(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
-        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P,
-                       every);
+        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P, every);
     }
 
     // One-shot system: runs on the next run() and is then removed (e.g. setup).
@@ -110,8 +109,10 @@ public:
     // Query is bound to the shared 1-lane pool, so nothing a kernel body does
     // can reach a nested dispatch.
     template <class Fn, int P = 0>
-    SystemId
-    add_kernel(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
+    SystemId add_kernel(std::string name,
+                        Fn&& fn,
+                        phase<P>            = {},
+                        std::uint64_t every = 1) {
         return emplace_kernel(std::move(name), std::forward<Fn>(fn), P, every);
     }
 
@@ -159,13 +160,6 @@ public:
     [[nodiscard]]
     auto const& systems() const {
         return systems_;
-    }
-
-    // The conflict predicate the wavefront leveling uses; forwards to
-    // ecs::conflicts (schedule/access.hpp). Kept on Schedule for tooling that
-    // spells it Schedule::conflicts.
-    static bool conflicts(SystemAccess const& a, SystemAccess const& b) {
-        return ecs::conflicts(a, b);
     }
 
     // Run serially on the calling thread -- the shared 1-lane pool (which has
@@ -264,7 +258,7 @@ private:
     // Stamp an id, normalize the access sets, and store -- the single funnel
     // every add_* form goes through.
     SystemId register_system(System sys) {
-        sys.id = ++next_id_;
+        sys.id = SystemId::next();
         detail::normalize_access(sys.access);
         auto const id = sys.id;
         systems_.push_back(std::move(sys));
@@ -285,7 +279,10 @@ private:
     // instantiation doesn't add a missing-return error on top.
 
     template <class Fn>
-    SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase,
+    SystemId emplace(std::string name,
+                     Fn&& fn,
+                     bool const once,
+                     int const phase,
                      std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
@@ -319,8 +316,7 @@ private:
                     auto states = std::make_shared<typename Info::states>();
                     sys.run     = [fn = std::forward<Fn>(fn),
                                states](World& w, Commands& c, WorkerPool& pool) mutable {
-                        detail::imperative_invoke<Args>(fn, *states, w, c, pool,
-                                                        Seq {});
+                        detail::imperative_invoke<Args>(fn, *states, w, c, pool, Seq {});
                     };
                 } else {
                     sys.run = [fn = std::forward<Fn>(fn)](World& w,
@@ -333,11 +329,13 @@ private:
                 return register_system(std::move(sys));
             }
         }
-        return SystemId {0}; // reached only when a static_assert above fired
+        return SystemId::none(); // reached only when a static_assert above fired
     }
 
     template <class Fn>
-    SystemId emplace_kernel(std::string name, Fn&& fn, int const phase,
+    SystemId emplace_kernel(std::string name,
+                            Fn&& fn,
+                            int const phase,
                             std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
@@ -392,8 +390,15 @@ private:
                                          std::size_t b,
                                          std::size_t e,
                                          std::uint32_t ord) mutable {
-                    detail::kernel_invoke<Args, QI>(fn, *states, w, cmds, ai, b, e,
-                                                    ord, Seq {});
+                    detail::kernel_invoke<Args, QI>(fn,
+                                                    *states,
+                                                    w,
+                                                    cmds,
+                                                    ai,
+                                                    b,
+                                                    e,
+                                                    ord,
+                                                    Seq {});
                 };
                 if constexpr (Info::any_stateful) {
                     sys.prepare_items = [states](World& w,
@@ -408,7 +413,7 @@ private:
                 return register_system(std::move(sys));
             }
         }
-        return SystemId {0}; // reached only when a static_assert above fired
+        return SystemId::none(); // reached only when a static_assert above fired
     }
 
     // Build and execute one wave's item list; on a throw, discard the aborted
@@ -546,52 +551,50 @@ private:
         // Cadence is tick-dependent, so the due subset can't be precomputed
         // here -- but whether ANY system is cadenced is structural, so detect it
         // once and let run() skip the per-tick filter entirely when none is.
-        has_cadence_ = std::ranges::any_of(
-            systems_, [](System const& s) { return s.every != 1; });
+        has_cadence_ =
+            std::ranges::any_of(systems_, [](System const& s) { return s.every != 1; });
         for (std::size_t i = 0; i < systems_.size(); ++i) {
-            std::size_t lvl = 0;
+            auto level = System::Level {0};
             for (std::size_t j = 0; j < i; ++j)
                 if (systems_[j].phase == systems_[i].phase &&
                     conflicts(systems_[i].access, systems_[j].access))
-                    lvl = std::max(lvl, systems_[j].level + 1);
-            systems_[i].level = lvl;
+                    level = std::max(level, systems_[j].level + 1);
+            systems_[i].level = level;
         }
-        // Flat vector of (key, members) instead of a std::map: no per-rebuild
-        // node allocations, and the group count is small.
-        using Key   = std::pair<int, std::size_t>;
-        auto groups = std::vector<std::pair<Key, std::vector<std::size_t>>> {};
-        for (std::size_t i = 0; i < systems_.size(); ++i) {
-            Key const key {systems_[i].phase, systems_[i].level};
-            auto it = std::ranges::find(groups, key, [](auto const& g) {
-                return g.first;
-            });
+        using Group = std::pair<System::Key, Wave>;
+        auto groups = std::vector<Group> {};
+        for (auto const& [i, system] : systems_ | std::views::enumerate) {
+            auto const key = system.key();
+            auto search    = [](auto const& g) { return g.first; };
+            auto it        = std::ranges::find(groups, key, search);
             if (it == groups.end()) {
-                groups.emplace_back(key, std::vector<std::size_t> {});
+                groups.emplace_back(key, Wave {});
                 it = std::prev(groups.end());
             }
-            it->second.push_back(i);
+            auto& wave = it->second;
+            wave.push_back(i);
         }
         std::ranges::sort(groups, {}, [](auto const& g) { return g.first; });
         waves_.clear();
         waves_.reserve(groups.size());
-        for (auto& [key, idxs] : groups)
-            waves_.push_back(std::move(idxs));
+        for (auto& wave : groups | std::views::values)
+            waves_.push_back(std::move(wave));
         dirty_ = false;
     }
 
+    using Wave = std::vector<std::size_t>;
     event::Emitter<ScheduleEvent> events_;
     std::vector<System> systems_;
-    std::vector<std::vector<std::size_t>> waves_;
-    std::vector<std::size_t> active_wave_;     // per-wave due-system scratch, reused
-    bool has_cadence_ = false;                 // any system with every != 1
-    std::vector<detail::WorkItem> items_;      // per-wave scratch, capacity retained
-    FlushAttrib flush_attrib_;                 // per-system flush time, per wave
+    std::vector<Wave> waves_;
+    Wave active_wave_;                        // per-wave due-system scratch, reused
+    bool has_cadence_ = false;                // any system with every != 1
+    std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
+    FlushAttrib flush_attrib_;                // per-system flush time, per wave
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
-    SystemId next_id_ = {}; // ++ before each assignment; first system gets id 1
-    bool dirty_       = true;
+    bool dirty_         = true;
 };
 
 } // namespace ecs

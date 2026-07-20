@@ -53,7 +53,7 @@ struct fn_traits<R (C::*)(A...) const noexcept> {
     using args = std::tuple<A...>;
 };
 template <class C, class R, class... A>
-struct fn_traits<R (C::*)(A...)&> {
+struct fn_traits<R (C::*)(A...) &> {
     using args = std::tuple<A...>;
 };
 template <class C, class R, class... A>
@@ -202,8 +202,10 @@ struct query_param_traits;
 template <class... Cs>
 struct query_param_traits<Query<Cs...>> {
     static Signature const& signature() { return Query<Cs...>::required(); }
-    static Query<Cs...>
-    bind_slice(World& w, ArchetypeId archetype, std::size_t b, std::size_t e) {
+    static Query<Cs...> bind_slice(World& w,
+                                   ArchetypeId archetype,
+                                   std::size_t b,
+                                   std::size_t e) {
         return Query<Cs...>(w, parallel::serial_pool(), archetype, b, e);
     }
 };
@@ -247,6 +249,10 @@ struct MatchCache {
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
+    using Phase = int;
+    using Level = std::uint32_t;
+    using Key   = std::pair<Phase, Level>;
+
     SystemId id = {};
     std::string name;
     SystemAccess access;
@@ -275,9 +281,9 @@ struct SystemRecord {
     move_only_function<void(World&)> finish_items;
     Signature query_sig; // kernel systems: sorted required-component ids
     MatchCache match;    // kernel systems: memoized query_sig match list
-    int phase         = 0;
-    std::size_t level = 0;
-    bool once         = false;
+    Phase phase = 0;
+    Level level = 0;
+    bool once   = false;
     // Cadence: the system runs only on ticks where tick % every == 0 (every==1
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.
@@ -286,6 +292,11 @@ struct SystemRecord {
     [[nodiscard]]
     bool is_kernel() const noexcept {
         return static_cast<bool>(run_range);
+    }
+
+    [[nodiscard]]
+    Key key() const noexcept {
+        return {phase, level};
     }
 };
 

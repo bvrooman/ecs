@@ -27,8 +27,14 @@ public:
     T& operator[](Id const id) noexcept { return v_[id.value]; }
     T const& operator[](Id const id) const noexcept { return v_[id.value]; }
 
-    [[nodiscard]] std::size_t size() const noexcept { return v_.size(); }
-    [[nodiscard]] bool empty() const noexcept { return v_.empty(); }
+    [[nodiscard]]
+    std::size_t size() const noexcept {
+        return v_.size();
+    }
+    [[nodiscard]]
+    bool empty() const noexcept {
+        return v_.empty();
+    }
 
     void reserve(std::size_t const n) { v_.reserve(n); }
 
@@ -41,7 +47,7 @@ public:
 
     // Append `value`; its id is its position. Returns that id.
     Id push(T value) {
-        Id const id {static_cast<typename Id::type>(v_.size())};
+        Id const id {static_cast<Id::type>(v_.size())};
         v_.push_back(std::move(value));
         return id;
     }

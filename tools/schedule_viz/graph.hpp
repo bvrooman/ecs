@@ -20,8 +20,8 @@ namespace viz::detail {
 
 // Transitively-reduced dependency edges (a -> b, a < b within a phase) built
 // from Schedule::conflicts -- the same predicate the wavefront leveling uses.
-inline std::vector<std::pair<std::size_t, std::size_t>>
-reduced_dependencies(ecs::Schedule const& sched) {
+inline std::vector<std::pair<std::size_t, std::size_t>> reduced_dependencies(
+    ecs::Schedule const& sched) {
     auto const& sys = sched.systems();
     auto const n    = sys.size();
     // Direct conflict edges j -> i (j < i, same phase). Registration order
@@ -30,7 +30,7 @@ reduced_dependencies(ecs::Schedule const& sched) {
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t j = 0; j < i; ++j)
             if (sys[j].phase == sys[i].phase &&
-                ecs::Schedule::conflicts(sys[j].access, sys[i].access))
+                ecs::conflicts(sys[j].access, sys[i].access))
                 succ[j].push_back(i);
 
     // Reachability: edges only point to higher indices, so one high->low pass
@@ -59,10 +59,10 @@ reduced_dependencies(ecs::Schedule const& sched) {
 
 // --- crossing reduction (barycenter ordering) -------------------------------
 // Edge crossings between consecutive layers for the current node ordering.
-inline std::size_t
-layer_crossings(std::vector<std::vector<std::size_t>> const& layers,
-                std::vector<std::vector<std::size_t>> const& nbrDown,
-                std::unordered_map<std::size_t, std::size_t> const& pos) {
+inline std::size_t layer_crossings(
+    std::vector<std::vector<std::size_t>> const& layers,
+    std::vector<std::vector<std::size_t>> const& nbrDown,
+    std::unordered_map<std::size_t, std::size_t> const& pos) {
     std::size_t total = 0;
     for (std::size_t k = 0; k + 1 < layers.size(); ++k) {
         std::vector<std::pair<std::size_t, std::size_t>> e; // (upperPos, lowerPos)
