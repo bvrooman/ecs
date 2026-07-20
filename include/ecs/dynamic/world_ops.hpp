@@ -65,9 +65,8 @@ struct WorldOps {
                 auto& src = *w.archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
-                    b.columns.push(cid == id
-                                       ? std::make_unique<DynamicColumn>(desc)
-                                       : src.column_at(cid).clone_empty());
+                    b.columns.push_back(cid == id ? std::make_unique<DynamicColumn>(desc)
+                                                  : src.column_at(cid).clone_empty());
             });
             a.add_edge.emplace(id, to);
         }
@@ -116,7 +115,7 @@ struct WorldOps {
                 auto& src = *w.archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const cid : b.signature)
-                    b.columns.push(src.column_at(cid).clone_empty());
+                    b.columns.push_back(src.column_at(cid).clone_empty());
             });
             a.remove_edge.emplace(id, to);
         }
@@ -143,11 +142,10 @@ struct WorldOps {
         for (auto const& id : bundle | std::views::keys)
             require_dynamic(id, "spawn");
         Signature const sig(bundle | std::views::keys); // ctor sorts + dedups
-        auto const to = w.get_or_create_archetype(sig, [&](Archetype& b) {
+        auto const to  = w.get_or_create_archetype(sig, [&](Archetype& b) {
             b.columns.reserve(b.signature.size());
             for (auto const id : b.signature)
-                b.columns.push(
-                    std::make_unique<DynamicColumn>(registry().desc(id)));
+                b.columns.push_back(std::make_unique<DynamicColumn>(registry().desc(id)));
         });
         auto& arch     = *w.archetypes_[to];
         auto const row = static_cast<std::uint32_t>(arch.entities.size());
@@ -180,9 +178,7 @@ struct WorldOps {
     // matching_archetypes() indices. World's mutable archetype accessor is
     // private -- the dynamic layer reaches it via friendship, keeping the escape
     // hatch scoped to this module rather than the public World API.
-    static Archetype& archetype_at(World& w, ArchetypeId i) {
-        return *w.archetypes_[i];
-    }
+    static Archetype& archetype_at(World& w, ArchetypeId i) { return *w.archetypes_[i]; }
 
     // The first archetype that contains `id`, and its DynamicColumn -- the base
     // for a typed-array view. (Per-archetype iteration over all matches is

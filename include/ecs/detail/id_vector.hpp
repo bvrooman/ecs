@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstddef>
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,13 @@ namespace ecs::detail {
 template <class Id, class T>
 class IdVector {
 public:
+    static constexpr auto enumerate =
+        std::views::enumerate | std::views::transform([](auto&& entry) {
+            auto&& [index, t] = entry;
+            auto id           = static_cast<Id::type>(index);
+            return std::pair<Id, T&> {Id {id}, t};
+        });
+
     T& operator[](Id const id) noexcept { return v_[id.value]; }
     T const& operator[](Id const id) const noexcept { return v_[id.value]; }
 
@@ -46,7 +54,7 @@ public:
     auto end() const noexcept { return v_.end(); }
 
     // Append `value`; its id is its position. Returns that id.
-    Id push(T value) {
+    Id push_back(T value) {
         Id const id {static_cast<Id::type>(v_.size())};
         v_.push_back(std::move(value));
         return id;

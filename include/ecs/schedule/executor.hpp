@@ -41,7 +41,7 @@ namespace ecs::detail {
 // barrier-time folds walk ordinals so results are canonical-ordered no matter
 // which lane ran what.
 struct WorkItem {
-    std::uint32_t system;  // index into the schedule's system list
+    SystemId system;       // index into the schedule's system list
     ArchetypeId archetype; // world archetype, or kImperative
     std::uint32_t begin, end;
     std::uint32_t ordinal;
@@ -62,17 +62,19 @@ inline constexpr std::size_t kMinItemRows = 1024;
 // order (the per-item cost is one fetch_add).
 inline constexpr std::size_t kTargetItemsPerKernel = 64;
 
+using SystemVector = detail::IdVector<SystemId, SystemRecord>;
+
 // Flatten one wave into `items` (capacity retained by the caller across waves
 // and ticks: no steady-state allocation) and sort it into claim order.
 inline void build_wave_items(std::vector<WorkItem>& items,
-                             std::span<std::size_t const> wave,
-                             std::span<SystemRecord> systems,
+                             std::span<SystemId const> wave,
+                             SystemVector& systems,
                              World const& world) {
     items.clear();
     for (auto const idx : wave) {
         auto& s = systems[idx];
         if (!s.is_kernel()) {
-            items.push_back({std::uint32_t(idx), kImperative, 0, 0, 0});
+            items.push_back({idx, kImperative, 0, 0, 0});
             continue;
         }
         auto const& matches = s.match.resolve(world, s.query_sig);
@@ -94,11 +96,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
             auto const n = world.archetypes()[ai]->size();
             for (std::size_t b = 0; b < n; b += grain) {
                 auto const e = std::min(n, b + grain);
-                items.push_back({std::uint32_t(idx),
-                                 ai,
-                                 std::uint32_t(b),
-                                 std::uint32_t(e),
-                                 ordinal++});
+                items.push_back({idx, ai, std::uint32_t(b), std::uint32_t(e), ordinal++});
             }
         }
     }
@@ -122,7 +120,7 @@ inline void build_wave_items(std::vector<WorkItem>& items,
 // whether that is the real pool (lone-item shortcut) or the shared 1-lane one
 // (inside a multi-item dispatch, where a nested dispatch would be an error).
 inline void run_work_item(WorkItem const& it,
-                          std::span<SystemRecord> systems,
+                          SystemVector& systems,
                           World& world,
                           Commands& cmds,
                           WorkerPool& pool) {
@@ -150,7 +148,7 @@ inline void run_work_item(WorkItem const& it,
 // steady_clock reads per >=kMinItemRows-row item, measured within run-to-run
 // noise, so the timing is unconditional rather than plumbed behind a flag.
 inline void run_wave_items(std::vector<WorkItem>& items,
-                           std::span<SystemRecord> systems,
+                           SystemVector& systems,
                            World& world,
                            Commands& cmds,
                            WorkerPool& pool) {
@@ -158,8 +156,7 @@ inline void run_wave_items(std::vector<WorkItem>& items,
     auto run_one = [&](WorkItem& it, WorkerPool& p) {
         auto const t0 = clock::now();
         run_work_item(it, systems, world, cmds, p);
-        it.busy_us =
-            std::chrono::duration<double, std::micro>(clock::now() - t0).count();
+        it.busy_us = std::chrono::duration<double, std::micro>(clock::now() - t0).count();
     };
     if (items.empty())
         return;
@@ -173,7 +170,7 @@ inline void run_wave_items(std::vector<WorkItem>& items,
         // Every lane claims items until none remain; the handed [b, e) slice
         // is ignored in favor of dynamic claims.
         for (auto i = next.fetch_add(1, std::memory_order_relaxed); i < items.size();
-             i = next.fetch_add(1, std::memory_order_relaxed))
+             i      = next.fetch_add(1, std::memory_order_relaxed))
             run_one(items[i], inner);
     });
 }

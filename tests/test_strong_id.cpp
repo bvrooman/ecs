@@ -57,8 +57,8 @@ static void pre_increment() {
 static void tags_are_distinct_types() {
     static_assert(!std::is_same_v<Ticket, Seat>);
     static_assert(!std::is_convertible_v<Ticket, Seat>);
-    static_assert(!std::is_convertible_v<Ticket, std::uint32_t>); // no implicit decay
-    static_assert(!std::is_convertible_v<std::uint32_t, Ticket>); // no implicit build
+    static_assert(!std::is_convertible_v<Ticket, std::uint32_t>);  // no implicit decay
+    static_assert(!std::is_convertible_v<std::uint32_t, Ticket>);  // no implicit build
     static_assert(std::is_constructible_v<Ticket, std::uint32_t>); // ... explicit only
     CHECK(true);
 }
@@ -75,17 +75,16 @@ static void hashable_key() {
     CHECK(std::hash<Ticket> {}(Ticket {3}) == std::hash<std::uint32_t> {}(3u));
 }
 
-// SystemId in practice: the scheduler hands out monotonic, non-zero ids (0 is
-// the reserved "no system" sentinel), and they stay usable as map keys.
+// SystemId in practice: the scheduler hands out monotonic ids.
 static void system_ids_are_monotonic_and_nonzero() {
     Schedule s;
     SystemId const a = s.add("a", [] {});
     SystemId const b = s.add("b", [] {});
     SystemId const c = s.add("c", [] {});
-    CHECK(a != SystemId {});         // never the 0 sentinel
-    CHECK(b != SystemId {});
+    CHECK(a != SystemId::none()); // never the 0 sentinel
+    CHECK(b != SystemId::none());
     CHECK(a != b && b != c && a != c);
-    CHECK(a < b);                    // monotonic in registration order
+    CHECK(a < b); // monotonic in registration order
     CHECK(b < c);
 
     std::unordered_map<SystemId, int> seen;
@@ -139,12 +138,12 @@ static void component_and_resource_ids() {
 static void id_vector_basics() {
     ecs::detail::IdVector<Ticket, std::string> v;
     CHECK(v.empty());
-    Ticket const a = v.push("a");
-    Ticket const b = v.push("b");
-    CHECK(a == Ticket {0});     // ids are positions, assigned on append
+    Ticket const a = v.push_back("a");
+    Ticket const b = v.push_back("b");
+    CHECK(a == Ticket {0}); // ids are positions, assigned on append
     CHECK(b == Ticket {1});
     CHECK(v.size() == 2);
-    CHECK(v[a] == "a");         // operator[] takes the id, not a raw int
+    CHECK(v[a] == "a"); // operator[] takes the id, not a raw int
     CHECK(v[b] == "b");
     v[a] = "A";
     CHECK(v[a] == "A");
@@ -157,9 +156,26 @@ static void id_vector_basics() {
     CHECK(v.size() == 1);
 }
 
+static void id_vector_enumerate() {
+    using ecs::detail::IdVector;
+    using TicketVector = IdVector<Ticket, std::string>;
+    auto v             = TicketVector {};
+    auto const a       = v.push_back("a");
+    auto const b       = v.push_back("b");
+    auto const c       = v.push_back("c");
+    auto const tickets = std::vector {a, b, c};
+    auto enumerated    = std::vector<Ticket> {};
+    for (auto&& [id, s] : v | TicketVector::enumerate) {
+        static_assert(std::is_same_v<Ticket, decltype(id)>);
+        enumerated.push_back(id);
+    }
+    CHECK(enumerated == tickets);
+}
+
 int main() {
     RUN_SUITE(zero_overhead_layout);
     RUN_SUITE(id_vector_basics);
+    RUN_SUITE(id_vector_enumerate);
     RUN_SUITE(id_spaces_are_distinct);
     RUN_SUITE(component_and_resource_ids);
     RUN_SUITE(construct_and_read);

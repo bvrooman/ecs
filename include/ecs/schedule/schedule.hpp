@@ -51,6 +51,7 @@ public:
     // The stored record type, exposed for tooling (systems() hands out a
     // vector of these; the visualizer reads name/access/phase/level).
     using System = detail::SystemRecord;
+    using Wave   = std::vector<SystemId>;
 
     // Register an imperative system. Its access is derived from its parameter
     // types; an optional trailing phase<N> tag gives coarse ordering (default
@@ -137,14 +138,14 @@ public:
         return register_system(std::move(sys));
     }
 
-    // Unschedule a system by handle. Returns true if it was present.
-    bool remove(SystemId id) {
-        auto const n =
-            std::erase_if(systems_, [id](System const& s) { return s.id == id; });
-        if (n)
-            dirty_ = true;
-        return n != 0;
-    }
+    // // Unschedule a system by handle. Returns true if it was present.
+    // bool remove(SystemId id) {
+    //     auto const n =
+    //         std::erase_if(systems_, [id](System const& s) { return s.id == id; });
+    //     if (n)
+    //         dirty_ = true;
+    //     return n != 0;
+    // }
 
     [[nodiscard]]
     auto size() const noexcept {
@@ -433,7 +434,7 @@ private:
     // has no cadenced system -- has_cadence_, computed once in rebuild() -- that
     // is the whole plan, returned by reference with no copy. Otherwise the due
     // subset is filtered into a reused scratch buffer.
-    std::vector<std::size_t> const& due_wave(std::vector<std::size_t> const& plan) {
+    Wave const& due_wave(Wave const& plan) {
         if (!has_cadence_)
             return plan;
         active_wave_.clear();
@@ -443,7 +444,7 @@ private:
         return active_wave_;
     }
 
-    double run_wave(std::vector<std::size_t> const& wave,
+    double run_wave(Wave const& wave,
                     World& world,
                     Commands& cmds,
                     WorkerPool& pool,
@@ -515,7 +516,7 @@ private:
     // pre-sizing, prefix sums). Single-threaded, before the wave's dispatch.
     // A hooked system with zero items still prepares (its reduce target must
     // reset to "empty reduction", its extract target resize to 0).
-    void prepare_hooks(std::vector<std::size_t> const& wave, World& world) {
+    void prepare_hooks(Wave const& wave, World& world) {
         prepare_us_.assign(wave.size(), 0.0);
         for (std::size_t wi = 0; wi < wave.size(); ++wi) {
             auto& s = systems_[wave[wi]];
@@ -537,8 +538,8 @@ private:
     }
 
     void prune_once() {
-        if (std::erase_if(systems_, [](System const& s) { return s.once; }))
-            dirty_ = true;
+        // if (std::erase_if(systems_, [](System const& s) { return s.once; }))
+        //     dirty_ = true;
     }
 
     // Assign wavefront levels and group systems into waves: intra-phase level
@@ -553,19 +554,19 @@ private:
         // once and let run() skip the per-tick filter entirely when none is.
         has_cadence_ =
             std::ranges::any_of(systems_, [](System const& s) { return s.every != 1; });
-        for (std::size_t i = 0; i < systems_.size(); ++i) {
-            auto level = System::Level {0};
-            for (std::size_t j = 0; j < i; ++j)
-                if (systems_[j].phase == systems_[i].phase &&
-                    conflicts(systems_[i].access, systems_[j].access))
-                    level = std::max(level, systems_[j].level + 1);
-            systems_[i].level = level;
+        for (auto& system : systems_)
+            system.level = 0;
+        for (auto const& [s1, s2] : std::views::cartesian_product(systems_, systems_)) {
+            if (s1.id == s2.id)
+                continue;
+            if (s1.phase == s2.phase && conflicts(s1.access, s2.access))
+                s1.level = std::max(s1.level, s2.level + 1);
         }
         using Group = std::pair<System::Key, Wave>;
+        auto search = [](auto const& g) { return g.first; };
         auto groups = std::vector<Group> {};
-        for (auto const& [i, system] : systems_ | std::views::enumerate) {
+        for (auto const& [i, system] : systems_ | SystemVector::enumerate) {
             auto const key = system.key();
-            auto search    = [](auto const& g) { return g.first; };
             auto it        = std::ranges::find(groups, key, search);
             if (it == groups.end()) {
                 groups.emplace_back(key, Wave {});
@@ -574,7 +575,7 @@ private:
             auto& wave = it->second;
             wave.push_back(i);
         }
-        std::ranges::sort(groups, {}, [](auto const& g) { return g.first; });
+        std::ranges::sort(groups, {}, search);
         waves_.clear();
         waves_.reserve(groups.size());
         for (auto& wave : groups | std::views::values)
@@ -582,9 +583,9 @@ private:
         dirty_ = false;
     }
 
-    using Wave = std::vector<std::size_t>;
     event::Emitter<ScheduleEvent> events_;
-    std::vector<System> systems_;
+    using SystemVector = detail::IdVector<SystemId, System>;
+    SystemVector systems_;
     std::vector<Wave> waves_;
     Wave active_wave_;                        // per-wave due-system scratch, reused
     bool has_cadence_ = false;                // any system with every != 1

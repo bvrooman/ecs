@@ -8,8 +8,8 @@
 
 #include "archetype.hpp"
 #include "command_buffer.hpp"
-#include "detail/sparse_handle_vector.hpp"
 #include "detail/id_vector.hpp"
+#include "detail/sparse_handle_vector.hpp"
 #include "entity.hpp"
 #include "resource.hpp"
 #include "world_id.hpp"
@@ -53,7 +53,7 @@ namespace detail {
 // reuse World's generic archetype machinery via friendship -- forward-declared
 // here so World can befriend it without depending on the dynamic module.
 namespace dynamic {
-struct WorldOps;
+    struct WorldOps;
 }
 
 template <class... Cs>
@@ -74,9 +74,7 @@ public:
     // goes through a `Commands` object, which a running Schedule creates and
     // passes to each system -- so mutation is reachable only inside a system,
     // enforced at compile time rather than by a runtime check.
-    bool alive(Entity const e) const {
-        return entities_.is_alive(e);
-    }
+    bool alive(Entity const e) const { return entities_.is_alive(e); }
 
     std::size_t size() const noexcept { return alive_count_; }
 
@@ -175,8 +173,7 @@ public:
     // --- reads ------------------------------------------------------------
     template <class C>
     bool has(Entity const e) const {
-        return alive(e) &&
-               archetypes_[entities_[e].archetype]->has(component_id<C>);
+        return alive(e) && archetypes_[entities_[e].archetype]->has(component_id<C>);
     }
 
     // Read a component by value (gathered from its per-field columns).
@@ -257,8 +254,8 @@ public:
     }
 
 private:
-    friend class Commands;         // the mutation API; records into commands_
-    friend class Schedule;         // creates Commands and flushes at barriers
+    friend class Commands;           // the mutation API; records into commands_
+    friend class Schedule;           // creates Commands and flushes at barriers
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
@@ -275,9 +272,7 @@ private:
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    void apply_commands(FlushAttrib* attrib = nullptr) {
-        commands_.apply(*this, attrib);
-    }
+    void apply_commands(FlushAttrib* attrib = nullptr) { commands_.apply(*this, attrib); }
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.
@@ -318,8 +313,8 @@ private:
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
-                    b.columns.push(id == cid ? std::make_unique<Column<C>>()
-                                             : src.column_at(id).clone_empty());
+                    b.columns.push_back(id == cid ? std::make_unique<Column<C>>()
+                                                  : src.column_at(id).clone_empty());
             });
             a.add_edge.emplace(cid, to);
         }
@@ -346,7 +341,7 @@ private:
                 auto& src = *archetypes_[from];
                 b.columns.reserve(b.signature.size());
                 for (auto const id : b.signature)
-                    b.columns.push(src.column_at(id).clone_empty());
+                    b.columns.push_back(src.column_at(id).clone_empty());
             });
             a.remove_edge.emplace(cid, to);
         }
@@ -384,15 +379,16 @@ private:
         // per-spawn heap allocation on the steady-state path. Same idiom as
         // Query::required().
         static Signature const sig = Signature {component_id<Cs>...};
-        auto const to = get_or_create_archetype(sig, [](Archetype& b) {
+        auto const to              = get_or_create_archetype(sig, [](Archetype& b) {
             // One column per component, ordered to match the sorted signature.
             std::array<std::pair<ComponentId, std::unique_ptr<IColumn>>, sizeof...(Cs)>
                 cols {std::pair<ComponentId, std::unique_ptr<IColumn>> {
-                    component_id<Cs>, std::make_unique<Column<Cs>>()}...};
+                    component_id<Cs>,
+                    std::make_unique<Column<Cs>>()}...};
             std::ranges::sort(cols, {}, [](auto const& p) { return p.first; });
             b.columns.reserve(cols.size());
             for (auto& [id, col] : cols)
-                b.columns.push(std::move(col));
+                b.columns.push_back(std::move(col));
         });
 
         // Storage first, record bookkeeping second: if a column push throws,
@@ -425,7 +421,7 @@ private:
         // indexing it: if the index insertion ran first and the append then
         // threw, sig_index_ would map this signature to an out-of-bounds slot
         // forever.
-        auto const idx = archetypes_.push(std::move(arch));
+        auto const idx = archetypes_.push_back(std::move(arch));
         try {
             sig_index_.emplace(sig, idx);
         } catch (...) {
@@ -459,7 +455,7 @@ private:
         for (auto const& col : a.columns)
             col->swap_remove(row);
         if (row != last) {
-            a.entities[row]                     = a.entities[last];
+            a.entities[row]                = a.entities[last];
             entities_[a.entities[row]].row = row;
         }
         a.entities.pop_back();
@@ -502,7 +498,7 @@ private:
 
         remove_row(a, rec.row);
         rec.archetype = to;
-        rec.row = new_row;
+        rec.row       = new_row;
     }
 
     // Pop any column row appended beyond `entities.size()` -- the unwind path
@@ -553,10 +549,9 @@ public:
     template <class... Cs>
     Entity spawn(Cs&&... comps) {
         Entity const e = world_.reserve();
-        record(
-            [e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
-                w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
-            });
+        record([e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
+            w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
+        });
         return e;
     }
 
