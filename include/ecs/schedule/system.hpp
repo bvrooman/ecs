@@ -249,9 +249,9 @@ struct MatchCache {
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
-    using Phase = int;
-    using Level = std::uint32_t;
-    using Key   = std::pair<Phase, Level>;
+    using Phase   = int;
+    using Level   = std::uint32_t;
+    using WaveKey = std::pair<Phase, Level>;
 
     SystemId id = {};
     std::string name;
@@ -295,7 +295,7 @@ struct SystemRecord {
     }
 
     [[nodiscard]]
-    Key key() const noexcept {
+    WaveKey wave_key() const noexcept {
         return {phase, level};
     }
 };

@@ -27,9 +27,14 @@ class IdVector {
 public:
     static constexpr auto enumerate =
         std::views::enumerate | std::views::transform([](auto&& entry) {
-            auto&& [index, t] = entry;
-            auto id           = static_cast<Id::type>(index);
-            return std::pair<Id, T&> {Id {id}, t};
+            auto index             = std::get<0>(entry);
+            auto&& value           = std::get<1>(entry);
+            using IdValue          = Id::type;
+            using ElementReference = decltype(value);
+            return std::pair<Id, ElementReference> {
+                Id {static_cast<IdValue>(index)},
+                value,
+            };
         });
 
     T& operator[](Id const id) noexcept { return v_[id.value]; }
@@ -62,8 +67,20 @@ public:
     // Undo the most recent push (creation rollback only).
     void pop_back() noexcept { v_.pop_back(); }
 
+    // Erase elements matching the predicate. Erasing elements can invalidate
+    // issued IDs.
+    template <class Predicate>
+    std::size_t erase_if(Predicate predicate) {
+        return std::erase_if(v_, std::move(predicate));
+    }
+
 private:
     std::vector<T> v_;
 };
+
+template <class Id, class T, typename Predicate>
+std::size_t erase_if(ecs::detail::IdVector<Id, T>& c, Predicate pred) {
+    return c.erase_if(std::move(pred));
+}
 
 } // namespace ecs::detail

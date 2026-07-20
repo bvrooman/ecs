@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include "../detail/id_vector.hpp"
 #include "../event/emitter.hpp"
 #include "../query.hpp"
 #include "../world.hpp"
@@ -139,13 +140,12 @@ public:
     }
 
     // // Unschedule a system by handle. Returns true if it was present.
-    // bool remove(SystemId id) {
-    //     auto const n =
-    //         std::erase_if(systems_, [id](System const& s) { return s.id == id; });
-    //     if (n)
-    //         dirty_ = true;
-    //     return n != 0;
-    // }
+    bool remove(SystemId id) {
+        auto const n = erase_if(systems_, [id](System const& s) { return s.id == id; });
+        if (n)
+            dirty_ = true;
+        return n != 0;
+    }
 
     [[nodiscard]]
     auto size() const noexcept {
@@ -256,8 +256,7 @@ public:
     }
 
 private:
-    // Stamp an id, normalize the access sets, and store -- the single funnel
-    // every add_* form goes through.
+    // Stamp an id, normalize the access sets, and store.
     SystemId register_system(System sys) {
         sys.id = SystemId::next();
         detail::normalize_access(sys.access);
@@ -538,44 +537,52 @@ private:
     }
 
     void prune_once() {
-        // if (std::erase_if(systems_, [](System const& s) { return s.once; }))
-        //     dirty_ = true;
+        if (erase_if(systems_, [](System const& s) { return s.once; }))
+            dirty_ = true;
     }
 
-    // Assign wavefront levels and group systems into waves: intra-phase level
-    // = 1 + max(level) over earlier conflicting systems in the same phase
-    // (cross-phase ordering is handled by the phase barrier); waves run in
-    // ascending (phase, level) order with a barrier between each.
-    void rebuild() {
-        if (!dirty_)
-            return;
-        // Cadence is tick-dependent, so the due subset can't be precomputed
-        // here -- but whether ANY system is cadenced is structural, so detect it
-        // once and let run() skip the per-tick filter entirely when none is.
-        has_cadence_ =
-            std::ranges::any_of(systems_, [](System const& s) { return s.every != 1; });
+    // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
+    // conflicting systems in the same phase (cross-phase ordering is handled by
+    // the phase barrier).
+    void assign_levels() {
         for (auto& system : systems_)
             system.level = 0;
-        for (auto const& [s1, s2] : std::views::cartesian_product(systems_, systems_)) {
-            if (s1.id == s2.id)
-                continue;
-            if (s1.phase == s2.phase && conflicts(s1.access, s2.access))
-                s1.level = std::max(s1.level, s2.level + 1);
+        for (auto&& [i, s1] : systems_ | std::views::enumerate) {
+            auto level = System::Level {0};
+            for (auto const& s2 : systems_ | std::views::take(i)) {
+                if (s1.phase == s2.phase && conflicts(s1.access, s2.access))
+                    level = std::max(level, s2.level + 1);
+            }
+            s1.level = level;
         }
-        using Group = std::pair<System::Key, Wave>;
-        auto search = [](auto const& g) { return g.first; };
-        auto groups = std::vector<Group> {};
-        for (auto const& [i, system] : systems_ | SystemVector::enumerate) {
-            auto const key = system.key();
-            auto it        = std::ranges::find(groups, key, search);
-            if (it == groups.end()) {
-                groups.emplace_back(key, Wave {});
-                it = std::prev(groups.end());
+    }
+
+    //  Waves run in ascending (phase, level) order with a barrier between each.
+    auto build_wave_groups() const {
+        using WaveGroup  = std::pair<System::WaveKey, Wave>;
+        auto search      = [](auto const& g) { return g.first; };
+        auto wave_groups = std::vector<WaveGroup> {};
+        for (auto&& [i, system] : systems_ | SystemVector::enumerate) {
+            auto key = system.wave_key();
+            auto it  = std::ranges::find(wave_groups, key, search);
+            if (it == wave_groups.end()) {
+                wave_groups.emplace_back(key, Wave {});
+                it = std::prev(wave_groups.end());
             }
             auto& wave = it->second;
             wave.push_back(i);
         }
-        std::ranges::sort(groups, {}, search);
+        std::ranges::sort(wave_groups, {}, search);
+        return wave_groups;
+    }
+
+    void rebuild() {
+        if (!dirty_)
+            return;
+        has_cadence_ =
+            std::ranges::any_of(systems_, [](System const& s) { return s.every != 1; });
+        assign_levels();
+        auto groups = build_wave_groups();
         waves_.clear();
         waves_.reserve(groups.size());
         for (auto& wave : groups | std::views::values)

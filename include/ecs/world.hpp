@@ -378,8 +378,8 @@ private:
         // than allocating a Signature vector on every spawn -- the last
         // per-spawn heap allocation on the steady-state path. Same idiom as
         // Query::required().
-        static Signature const sig = Signature {component_id<Cs>...};
-        auto const to              = get_or_create_archetype(sig, [](Archetype& b) {
+        static auto const sig = Signature {component_id<Cs>...};
+        auto const to         = get_or_create_archetype(sig, [](Archetype& b) {
             // One column per component, ordered to match the sorted signature.
             std::array<std::pair<ComponentId, std::unique_ptr<IColumn>>, sizeof...(Cs)>
                 cols {std::pair<ComponentId, std::unique_ptr<IColumn>> {

@@ -62,7 +62,7 @@ inline constexpr std::size_t kMinItemRows = 1024;
 // order (the per-item cost is one fetch_add).
 inline constexpr std::size_t kTargetItemsPerKernel = 64;
 
-using SystemVector = detail::IdVector<SystemId, SystemRecord>;
+using SystemVector = IdVector<SystemId, SystemRecord>;
 
 // Flatten one wave into `items` (capacity retained by the caller across waves
 // and ticks: no steady-state allocation) and sort it into claim order.
@@ -124,16 +124,12 @@ inline void run_work_item(WorkItem const& it,
                           World& world,
                           Commands& cmds,
                           WorkerPool& pool) {
-    auto& s = systems[it.system];
-    // Tag any command this item records with its system, so the barrier flush
-    // can be attributed per system (see Schedule's flush reporting). Set on the
-    // claiming lane's thread; each lane runs one item at a time, so this is the
-    // correct source for every record() the body makes.
-    detail::recording_source() = s.id;
+    auto& system       = systems[it.system];
+    recording_source() = system.id;
     if (it.archetype == kImperative)
-        s.run(world, cmds, pool);
+        system.run(world, cmds, pool);
     else
-        s.run_range(world, cmds, it.archetype, it.begin, it.end, it.ordinal);
+        system.run_range(world, cmds, it.archetype, it.begin, it.end, it.ordinal);
 }
 
 // Execute a built item list. A lone item runs inline on the caller (an
