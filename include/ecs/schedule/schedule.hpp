@@ -214,8 +214,9 @@ public:
         events_.emit(TickBegin {wave_plans_.size()});
         auto cmds = Commands {world};
         auto lvl  = 0uz;
-        for (auto const& plan : wave_plans_) {
-            if (!plan.empty()) {
+        for (auto& plan : wave_plans_) {
+            auto sz = plan.prepare(systems_, tick_);
+            if (sz > 0) {
                 events_.emit(WaveBegin {lvl, plan.size()});
                 double const flush_us = run_wave(plan, world, cmds, pool, lvl);
                 events_.emit(WaveEnd {lvl, flush_us});
@@ -489,29 +490,6 @@ private:
             }
             s1.level = level;
         }
-    }
-
-    // Waves run in ascending (phase, level) order with a barrier between each.
-    // Tombstoned systems are skipped; live systems keep their position as their
-    // wave-member id.
-    auto build_wave_groups() const {
-        using WaveGroup  = std::pair<System::WaveKey, Wave>;
-        auto search      = [](auto const& g) { return g.first; };
-        auto wave_groups = std::vector<WaveGroup> {};
-        for (auto&& [id, system] : systems_.enumerate()) {
-            if (system.dead)
-                continue;
-            auto key = system.wave_key();
-            auto it  = std::ranges::find(wave_groups, key, search);
-            if (it == wave_groups.end()) {
-                wave_groups.emplace_back(key, Wave {});
-                it = std::prev(wave_groups.end());
-            }
-            auto& wave = it->second;
-            wave.push_back(id);
-        }
-        std::ranges::sort(wave_groups, {}, search);
-        return wave_groups;
     }
 
     void build_wave_plans() {

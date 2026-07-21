@@ -114,6 +114,7 @@ public:
             return;
         if (items_.size() == 1) {
             run_one(items_[0], pool);
+            busy_us_[items_[0].system] += items_[0].busy_us;
             return;
         }
         auto next   = std::atomic {0uz};
@@ -182,12 +183,22 @@ public:
     auto begin() const { return systems_.begin(); }
     auto end() const { return systems_.end(); }
 
+    auto prepare(SystemVector& systems, uint64_t tick) {
+        due_.clear();
+        for (auto const id : systems_) {
+            auto const& s = systems[id];
+            if (tick % s.every == 0)
+                due_.push_back(id);
+        }
+        return due_.size();
+    }
+
     auto build(SystemVector& systems, World const& world, uint64_t tick) const
         -> CompiledWave {
         auto items   = std::vector<detail::WorkItem>();
         auto prepare = std::vector<PrepareContext>();
         auto finish  = std::vector<FinishContext>();
-        for (auto const id : systems_) {
+        for (auto const id : due_) {
             auto& s = systems[id];
             if (tick % s.every != 0)
                 continue;
@@ -239,5 +250,6 @@ public:
 
 private:
     std::vector<SystemId> systems_;
+    std::vector<SystemId> due_;
 };
 }
