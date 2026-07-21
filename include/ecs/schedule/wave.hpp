@@ -119,7 +119,7 @@ public:
         }
         auto next   = std::atomic {0uz};
         auto& inner = parallel::serial_pool();
-        pool.parallel_for(items_.size(), [&](std::size_t, std::size_t) {
+        pool.parallel_for(items_.size(), 2, [&](std::size_t, std::size_t) {
             for (auto i = next.fetch_add(1, std::memory_order_relaxed); i < items_.size();
                  i      = next.fetch_add(1, std::memory_order_relaxed))
                 run_one(items_[i], inner);
