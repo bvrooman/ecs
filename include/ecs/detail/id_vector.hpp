@@ -47,7 +47,6 @@ public:
     auto end() const noexcept { return v_.end(); }
 
     auto enumerate() noexcept { return enumerate_(*this); }
-
     auto enumerate() const noexcept { return enumerate_(*this); }
 
     // Append `value`; its id is its position. Returns that id.
@@ -59,37 +58,23 @@ public:
     // Undo the most recent push (creation rollback only).
     void pop_back() noexcept { v_.pop_back(); }
 
-    // Erase elements matching the predicate. Erasing elements can invalidate
-    // issued IDs.
-    template <class Predicate>
-    std::size_t erase_if(Predicate predicate) {
-        return std::erase_if(v_, std::move(predicate));
-    }
-
 private:
     template <class Self>
     static auto enumerate_(Self& self) {
-        // std::views::enumerate is C++23 and missing from the libc++ that ships
-        // with some Emscripten releases; index with iota + transform (C++20) so
-        // the wasm build stays buildable. Yields (Id{position}, element&).
-        auto* v = &self.v_;
-        return std::views::iota(std::size_t {0}, v->size()) |
-               std::views::transform([v](std::size_t const index) {
+        // std::views::enumerate is C++23 and missing from the libc++.
+        // Yields (Id{position}, element&).
+        return std::views::iota(std::size_t {0}, self.size()) |
+               std::views::transform([&](std::size_t const index) {
                    using IdValue          = Id::type;
-                   using ElementReference = decltype((*v)[index]);
+                   using ElementReference = decltype(self.v_[index]);
                    return std::pair<Id, ElementReference> {
                        Id {static_cast<IdValue>(index)},
-                       (*v)[index],
+                       self.v_[index],
                    };
                });
     }
 
     std::vector<T> v_;
 };
-
-template <class Id, class T, typename Predicate>
-std::size_t erase_if(ecs::detail::IdVector<Id, T>& c, Predicate pred) {
-    return c.erase_if(std::move(pred));
-}
 
 } // namespace ecs::detail
