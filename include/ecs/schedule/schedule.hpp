@@ -543,14 +543,11 @@ private:
     // Tombstone spent one-shot systems (see remove()): they keep their slot so
     // no other system's position -- and so no SystemId -- shifts.
     void prune_once() {
-        bool changed = false;
         for (auto& s : systems_)
             if (s.once && !s.dead) {
-                s.dead  = true;
-                changed = true;
+                s.dead = true;
+                dirty_ = true;
             }
-        if (changed)
-            dirty_ = true;
     }
 
     // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
