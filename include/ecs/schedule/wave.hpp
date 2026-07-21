@@ -74,7 +74,7 @@ struct WaveResult {
 };
 
 // Compiled wave plan
-class CompiledWave {
+class Wave {
 public:
     using System       = detail::SystemRecord;
     using SystemVector = detail::IdVector<SystemId, System>;
@@ -149,10 +149,10 @@ public:
 
 private:
     friend class WavePlan;
-    CompiledWave(WaveId const id,
-                 std::vector<WorkItem>&& items,
-                 std::vector<PrepareContext>&& prepare,
-                 std::vector<FinishContext>&& finish)
+    Wave(WaveId const id,
+         std::vector<WorkItem>&& items,
+         std::vector<PrepareContext>&& prepare,
+         std::vector<FinishContext>&& finish)
         : id {id}
         , items_ {std::move(items)}
         , prepare_ {std::move(prepare)}
@@ -209,8 +209,7 @@ public:
         return due_.size();
     }
 
-    auto build(SystemVector& systems, World const& world, uint64_t tick) const
-        -> CompiledWave {
+    auto build(SystemVector& systems, World const& world, uint64_t tick) const -> Wave {
         auto items   = std::vector<detail::WorkItem>();
         auto prepare = std::vector<PrepareContext>();
         auto finish  = std::vector<FinishContext>();
