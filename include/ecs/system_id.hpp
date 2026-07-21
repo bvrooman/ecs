@@ -15,6 +15,6 @@
 
 namespace ecs {
 
-using SystemId = StrongId<struct SystemIdTag, std::uint64_t>;
+using SystemId = StrongId<struct SystemIdTag, std::uint32_t>;
 
 } // namespace ecs

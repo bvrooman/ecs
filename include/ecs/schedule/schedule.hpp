@@ -258,7 +258,8 @@ public:
 private:
     // Stamp an id, normalize the access sets, and store.
     SystemId register_system(System sys) {
-        sys.id = SystemId::next();
+        sys.id = next_id_;
+        ++next_id_;
         detail::normalize_access(sys.access);
         auto const id = sys.id;
         systems_.push_back(std::move(sys));
@@ -602,6 +603,7 @@ private:
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
+    SystemId next_id_   = {};
     bool dirty_         = true;
 };
 
