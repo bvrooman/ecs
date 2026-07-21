@@ -69,14 +69,17 @@ public:
 private:
     template <class Self>
     static auto enumerate_(Self& self) {
-        return std::views::enumerate(self.v_) | std::views::transform([](auto&& entry) {
-                   auto index             = std::get<0>(entry);
-                   auto&& value           = std::get<1>(entry);
+        // std::views::enumerate is C++23 and missing from the libc++ that ships
+        // with some Emscripten releases; index with iota + transform (C++20) so
+        // the wasm build stays buildable. Yields (Id{position}, element&).
+        auto* v = &self.v_;
+        return std::views::iota(std::size_t {0}, v->size()) |
+               std::views::transform([v](std::size_t const index) {
                    using IdValue          = Id::type;
-                   using ElementReference = decltype(value);
+                   using ElementReference = decltype((*v)[index]);
                    return std::pair<Id, ElementReference> {
                        Id {static_cast<IdValue>(index)},
-                       value,
+                       (*v)[index],
                    };
                });
     }
