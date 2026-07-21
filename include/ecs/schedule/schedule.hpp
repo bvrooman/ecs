@@ -466,9 +466,6 @@ private:
         finish_us_.assign(wave.size(), 0.0);
         flush_attrib_.clear();
         double flush_us = 0;
-        auto const lone = wave.size() == 1;
-        if (lone)
-            events_.emit(SystemBegin {systems_[wave[0]].id, systems_[wave[0]].name});
         try {
             detail::run_wave_items(items_, systems_, world, cmds, pool);
             // Barrier folds (Reduce et al.) run after the join and before the
@@ -494,12 +491,9 @@ private:
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();
-            events_.emit(
-                TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId::none()});
+            events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        if (lone)
-            events_.emit(SystemEnd {systems_[wave[0]].id});
         // Per-system work rollup, in wave (registration) order.
         for (std::size_t wi = 0; wi < wave.size(); ++wi) {
             auto const idx      = wave[wi];
@@ -575,8 +569,7 @@ private:
                 continue;
             auto level = System::Level {0};
             for (auto const& s2 : systems_ | std::views::take(id.value)) {
-                if (!s2.dead && s1.phase == s2.phase &&
-                    conflicts(s1.access, s2.access))
+                if (!s2.dead && s1.phase == s2.phase && conflicts(s1.access, s2.access))
                     level = std::max(level, s2.level + 1);
             }
             s1.level = level;
@@ -609,8 +602,9 @@ private:
     void rebuild() {
         if (!dirty_)
             return;
-        has_cadence_ = std::ranges::any_of(
-            systems_, [](System const& s) { return !s.dead && s.every != 1; });
+        has_cadence_ = std::ranges::any_of(systems_, [](System const& s) {
+            return !s.dead && s.every != 1;
+        });
         assign_levels();
         auto groups = build_wave_groups();
         waves_.clear();
