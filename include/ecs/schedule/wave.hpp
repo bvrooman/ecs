@@ -88,33 +88,41 @@ public:
     }
 
     void prepare(World& world) {
+        assert(state == State::New);
         for (auto&& context : prepare_) {
             auto const t0 = detail::sched_clock::now();
             if (context.prepare(world, items_))
                 prepare_us_ = detail::elapsed_us(t0);
         }
+        state = State::Prepared;
     }
 
     void finish(World& world) {
+        assert(state == State::Ran);
         for (auto&& context : finish_) {
             auto const t0 = detail::sched_clock::now();
             if (context.finish(world))
                 finish_us_ = detail::elapsed_us(t0);
         }
+        state = State::Finished;
     }
 
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
+        assert(state == State::Prepared);
         using clock  = std::chrono::steady_clock;
         auto run_one = [&](WorkItem& it, WorkerPool& p) {
             auto const t0 = clock::now();
             run_work_item(it, systems, world, cmds, p);
             it.busy_us = detail::elapsed_us(t0);
         };
-        if (items_.empty())
+        if (items_.empty()) {
+            state = State::Ran;
             return;
+        }
         if (items_.size() == 1) {
             run_one(items_[0], pool);
             busy_us_[items_[0].system] += items_[0].busy_us;
+            state = State::Ran;
             return;
         }
         auto next   = std::atomic {0uz};
@@ -127,9 +135,11 @@ public:
         for (auto&& item : items_) {
             busy_us_[item.system] += item.busy_us;
         }
+        state = State::Ran;
     }
 
     auto result() const -> WaveResult {
+        assert(state == State::Finished);
         return {
             prepare_us_,
             finish_us_,
@@ -154,16 +164,22 @@ private:
     double prepare_us_ = 0.0;
     double finish_us_  = 0.0;
     std::unordered_map<SystemId, double> busy_us_;
-};
 
-inline constexpr auto kImperative           = ArchetypeId {0xFFFF'FFFFu};
-inline constexpr auto kMinItemRows          = 1024uz;
-inline constexpr auto kTargetItemsPerKernel = 64uz;
+    enum class State {
+        New,
+        Prepared,
+        Ran,
+        Finished,
+    };
+    State state = State::New;
+};
 
 class WavePlan {
 public:
-    using System       = detail::SystemRecord;
-    using SystemVector = detail::IdVector<SystemId, System>;
+    using System                                = detail::SystemRecord;
+    using SystemVector                          = detail::IdVector<SystemId, System>;
+    static constexpr auto kMinItemRows          = 1024uz;
+    static constexpr auto kTargetItemsPerKernel = 64uz;
 
     WaveId wave_id = {};
 
@@ -205,7 +221,7 @@ public:
             prepare.push_back({s.prepare_items, id, tick});
             finish.push_back({s.finish_items, id});
             if (!s.is_kernel()) {
-                items.emplace_back(id, kImperative, 0, 0, 0);
+                items.emplace_back(id, detail::kImperative, 0, 0, 0);
                 continue;
             }
             auto const& matches = s.match.resolve(world, s.query_sig);
@@ -234,8 +250,8 @@ public:
         // deterministic tie-break so a 1-lane run replays identically.
         std::ranges::sort(items,
                           [](detail::WorkItem const& a, detail::WorkItem const& b) {
-                              bool const ia = a.archetype == kImperative;
-                              bool const ib = b.archetype == kImperative;
+                              bool const ia = a.archetype == detail::kImperative;
+                              bool const ib = b.archetype == detail::kImperative;
                               if (ia != ib)
                                   return ia;
                               auto const ra = a.end - a.begin;
