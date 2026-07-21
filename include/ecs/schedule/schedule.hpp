@@ -185,12 +185,11 @@ public:
     // systems: data parallelism within and across systems from one fork-join.
     //
     // The single-system wave short-circuits to run that system inline on the
-    // caller with the full pool, which preserves exact per-system observer
-    // wall timing there (SystemBegin/SystemEnd). Multi-system waves have no
-    // per-system wall interval -- their items interleave across the lanes --
-    // so every system instead reports MEASURED work via a SystemWork event:
-    // busy time summed over its items (recorded by the claiming lanes) plus
-    // its barrier prepare/finish hook durations.
+    // caller with the full pool (a fanned wave's items interleave across the
+    // lanes, so there is no per-system wall interval to observe). Either way,
+    // every system reports MEASURED work via a SystemWork event: busy time
+    // summed over its items (recorded by the claiming lanes) plus its barrier
+    // prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
     // is not. Commands recorded by KERNEL systems replay in canonical order
@@ -431,13 +430,11 @@ private:
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
     //
-    // Events: SystemBegin/SystemEnd wall-bracket a system ONLY when it runs
-    // alone in its wave (a fanned wave interleaves every system's items
-    // across the lanes in one dispatch -- there is no per-system wall
-    // interval to bracket, so none is invented). Every system, lone or
-    // fanned, instead gets a SystemWork event after the barrier hooks with
-    // its measured busy time (sum of its items across lanes) and its
-    // prepare/finish hook durations. Timing is unconditional -- measured at
+    // Events: every system, lone or fanned, gets a SystemWork event after the
+    // barrier hooks with its measured busy time (sum of its items across lanes)
+    // and its prepare/finish hook durations -- there is no per-system wall
+    // bracket, since a fanned wave interleaves every system's items across the
+    // lanes in one dispatch. Timing is unconditional -- measured at
     // ~2 clock reads per >=1024-row item plus a handful per wave, it is
     // within run-to-run noise even on an unobserved schedule, and the
     // constant plumbing keeps every path identical.

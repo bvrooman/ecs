@@ -129,7 +129,6 @@ public:
                     // would skew every downstream distribution.
                     rows_.resize(tick_first_row_);
                 },
-                [](auto const&) {}, // SystemBegin/SystemEnd: unused by the trace
             },
             e);
     }

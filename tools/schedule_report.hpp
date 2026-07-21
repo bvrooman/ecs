@@ -69,12 +69,8 @@ public:
                     cur_wave_ = ev.level;
                     t_wave_   = clock::now();
                 },
-                // Wall bracketing exists only for lone-wave systems; the
-                // report keys every system line off SystemWork instead (real
-                // measured busy time in fanned waves too), so Begin/End are
-                // deliberately unused here.
-                [](SystemBegin const&) {},
-                [](SystemEnd const&) {},
+                // The report keys every system line off SystemWork (real
+                // measured busy time, in fanned waves too).
                 [this](SystemWork const& ev) {
                     Slot& s = slot(ev.id, ev.name);
                     wave_systems_[cur_wave_].push_back(ev.id); // execution order

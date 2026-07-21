@@ -182,8 +182,8 @@ static void aborted_run_discards_recorded_commands() {
 
 // The observer hook is a general, always-available core feature -- an observer is
 // any callable void(ScheduleEvent const&). This one counts the boundaries it is
-// notified of and, on SystemBegin, appends its tag to a shared log so notification
-// order across observers is observable.
+// notified of and, on each SystemWork (the per-system boundary), appends its tag
+// to a shared log so notification order across observers is observable.
 struct TallyObserver {
     char tag;
     std::vector<char>* log;
@@ -200,12 +200,12 @@ struct TallyObserver {
                            last_n_waves = ev.n_waves;
                        },
                        [this](WaveBegin const&) { ++waves; },
-                       [this](SystemBegin const&) {
+                       [this](SystemWork const&) {
                            ++systems;
                            if (log)
                                log->push_back(tag);
                        },
-                       [](auto const&) {}, // TickEnd / WaveEnd / SystemEnd ignored
+                       [](auto const&) {}, // TickEnd / WaveEnd ignored
                    },
                    e);
     }
@@ -237,7 +237,7 @@ static void multiple_observers_notified_in_order() {
     CHECK((a.waves == 2 && b.waves == 2));
     CHECK((a.systems == 2 && b.systems == 2));
     CHECK((a.last_n_waves == 2 && b.last_n_waves == 2));
-    // For each SystemBegin, A (registered first) is notified before B.
+    // For each SystemWork, A (registered first) is notified before B.
     CHECK((order == std::vector<char> {'A', 'B', 'A', 'B'}));
 
     // Removing one observer stops only its notifications.
