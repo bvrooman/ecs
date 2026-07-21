@@ -250,7 +250,8 @@ public:
     // barrier targets, but the partial's own lazy heap growth lands on tick 0.
     void prewarm(World& world) {
         rebuild();
-        for (auto const& plan : wave_plans_) {
+        for (auto& plan : wave_plans_) {
+            plan.prepare(systems_, tick_);
             auto wave = plan.build(systems_, world, tick_);
             wave.prepare(world);
         }
@@ -429,15 +430,14 @@ private:
                     std::size_t lvl) {
         using namespace sched_event;
         flush_attrib_.clear();
-        auto wave     = plan.build(systems_, world, tick_);
-        auto flush_us = 0.0;
-        auto result   = WaveResult {};
+        auto wave                        = plan.build(systems_, world, tick_);
+        auto flush_us                    = 0.0;
+        std::optional<WaveResult> result = std::nullopt;
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
-            result = wave.result();
-            // Flush
+            result.emplace(wave.result());
             auto const tf = detail::sched_clock::now();
             world.apply_commands(&flush_attrib_);
             flush_us = detail::elapsed_us(tf);
@@ -446,17 +446,15 @@ private:
             events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        for (auto&& id : plan) {
-            auto const busy  = result.busy_[id];
-            auto const items = wave.size();
-            auto const fit   = flush_attrib_.find(id);
-            auto const flsh  = fit != flush_attrib_.end() ? fit->second : 0.0;
+        for (auto id : plan) {
+            auto const fit  = flush_attrib_.find(id);
+            auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {id,
                                      systems_[id].name,
-                                     busy,
-                                     result.prepare_us_,
-                                     result.finish_us_,
-                                     items,
+                                     result->busy_us.at(id),
+                                     result->prepare_us.at(id),
+                                     result->finish_us.at(id),
+                                     result->item_counts.at(id),
                                      flsh});
         }
         return flush_us;

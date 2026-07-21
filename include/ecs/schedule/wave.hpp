@@ -32,6 +32,7 @@ public:
 
 private:
     friend class WavePlan;
+    friend class Wave;
 
     PrepareContext(Fn& fn, SystemId system, uint64_t tick)
         : fn(fn)
@@ -58,6 +59,7 @@ public:
 
 private:
     friend class WavePlan;
+    friend class Wave;
 
     FinishContext(Fn& fn, SystemId system)
         : fn(fn)
@@ -68,9 +70,10 @@ private:
 };
 
 struct WaveResult {
-    double prepare_us_ = 0.0;
-    double finish_us_  = 0.0;
-    std::unordered_map<SystemId, double> busy_;
+    std::unordered_map<SystemId, double> prepare_us;
+    std::unordered_map<SystemId, double> finish_us;
+    std::unordered_map<SystemId, double> busy_us;
+    std::unordered_map<SystemId, uint32_t> item_counts;
 };
 
 // Compiled wave plan
@@ -91,8 +94,8 @@ public:
         assert(state == State::New);
         for (auto&& context : prepare_) {
             auto const t0 = detail::sched_clock::now();
-            if (context.prepare(world, items_))
-                prepare_us_ = detail::elapsed_us(t0);
+            context.prepare(world, items_);
+            result_.prepare_us[context.system] = detail::elapsed_us(t0);
         }
         state = State::Prepared;
     }
@@ -101,8 +104,8 @@ public:
         assert(state == State::Ran);
         for (auto&& context : finish_) {
             auto const t0 = detail::sched_clock::now();
-            if (context.finish(world))
-                finish_us_ = detail::elapsed_us(t0);
+            context.finish(world);
+            result_.finish_us[context.system] = detail::elapsed_us(t0);
         }
         state = State::Finished;
     }
@@ -110,19 +113,21 @@ public:
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state == State::Prepared);
         using clock  = std::chrono::steady_clock;
-        auto run_one = [&](WorkItem& it, WorkerPool& p) {
+        auto run_one = [&](WorkItem& item, WorkerPool& p) {
             auto const t0 = clock::now();
-            run_work_item(it, systems, world, cmds, p);
-            it.busy_us = detail::elapsed_us(t0);
+            run_work_item(item, systems, world, cmds, p);
+            item.busy_us = detail::elapsed_us(t0);
         };
         if (items_.empty()) {
             state = State::Ran;
             return;
         }
         if (items_.size() == 1) {
-            run_one(items_[0], pool);
-            busy_us_[items_[0].system] += items_[0].busy_us;
-            state = State::Ran;
+            auto item = items_[0];
+            run_one(item, pool);
+            result_.busy_us[item.system] += item.busy_us;
+            result_.item_counts[item.system] = 1;
+            state                            = State::Ran;
             return;
         }
         auto next   = std::atomic {0uz};
@@ -133,18 +138,15 @@ public:
                 run_one(items_[i], inner);
         });
         for (auto&& item : items_) {
-            busy_us_[item.system] += item.busy_us;
+            result_.busy_us[item.system] += item.busy_us;
+            result_.item_counts[item.system]++;
         }
         state = State::Ran;
     }
 
-    auto result() const -> WaveResult {
+    auto result() const -> WaveResult const& {
         assert(state == State::Finished);
-        return {
-            prepare_us_,
-            finish_us_,
-            busy_us_,
-        };
+        return result_;
     }
 
 private:
@@ -161,9 +163,7 @@ private:
     std::vector<WorkItem> items_;
     std::vector<PrepareContext> prepare_;
     std::vector<FinishContext> finish_;
-    double prepare_us_ = 0.0;
-    double finish_us_  = 0.0;
-    std::unordered_map<SystemId, double> busy_us_;
+    WaveResult result_;
 
     enum class State {
         New,
@@ -194,10 +194,10 @@ public:
         return systems_.empty();
     }
 
-    auto begin() { return systems_.begin(); }
-    auto end() { return systems_.end(); }
-    auto begin() const { return systems_.begin(); }
-    auto end() const { return systems_.end(); }
+    auto begin() { return due_.begin(); }
+    auto end() { return due_.end(); }
+    auto begin() const { return due_.begin(); }
+    auto end() const { return due_.end(); }
 
     auto prepare(SystemVector& systems, uint64_t tick) {
         due_.clear();
