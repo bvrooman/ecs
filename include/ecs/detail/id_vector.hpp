@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstddef>
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -27,8 +28,14 @@ public:
     T& operator[](Id const id) noexcept { return v_[id.value]; }
     T const& operator[](Id const id) const noexcept { return v_[id.value]; }
 
-    [[nodiscard]] std::size_t size() const noexcept { return v_.size(); }
-    [[nodiscard]] bool empty() const noexcept { return v_.empty(); }
+    [[nodiscard]]
+    std::size_t size() const noexcept {
+        return v_.size();
+    }
+    [[nodiscard]]
+    bool empty() const noexcept {
+        return v_.empty();
+    }
 
     void reserve(std::size_t const n) { v_.reserve(n); }
 
@@ -39,9 +46,12 @@ public:
     auto begin() const noexcept { return v_.begin(); }
     auto end() const noexcept { return v_.end(); }
 
+    auto enumerate() noexcept { return enumerate_(*this); }
+    auto enumerate() const noexcept { return enumerate_(*this); }
+
     // Append `value`; its id is its position. Returns that id.
-    Id push(T value) {
-        Id const id {static_cast<typename Id::type>(v_.size())};
+    Id push_back(T value) {
+        Id const id {static_cast<Id::type>(v_.size())};
         v_.push_back(std::move(value));
         return id;
     }
@@ -49,6 +59,21 @@ public:
     void pop_back() noexcept { v_.pop_back(); }
 
 private:
+    template <class Self>
+    static auto enumerate_(Self& self) {
+        // std::views::enumerate is C++23 and missing from the libc++.
+        // Yields (Id{position}, element&).
+        return std::views::iota(std::size_t {0}, self.size()) |
+               std::views::transform([&](std::size_t const index) {
+                   using IdValue          = Id::type;
+                   using ElementReference = decltype(self.v_[index]);
+                   return std::pair<Id, ElementReference> {
+                       Id {static_cast<IdValue>(index)},
+                       self.v_[index],
+                   };
+               });
+    }
+
     std::vector<T> v_;
 };
 

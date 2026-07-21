@@ -37,7 +37,7 @@ inline std::string dot_label(NodeView const& v) {
                     esc(ln.label) + "</font></td></tr>";
         else {
             std::string nm  = ln.resource ? "<i>" + esc(ln.label) +
-                                                "</i> <font color=\"#9a9a9a\" "
+                                               "</i> <font color=\"#9a9a9a\" "
                                                 "point-size=\"8\">res</font>"
                                           : esc(ln.label);
             char const* col = ln.tag == 'W' ? kWrite : kRead;
@@ -61,11 +61,12 @@ namespace viz {
 
 inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
     static_cast<void>(sched.level_count()); // force (phase, level) assignment
-    auto const& sys = sched.systems();
-    auto const n    = sys.size();
-    std::map<int, std::map<std::size_t, std::vector<std::size_t>>> tree;
-    for (std::size_t i = 0; i < n; ++i)
-        tree[sys[i].phase][sys[i].level].push_back(i);
+    auto const& systems = sched.systems();
+    // Tombstoned systems keep their slot but are not drawn.
+    std::map<int, std::map<std::size_t, std::vector<ecs::SystemId>>> tree;
+    for (auto&& [i, system] : systems.enumerate())
+        if (!system.dead)
+            tree[system.phase][system.level].push_back(i);
 
     std::string dot;
     auto out = [&](std::string str) { dot += std::move(str) + "\n"; };
@@ -88,8 +89,8 @@ inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
                 "fontcolor=\"#9a9a9a\"; fontsize=11;");
             out("      { rank=same;");
             for (auto i : idxs)
-                out("        s" + std::to_string(i) + " [label=<" +
-                    detail::dot_label(detail::node_view(sys[i], names)) + ">];");
+                out("        s" + std::to_string(i.value) + " [label=<" +
+                    detail::dot_label(detail::node_view(systems[i], names)) + ">];");
             out("      }");
             out("    }");
         }
@@ -98,12 +99,12 @@ inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
     for (auto const& [a, b] : detail::reduced_dependencies(sched))
         out("  s" + std::to_string(a) + " -> s" + std::to_string(b) + ";");
     // Invisible chain so phases stack in order even with no edge between them.
-    std::optional<std::size_t> prev;
+    std::optional<ecs::SystemId> prev;
     for (auto const& [phase, levels] : tree) {
-        std::size_t const first = levels.begin()->second.front();
+        auto const first = levels.begin()->second.front();
         if (prev)
-            out("  s" + std::to_string(*prev) + " -> s" + std::to_string(first) +
-                " [style=invis];");
+            out("  s" + std::to_string((*prev).value) + " -> s" +
+                std::to_string(first.value) + " [style=invis];");
         prev = levels.rbegin()->second.front();
     }
     out("}");

@@ -79,10 +79,11 @@ class Query {
     // matching archetype (created at flush; the generation only changes there)
     // or a different World forces one locked re-lookup. The world instance id
     // guards against a destroyed World's address being reused.
+    [[nodiscard]]
     std::vector<ArchetypeId> const& matches() const {
         struct Cache {
-            WorldId world       = WorldId::none();
-            std::uint64_t gen   = ~std::uint64_t {0};
+            WorldId world                        = WorldId::none();
+            std::uint64_t gen                    = ~std::uint64_t {0};
             std::vector<ArchetypeId> const* list = nullptr;
         };
         thread_local Cache cache;
@@ -134,10 +135,10 @@ public:
     void for_each_serial(F&& fn) {
         if (slice_arch_ != kNoSlice) {
             auto& arch = *world_.archetypes()[slice_arch_];
-            detail::for_each_row(fn,
-                                 std::span(arch.entities)
-                                     .subspan(slice_b_, slice_e_ - slice_b_),
-                                 chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
+            detail::for_each_row(
+                fn,
+                std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
+                chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
             return;
         }
         auto const& archs = world_.archetypes();
@@ -255,8 +256,8 @@ private:
     // Slice restriction for kernel-item queries (kNoSlice = iterate all
     // matching archetypes, the normal mode).
     ArchetypeId slice_arch_ = kNoSlice;
-    std::size_t slice_b_      = 0;
-    std::size_t slice_e_      = 0;
+    std::size_t slice_b_    = 0;
+    std::size_t slice_e_    = 0;
 };
 
 template <class... Cs>

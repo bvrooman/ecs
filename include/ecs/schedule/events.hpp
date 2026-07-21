@@ -34,19 +34,11 @@ namespace sched_event {
         // barrier, inside the WaveBegin/WaveEnd interval).
         double flush_us = 0;
     };
-    // Wall-clock bracketing of ONE system running alone in its wave (the only
-    // case where a per-system wall interval exists -- a multi-system wave runs
-    // every system's work items interleaved across the pool's lanes in one
-    // dispatch, so fanned waves emit no SystemBegin/SystemEnd at all).
-    struct SystemBegin {
-        SystemId id;
-        std::string_view name;
-    };
-    struct SystemEnd {
-        SystemId id;
-    };
     // Measured work for one system in one wave -- emitted for EVERY system,
-    // lone or fanned, after the wave's barrier hooks and its flush.
+    // lone or fanned, after the wave's barrier hooks and its flush. This is the
+    // per-system boundary observers key on; there is no separate wall-clock
+    // begin/end bracket, since a fanned wave interleaves every system's items
+    // across the lanes and so has no per-system wall interval.
     // busy_us is the sum of the system's work-item durations across all lanes
     // (CPU time, not wall: a fanned wave's busy times legitimately sum past
     // the wave's wall duration); prepare_us/finish_us bracket the system's
@@ -64,9 +56,9 @@ namespace sched_event {
         std::uint32_t items = 0; // work items this wave (1 for imperative)
         double flush_us     = 0; // this system's share of the wave's cmd flush
     };
-    // Emitted instead of the remaining SystemEnd/WaveEnd/TickEnd when a system
-    // throws and the run unwinds, so observers with open Begin/End pairs can
-    // reset instead of carrying stale timers into the next tick.
+    // Emitted instead of the remaining WaveEnd/TickEnd when a system throws and
+    // the run unwinds, so observers tracking an open tick/wave can reset instead
+    // of carrying stale state into the next tick.
     struct TickAbort {
         std::size_t level;
         SystemId system;
@@ -77,8 +69,6 @@ using ScheduleEvent = std::variant<sched_event::TickBegin,
                                    sched_event::TickEnd,
                                    sched_event::WaveBegin,
                                    sched_event::WaveEnd,
-                                   sched_event::SystemBegin,
-                                   sched_event::SystemEnd,
                                    sched_event::SystemWork,
                                    sched_event::TickAbort>;
 

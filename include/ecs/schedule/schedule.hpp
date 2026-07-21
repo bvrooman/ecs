@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include "../detail/id_vector.hpp"
 #include "../event/emitter.hpp"
 #include "../query.hpp"
 #include "../world.hpp"
@@ -34,9 +35,9 @@
 #include "executor.hpp"
 #include "kernel_params.hpp"
 #include "system.hpp"
-#include <memory>
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <string>
 #include <tuple>
@@ -51,6 +52,7 @@ public:
     // The stored record type, exposed for tooling (systems() hands out a
     // vector of these; the visualizer reads name/access/phase/level).
     using System = detail::SystemRecord;
+    using Wave   = std::vector<SystemId>;
 
     // Register an imperative system. Its access is derived from its parameter
     // types; an optional trailing phase<N> tag gives coarse ordering (default
@@ -63,8 +65,7 @@ public:
     //             phase<-1>{}, /*every=*/64);
     template <class Fn, int P = 0>
     SystemId add(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
-        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P,
-                       every);
+        return emplace(std::move(name), std::forward<Fn>(fn), /*once=*/false, P, every);
     }
 
     // One-shot system: runs on the next run() and is then removed (e.g. setup).
@@ -110,8 +111,10 @@ public:
     // Query is bound to the shared 1-lane pool, so nothing a kernel body does
     // can reach a nested dispatch.
     template <class Fn, int P = 0>
-    SystemId
-    add_kernel(std::string name, Fn&& fn, phase<P> = {}, std::uint64_t every = 1) {
+    SystemId add_kernel(std::string name,
+                        Fn&& fn,
+                        phase<P>            = {},
+                        std::uint64_t every = 1) {
         return emplace_kernel(std::move(name), std::forward<Fn>(fn), P, every);
     }
 
@@ -136,18 +139,26 @@ public:
         return register_system(std::move(sys));
     }
 
-    // Unschedule a system by handle. Returns true if it was present.
+    // Unschedule a system by handle. Returns true if it was present (and live).
+    // Tombstoned, not erased: the slot stays put so every other system keeps its
+    // position, and a SystemId (which IS that position) is never invalidated by
+    // an unrelated removal.
     bool remove(SystemId id) {
-        auto const n =
-            std::erase_if(systems_, [id](System const& s) { return s.id == id; });
-        if (n)
-            dirty_ = true;
-        return n != 0;
+        for (auto& s : systems_)
+            if (s.id == id && !s.dead) {
+                s.dead = true;
+                dirty_ = true;
+                return true;
+            }
+        return false;
     }
 
+    // Live (non-tombstoned) system count. Removed and spent one-shot systems
+    // retain their slot but do not count here.
     [[nodiscard]]
-    auto size() const noexcept {
-        return systems_.size();
+    std::size_t size() const noexcept {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(systems_, [](System const& s) { return !s.dead; }));
     }
     // Number of sequential waves (barriers) a run() executes: ascending
     // (phase, conflict-level) groups.
@@ -159,13 +170,6 @@ public:
     [[nodiscard]]
     auto const& systems() const {
         return systems_;
-    }
-
-    // The conflict predicate the wavefront leveling uses; forwards to
-    // ecs::conflicts (schedule/access.hpp). Kept on Schedule for tooling that
-    // spells it Schedule::conflicts.
-    static bool conflicts(SystemAccess const& a, SystemAccess const& b) {
-        return ecs::conflicts(a, b);
     }
 
     // Run serially on the calling thread -- the shared 1-lane pool (which has
@@ -181,12 +185,11 @@ public:
     // systems: data parallelism within and across systems from one fork-join.
     //
     // The single-system wave short-circuits to run that system inline on the
-    // caller with the full pool, which preserves exact per-system observer
-    // wall timing there (SystemBegin/SystemEnd). Multi-system waves have no
-    // per-system wall interval -- their items interleave across the lanes --
-    // so every system instead reports MEASURED work via a SystemWork event:
-    // busy time summed over its items (recorded by the claiming lanes) plus
-    // its barrier prepare/finish hook durations.
+    // caller with the full pool (a fanned wave's items interleave across the
+    // lanes, so there is no per-system wall interval to observe). Either way,
+    // every system reports MEASURED work via a SystemWork event: busy time
+    // summed over its items (recorded by the claiming lanes) plus its barrier
+    // prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
     // is not. Commands recorded by KERNEL systems replay in canonical order
@@ -261,14 +264,16 @@ public:
     }
 
 private:
-    // Stamp an id, normalize the access sets, and store -- the single funnel
-    // every add_* form goes through.
+    // The single funnel every add_* form goes through: normalize the access
+    // sets, append, and stamp the record's id to its slot position (push_back
+    // owns id assignment). id == position -- and, because removal tombstones
+    // rather than compacts (see remove()), it stays that way for the schedule's
+    // life, which is what keeps a returned SystemId a stable handle.
     SystemId register_system(System sys) {
-        sys.id = ++next_id_;
         detail::normalize_access(sys.access);
-        auto const id = sys.id;
-        systems_.push_back(std::move(sys));
-        dirty_ = true;
+        auto const id   = systems_.push_back(std::move(sys));
+        systems_[id].id = id;
+        dirty_          = true;
         return id;
     }
 
@@ -285,7 +290,10 @@ private:
     // instantiation doesn't add a missing-return error on top.
 
     template <class Fn>
-    SystemId emplace(std::string name, Fn&& fn, bool const once, int const phase,
+    SystemId emplace(std::string name,
+                     Fn&& fn,
+                     bool const once,
+                     int const phase,
                      std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
@@ -319,8 +327,7 @@ private:
                     auto states = std::make_shared<typename Info::states>();
                     sys.run     = [fn = std::forward<Fn>(fn),
                                states](World& w, Commands& c, WorkerPool& pool) mutable {
-                        detail::imperative_invoke<Args>(fn, *states, w, c, pool,
-                                                        Seq {});
+                        detail::imperative_invoke<Args>(fn, *states, w, c, pool, Seq {});
                     };
                 } else {
                     sys.run = [fn = std::forward<Fn>(fn)](World& w,
@@ -333,11 +340,13 @@ private:
                 return register_system(std::move(sys));
             }
         }
-        return SystemId {0}; // reached only when a static_assert above fired
+        return SystemId::none(); // reached only when a static_assert above fired
     }
 
     template <class Fn>
-    SystemId emplace_kernel(std::string name, Fn&& fn, int const phase,
+    SystemId emplace_kernel(std::string name,
+                            Fn&& fn,
+                            int const phase,
                             std::uint64_t const every) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
@@ -392,8 +401,15 @@ private:
                                          std::size_t b,
                                          std::size_t e,
                                          std::uint32_t ord) mutable {
-                    detail::kernel_invoke<Args, QI>(fn, *states, w, cmds, ai, b, e,
-                                                    ord, Seq {});
+                    detail::kernel_invoke<Args, QI>(fn,
+                                                    *states,
+                                                    w,
+                                                    cmds,
+                                                    ai,
+                                                    b,
+                                                    e,
+                                                    ord,
+                                                    Seq {});
                 };
                 if constexpr (Info::any_stateful) {
                     sys.prepare_items = [states](World& w,
@@ -408,19 +424,17 @@ private:
                 return register_system(std::move(sys));
             }
         }
-        return SystemId {0}; // reached only when a static_assert above fired
+        return SystemId::none(); // reached only when a static_assert above fired
     }
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
     //
-    // Events: SystemBegin/SystemEnd wall-bracket a system ONLY when it runs
-    // alone in its wave (a fanned wave interleaves every system's items
-    // across the lanes in one dispatch -- there is no per-system wall
-    // interval to bracket, so none is invented). Every system, lone or
-    // fanned, instead gets a SystemWork event after the barrier hooks with
-    // its measured busy time (sum of its items across lanes) and its
-    // prepare/finish hook durations. Timing is unconditional -- measured at
+    // Events: every system, lone or fanned, gets a SystemWork event after the
+    // barrier hooks with its measured busy time (sum of its items across lanes)
+    // and its prepare/finish hook durations -- there is no per-system wall
+    // bracket, since a fanned wave interleaves every system's items across the
+    // lanes in one dispatch. Timing is unconditional -- measured at
     // ~2 clock reads per >=1024-row item plus a handful per wave, it is
     // within run-to-run noise even on an unobserved schedule, and the
     // constant plumbing keeps every path identical.
@@ -428,7 +442,7 @@ private:
     // has no cadenced system -- has_cadence_, computed once in rebuild() -- that
     // is the whole plan, returned by reference with no copy. Otherwise the due
     // subset is filtered into a reused scratch buffer.
-    std::vector<std::size_t> const& due_wave(std::vector<std::size_t> const& plan) {
+    Wave const& due_wave(Wave const& plan) {
         if (!has_cadence_)
             return plan;
         active_wave_.clear();
@@ -438,7 +452,7 @@ private:
         return active_wave_;
     }
 
-    double run_wave(std::vector<std::size_t> const& wave,
+    double run_wave(Wave const& wave,
                     World& world,
                     Commands& cmds,
                     WorkerPool& pool,
@@ -449,9 +463,6 @@ private:
         finish_us_.assign(wave.size(), 0.0);
         flush_attrib_.clear();
         double flush_us = 0;
-        auto const lone = wave.size() == 1;
-        if (lone)
-            events_.emit(SystemBegin {systems_[wave[0]].id, systems_[wave[0]].name});
         try {
             detail::run_wave_items(items_, systems_, world, cmds, pool);
             // Barrier folds (Reduce et al.) run after the join and before the
@@ -477,11 +488,9 @@ private:
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();
-            events_.emit(TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId {0}});
+            events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        if (lone)
-            events_.emit(SystemEnd {systems_[wave[0]].id});
         // Per-system work rollup, in wave (registration) order.
         for (std::size_t wi = 0; wi < wave.size(); ++wi) {
             auto const idx      = wave[wi];
@@ -510,7 +519,7 @@ private:
     // pre-sizing, prefix sums). Single-threaded, before the wave's dispatch.
     // A hooked system with zero items still prepares (its reduce target must
     // reset to "empty reduction", its extract target resize to 0).
-    void prepare_hooks(std::vector<std::size_t> const& wave, World& world) {
+    void prepare_hooks(Wave const& wave, World& world) {
         prepare_us_.assign(wave.size(), 0.0);
         for (std::size_t wi = 0; wi < wave.size(); ++wi) {
             auto& s = systems_[wave[wi]];
@@ -531,67 +540,87 @@ private:
         }
     }
 
+    // Tombstone spent one-shot systems (see remove()): they keep their slot so
+    // no other system's position -- and so no SystemId -- shifts.
     void prune_once() {
-        if (std::erase_if(systems_, [](System const& s) { return s.once; }))
-            dirty_ = true;
+        for (auto& s : systems_)
+            if (s.once && !s.dead) {
+                s.dead = true;
+                dirty_ = true;
+            }
     }
 
-    // Assign wavefront levels and group systems into waves: intra-phase level
-    // = 1 + max(level) over earlier conflicting systems in the same phase
-    // (cross-phase ordering is handled by the phase barrier); waves run in
-    // ascending (phase, level) order with a barrier between each.
+    // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
+    // conflicting systems in the same phase (cross-phase ordering is handled by
+    // the phase barrier). Tombstoned systems are skipped -- they take no slot in
+    // any wave -- but their positions still count, so a live system keeps the
+    // same level whether or not an earlier system was removed.
+    void assign_levels() {
+        for (auto& system : systems_)
+            system.level = 0;
+        for (auto&& [id, s1] : systems_.enumerate()) {
+            if (s1.dead)
+                continue;
+            auto level = System::Level {0};
+            for (auto const& s2 : systems_ | std::views::take(id.value)) {
+                if (!s2.dead && s1.phase == s2.phase && conflicts(s1.access, s2.access))
+                    level = std::max(level, s2.level + 1);
+            }
+            s1.level = level;
+        }
+    }
+
+    // Waves run in ascending (phase, level) order with a barrier between each.
+    // Tombstoned systems are skipped; live systems keep their position as their
+    // wave-member id.
+    auto build_wave_groups() const {
+        using WaveGroup  = std::pair<System::WaveKey, Wave>;
+        auto search      = [](auto const& g) { return g.first; };
+        auto wave_groups = std::vector<WaveGroup> {};
+        for (auto&& [id, system] : systems_.enumerate()) {
+            if (system.dead)
+                continue;
+            auto key = system.wave_key();
+            auto it  = std::ranges::find(wave_groups, key, search);
+            if (it == wave_groups.end()) {
+                wave_groups.emplace_back(key, Wave {});
+                it = std::prev(wave_groups.end());
+            }
+            auto& wave = it->second;
+            wave.push_back(id);
+        }
+        std::ranges::sort(wave_groups, {}, search);
+        return wave_groups;
+    }
+
     void rebuild() {
         if (!dirty_)
             return;
-        // Cadence is tick-dependent, so the due subset can't be precomputed
-        // here -- but whether ANY system is cadenced is structural, so detect it
-        // once and let run() skip the per-tick filter entirely when none is.
-        has_cadence_ = std::ranges::any_of(
-            systems_, [](System const& s) { return s.every != 1; });
-        for (std::size_t i = 0; i < systems_.size(); ++i) {
-            std::size_t lvl = 0;
-            for (std::size_t j = 0; j < i; ++j)
-                if (systems_[j].phase == systems_[i].phase &&
-                    conflicts(systems_[i].access, systems_[j].access))
-                    lvl = std::max(lvl, systems_[j].level + 1);
-            systems_[i].level = lvl;
-        }
-        // Flat vector of (key, members) instead of a std::map: no per-rebuild
-        // node allocations, and the group count is small.
-        using Key   = std::pair<int, std::size_t>;
-        auto groups = std::vector<std::pair<Key, std::vector<std::size_t>>> {};
-        for (std::size_t i = 0; i < systems_.size(); ++i) {
-            Key const key {systems_[i].phase, systems_[i].level};
-            auto it = std::ranges::find(groups, key, [](auto const& g) {
-                return g.first;
-            });
-            if (it == groups.end()) {
-                groups.emplace_back(key, std::vector<std::size_t> {});
-                it = std::prev(groups.end());
-            }
-            it->second.push_back(i);
-        }
-        std::ranges::sort(groups, {}, [](auto const& g) { return g.first; });
+        has_cadence_ = std::ranges::any_of(systems_, [](System const& s) {
+            return !s.dead && s.every != 1;
+        });
+        assign_levels();
+        auto groups = build_wave_groups();
         waves_.clear();
         waves_.reserve(groups.size());
-        for (auto& [key, idxs] : groups)
-            waves_.push_back(std::move(idxs));
+        std::ranges::copy(groups | std::views::values | std::views::as_rvalue,
+                          std::back_inserter(waves_));
         dirty_ = false;
     }
 
     event::Emitter<ScheduleEvent> events_;
-    std::vector<System> systems_;
-    std::vector<std::vector<std::size_t>> waves_;
-    std::vector<std::size_t> active_wave_;     // per-wave due-system scratch, reused
-    bool has_cadence_ = false;                 // any system with every != 1
-    std::vector<detail::WorkItem> items_;      // per-wave scratch, capacity retained
-    FlushAttrib flush_attrib_;                 // per-system flush time, per wave
+    using SystemVector = detail::IdVector<SystemId, System>;
+    SystemVector systems_;
+    std::vector<Wave> waves_;
+    Wave active_wave_;                        // per-wave due-system scratch, reused
+    bool has_cadence_ = false;                // any system with every != 1
+    std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
+    FlushAttrib flush_attrib_;                // per-system flush time, per wave
     std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
-    SystemId next_id_ = {}; // ++ before each assignment; first system gets id 1
-    bool dirty_       = true;
+    bool dirty_         = true;
 };
 
 } // namespace ecs
