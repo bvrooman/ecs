@@ -281,6 +281,30 @@ static void remove_unschedules_system() {
     CHECK(runs.load() == 0); // removed system never ran
 }
 
+// Tombstone invariant: removing a system leaves every OTHER system's SystemId
+// (which IS its slot position) valid and still pointing at the same system. A
+// compacting erase would slide c into b's vacated slot and silently retarget
+// c's handle to the wrong system.
+static void remove_preserves_other_system_ids() {
+    World w;
+    Schedule sched;
+    std::atomic<int> a_runs {0}, c_runs {0};
+    SystemId a = sched.add("a", [&] { a_runs.fetch_add(1); });
+    SystemId b = sched.add("b", [] {});
+    SystemId c = sched.add("c", [&] { c_runs.fetch_add(1); });
+
+    CHECK(sched.remove(b));
+    CHECK(sched.size() == 2);
+    // a and c still index themselves -- their positions did not shift.
+    CHECK(sched.systems()[a].name == "a");
+    CHECK(sched.systems()[c].name == "c");
+
+    WorkerPool pool {2};
+    sched.run(w, pool);
+    CHECK(a_runs.load() == 1);
+    CHECK(c_runs.load() == 1); // c still ran: its handle never went stale
+}
+
 static void inline_run_executes_systems() {
     World w;
     Schedule sched;
@@ -310,6 +334,7 @@ int main() {
     RUN_SUITE(add_once_runs_once_then_removed);
     RUN_SUITE(phase_orders_startup_before_update);
     RUN_SUITE(remove_unschedules_system);
+    RUN_SUITE(remove_preserves_other_system_ids);
     RUN_SUITE(inline_run_executes_systems);
     return REPORT();
 }

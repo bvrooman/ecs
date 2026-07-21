@@ -139,17 +139,26 @@ public:
         return register_system(std::move(sys));
     }
 
-    // // Unschedule a system by handle. Returns true if it was present.
+    // Unschedule a system by handle. Returns true if it was present (and live).
+    // Tombstoned, not erased: the slot stays put so every other system keeps its
+    // position, and a SystemId (which IS that position) is never invalidated by
+    // an unrelated removal.
     bool remove(SystemId id) {
-        auto const n = erase_if(systems_, [id](System const& s) { return s.id == id; });
-        if (n)
-            dirty_ = true;
-        return n != 0;
+        for (auto& s : systems_)
+            if (s.id == id && !s.dead) {
+                s.dead = true;
+                dirty_ = true;
+                return true;
+            }
+        return false;
     }
 
+    // Live (non-tombstoned) system count. Removed and spent one-shot systems
+    // retain their slot but do not count here.
     [[nodiscard]]
-    auto size() const noexcept {
-        return systems_.size();
+    std::size_t size() const noexcept {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(systems_, [](System const& s) { return !s.dead; }));
     }
     // Number of sequential waves (barriers) a run() executes: ascending
     // (phase, conflict-level) groups.
@@ -483,7 +492,8 @@ private:
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();
-            events_.emit(TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId {0}});
+            events_.emit(
+                TickAbort {lvl, lone ? systems_[wave[0]].id : SystemId::none()});
             throw;
         }
         if (lone)
@@ -537,21 +547,34 @@ private:
         }
     }
 
+    // Tombstone spent one-shot systems (see remove()): they keep their slot so
+    // no other system's position -- and so no SystemId -- shifts.
     void prune_once() {
-        if (erase_if(systems_, [](System const& s) { return s.once; }))
+        bool changed = false;
+        for (auto& s : systems_)
+            if (s.once && !s.dead) {
+                s.dead  = true;
+                changed = true;
+            }
+        if (changed)
             dirty_ = true;
     }
 
     // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
     // conflicting systems in the same phase (cross-phase ordering is handled by
-    // the phase barrier).
+    // the phase barrier). Tombstoned systems are skipped -- they take no slot in
+    // any wave -- but their positions still count, so a live system keeps the
+    // same level whether or not an earlier system was removed.
     void assign_levels() {
         for (auto& system : systems_)
             system.level = 0;
-        for (auto&& [i, s1] : systems_ | std::views::enumerate) {
+        for (auto&& [id, s1] : systems_.enumerate()) {
+            if (s1.dead)
+                continue;
             auto level = System::Level {0};
-            for (auto const& s2 : systems_ | std::views::take(i)) {
-                if (s1.phase == s2.phase && conflicts(s1.access, s2.access))
+            for (auto const& s2 : systems_ | std::views::take(id.value)) {
+                if (!s2.dead && s1.phase == s2.phase &&
+                    conflicts(s1.access, s2.access))
                     level = std::max(level, s2.level + 1);
             }
             s1.level = level;
@@ -559,11 +582,15 @@ private:
     }
 
     // Waves run in ascending (phase, level) order with a barrier between each.
+    // Tombstoned systems are skipped; live systems keep their position as their
+    // wave-member id.
     auto build_wave_groups() const {
         using WaveGroup  = std::pair<System::WaveKey, Wave>;
         auto search      = [](auto const& g) { return g.first; };
         auto wave_groups = std::vector<WaveGroup> {};
-        for (auto&& [i, system] : systems_.enumerate()) {
+        for (auto&& [id, system] : systems_.enumerate()) {
+            if (system.dead)
+                continue;
             auto key = system.wave_key();
             auto it  = std::ranges::find(wave_groups, key, search);
             if (it == wave_groups.end()) {
@@ -571,7 +598,7 @@ private:
                 it = std::prev(wave_groups.end());
             }
             auto& wave = it->second;
-            wave.push_back(i);
+            wave.push_back(id);
         }
         std::ranges::sort(wave_groups, {}, search);
         return wave_groups;
@@ -580,8 +607,8 @@ private:
     void rebuild() {
         if (!dirty_)
             return;
-        has_cadence_ =
-            std::ranges::any_of(systems_, [](System const& s) { return s.every != 1; });
+        has_cadence_ = std::ranges::any_of(
+            systems_, [](System const& s) { return !s.dead && s.every != 1; });
         assign_levels();
         auto groups = build_wave_groups();
         waves_.clear();

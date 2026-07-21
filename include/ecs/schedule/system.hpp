@@ -284,6 +284,10 @@ struct SystemRecord {
     Phase phase = 0;
     Level level = 0;
     bool once   = false;
+    // Tombstone: a removed (or spent one-shot) system. Its slot is retained so
+    // every other system keeps its position -- and a SystemId, being that
+    // position, stays valid. Skipped by leveling, wave building, and size().
+    bool dead = false;
     // Cadence: the system runs only on ticks where tick % every == 0 (every==1
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.

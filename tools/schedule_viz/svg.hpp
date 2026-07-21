@@ -50,9 +50,7 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     auto const edges = reduced_dependencies(sched);
     std::vector<std::vector<std::size_t>> nbrUp(n), nbrDown(n);
     for (auto const& [a, b] : edges) {
-        auto id_a = ecs::SystemId {a};
-        auto id_b = ecs::SystemId {b};
-        if (systems[id_b].level == systems[id_a].level + 1) { // adjacent levels only
+        if (systems[sid(b)].level == systems[sid(a)].level + 1) { // adjacent levels
             nbrDown[a].push_back(b);
             nbrUp[b].push_back(a);
         }
