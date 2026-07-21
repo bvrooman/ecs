@@ -217,7 +217,7 @@ public:
         for (auto& plan : wave_plans_) {
             auto sz = plan.prepare(systems_, tick_);
             if (sz > 0) {
-                events_.emit(WaveBegin {lvl, plan.size()});
+                events_.emit(WaveBegin {lvl, sz});
                 double const flush_us = run_wave(plan, world, cmds, pool, lvl);
                 events_.emit(WaveEnd {lvl, flush_us});
             }
