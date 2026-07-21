@@ -25,22 +25,23 @@ namespace viz {
 inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     using namespace detail;
     static_cast<void>(sched.level_count()); // force (phase, level) assignment
-    auto const& sys = sched.systems();
-    auto const n    = sys.size();
+    auto const& systems = sched.systems();
+    auto const n        = systems.size();
 
     // Per-system content + sizes.
     std::vector<NodeView> nv(n);
     std::vector<double> bw(n), bh(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        nv[i] = node_view(sys[i], names);
-        bw[i] = box_w(nv[i]);
-        bh[i] = box_h(nv[i]);
+    for (auto&& [id, system] : systems.enumerate()) {
+        auto i = id.value;
+        nv[i]  = node_view(system, names);
+        bw[i]  = box_w(nv[i]);
+        bh[i]  = box_h(nv[i]);
     }
 
     // phase -> level -> indices (ascending = the executor's wave order).
     std::map<int, std::map<std::size_t, std::vector<std::size_t>>> tree;
-    for (std::size_t i = 0; i < n; ++i)
-        tree[sys[i].phase][sys[i].level].push_back(i);
+    for (auto&& [id, system] : systems.enumerate())
+        tree[system.phase][system.level].push_back(id.value);
 
     // Reduce edge crossings: reorder systems within each level (barycenter
     // sweeps over the drawn edges). Same-level systems are conflict-free, so
@@ -48,11 +49,14 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     // start and tie-break, so the layout stays deterministic.
     auto const edges = reduced_dependencies(sched);
     std::vector<std::vector<std::size_t>> nbrUp(n), nbrDown(n);
-    for (auto const& [a, b] : edges)
-        if (sys[b].level == sys[a].level + 1) { // adjacent levels only
+    for (auto const& [a, b] : edges) {
+        auto id_a = ecs::SystemId {a};
+        auto id_b = ecs::SystemId {b};
+        if (systems[id_b].level == systems[id_a].level + 1) { // adjacent levels only
             nbrDown[a].push_back(b);
             nbrUp[b].push_back(a);
         }
+    }
     for (auto& [phase, levels] : tree) {
         std::vector<std::vector<std::size_t>> layers(levels.rbegin()->first + 1);
         for (auto const& [level, idxs] : levels)
@@ -148,7 +152,7 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
                 num(tx) + " " + num(ty);
         else {
             double bowX = (sx <= centerX ? leftLane : rightLane);
-            d = "M" + num(sx) + " " + num(sy) + " C" + num(bowX) + " " +
+            d           = "M" + num(sx) + " " + num(sy) + " C" + num(bowX) + " " +
                 num(sy + dy * 0.3) + " " + num(bowX) + " " + num(ty - dy * 0.3) + " " +
                 num(tx) + " " + num(ty);
         }

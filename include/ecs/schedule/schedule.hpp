@@ -562,7 +562,7 @@ private:
         using WaveGroup  = std::pair<System::WaveKey, Wave>;
         auto search      = [](auto const& g) { return g.first; };
         auto wave_groups = std::vector<WaveGroup> {};
-        for (auto&& [i, system] : systems_ | SystemVector::enumerate) {
+        for (auto&& [i, system] : systems_.enumerate()) {
             auto key = system.wave_key();
             auto it  = std::ranges::find(wave_groups, key, search);
             if (it == wave_groups.end()) {

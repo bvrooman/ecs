@@ -165,7 +165,7 @@ static void id_vector_enumerate() {
     auto const c       = v.push_back("c");
     auto const tickets = std::vector {a, b, c};
     auto enumerated    = std::vector<Ticket> {};
-    for (auto&& [id, s] : v | TicketVector::enumerate) {
+    for (auto&& [id, s] : v.enumerate()) {
         static_assert(std::is_same_v<Ticket, decltype(id)>);
         enumerated.push_back(id);
     }

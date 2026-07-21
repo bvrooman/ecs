@@ -25,18 +25,6 @@ namespace ecs::detail {
 template <class Id, class T>
 class IdVector {
 public:
-    static constexpr auto enumerate =
-        std::views::enumerate | std::views::transform([](auto&& entry) {
-            auto index             = std::get<0>(entry);
-            auto&& value           = std::get<1>(entry);
-            using IdValue          = Id::type;
-            using ElementReference = decltype(value);
-            return std::pair<Id, ElementReference> {
-                Id {static_cast<IdValue>(index)},
-                value,
-            };
-        });
-
     T& operator[](Id const id) noexcept { return v_[id.value]; }
     T const& operator[](Id const id) const noexcept { return v_[id.value]; }
 
@@ -58,6 +46,10 @@ public:
     auto begin() const noexcept { return v_.begin(); }
     auto end() const noexcept { return v_.end(); }
 
+    auto enumerate() noexcept { return enumerate_(*this); }
+
+    auto enumerate() const noexcept { return enumerate_(*this); }
+
     // Append `value`; its id is its position. Returns that id.
     Id push_back(T value) {
         Id const id {static_cast<Id::type>(v_.size())};
@@ -75,6 +67,20 @@ public:
     }
 
 private:
+    template <class Self>
+    static auto enumerate_(Self& self) {
+        return std::views::enumerate(self.v_) | std::views::transform([](auto&& entry) {
+                   auto index             = std::get<0>(entry);
+                   auto&& value           = std::get<1>(entry);
+                   using IdValue          = Id::type;
+                   using ElementReference = decltype(value);
+                   return std::pair<Id, ElementReference> {
+                       Id {static_cast<IdValue>(index)},
+                       value,
+                   };
+               });
+    }
+
     std::vector<T> v_;
 };
 
