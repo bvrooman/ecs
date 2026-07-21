@@ -557,7 +557,7 @@ private:
         }
     }
 
-    //  Waves run in ascending (phase, level) order with a barrier between each.
+    // Waves run in ascending (phase, level) order with a barrier between each.
     auto build_wave_groups() const {
         using WaveGroup  = std::pair<System::WaveKey, Wave>;
         auto search      = [](auto const& g) { return g.first; };
@@ -585,8 +585,8 @@ private:
         auto groups = build_wave_groups();
         waves_.clear();
         waves_.reserve(groups.size());
-        for (auto& wave : groups | std::views::values)
-            waves_.push_back(std::move(wave));
+        std::ranges::copy(groups | std::views::values | std::views::as_rvalue,
+                          std::back_inserter(waves_));
         dirty_ = false;
     }
 

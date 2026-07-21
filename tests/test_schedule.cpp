@@ -25,15 +25,15 @@ struct Health {
 
 static void leveling_respects_conflicts() {
     Schedule sched;
-    sched.add("physics", [](Query<Position>) {});      // writes Position
-    sched.add("damage", [](Query<Health>) {});         // writes Health
-    sched.add("render", [](Query<Position const>) {}); // reads Position
+    auto a = sched.add("physics", [](Query<Position>) {});      // writes Position
+    auto b = sched.add("damage", [](Query<Health>) {});         // writes Health
+    auto c = sched.add("render", [](Query<Position const>) {}); // reads Position
     // physics & damage are independent -> level 0; render reads Position that
     // physics writes -> level 1.
     CHECK(sched.level_count() == 2);
-    CHECK(sched.systems()[0].level == 0); // physics
-    CHECK(sched.systems()[1].level == 0); // damage
-    CHECK(sched.systems()[2].level == 1); // render
+    CHECK(sched.systems()[a].level == 0); // physics
+    CHECK(sched.systems()[b].level == 0); // damage
+    CHECK(sched.systems()[c].level == 1); // render
 }
 
 static void parallel_systems_are_independent_levels() {
@@ -161,9 +161,7 @@ static void aborted_run_discards_recorded_commands() {
     bad.add("spawner", [](Commands& cmd) {
         cmd.spawn(Position {1, 1}); // recorded before the throw...
     });
-    bad.add("boom", [](Query<const Position>) {
-        throw std::runtime_error("boom");
-    });
+    bad.add("boom", [](Query<Position const>) { throw std::runtime_error("boom"); });
 
     bool threw = false;
     try {
