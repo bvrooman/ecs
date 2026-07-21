@@ -32,11 +32,14 @@ inline std::vector<std::pair<std::size_t, std::size_t>> reduced_dependencies(
     // Direct conflict edges j -> i (j < i, same phase). Registration order
     // sets the direction.
     std::vector<std::vector<std::size_t>> succ(n);
-    for (std::size_t i = 0; i < n; ++i)
+    for (std::size_t i = 0; i < n; ++i) {
+        if (sys[sid(i)].dead) // tombstoned: no node, no edges
+            continue;
         for (std::size_t j = 0; j < i; ++j)
-            if (sys[sid(j)].phase == sys[sid(i)].phase &&
+            if (!sys[sid(j)].dead && sys[sid(j)].phase == sys[sid(i)].phase &&
                 ecs::conflicts(sys[sid(j)].access, sys[sid(i)].access))
                 succ[j].push_back(i);
+    }
 
     // Reachability: edges only point to higher indices, so one high->low pass
     // suffices. Keep a->b only if no other successor of a already reaches b.

@@ -62,10 +62,11 @@ namespace viz {
 inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
     static_cast<void>(sched.level_count()); // force (phase, level) assignment
     auto const& systems = sched.systems();
+    // Tombstoned systems keep their slot but are not drawn.
     std::map<int, std::map<std::size_t, std::vector<ecs::SystemId>>> tree;
-    for (auto&& [i, system] : systems.enumerate()) {
-        tree[system.phase][system.level].push_back(i);
-    }
+    for (auto&& [i, system] : systems.enumerate())
+        if (!system.dead)
+            tree[system.phase][system.level].push_back(i);
 
     std::string dot;
     auto out = [&](std::string str) { dot += std::move(str) + "\n"; };

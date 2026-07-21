@@ -265,14 +265,16 @@ public:
     }
 
 private:
-    // Stamp an id, normalize the access sets, and store.
+    // The single funnel every add_* form goes through: normalize the access
+    // sets, append, and stamp the record's id to its slot position (push_back
+    // owns id assignment). id == position -- and, because removal tombstones
+    // rather than compacts (see remove()), it stays that way for the schedule's
+    // life, which is what keeps a returned SystemId a stable handle.
     SystemId register_system(System sys) {
-        sys.id = next_id_;
-        ++next_id_;
         detail::normalize_access(sys.access);
-        auto const id = sys.id;
-        systems_.push_back(std::move(sys));
-        dirty_ = true;
+        auto const id   = systems_.push_back(std::move(sys));
+        systems_[id].id = id;
+        dirty_          = true;
         return id;
     }
 
@@ -630,7 +632,6 @@ private:
     std::vector<double> prepare_us_;          // per-wave hook timing, reused
     std::vector<double> finish_us_;
     std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
-    SystemId next_id_   = {};
     bool dirty_         = true;
 };
 

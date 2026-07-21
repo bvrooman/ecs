@@ -39,9 +39,11 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     }
 
     // phase -> level -> indices (ascending = the executor's wave order).
+    // Tombstoned systems keep their slot but are not drawn.
     std::map<int, std::map<std::size_t, std::vector<std::size_t>>> tree;
     for (auto&& [id, system] : systems.enumerate())
-        tree[system.phase][system.level].push_back(id.value);
+        if (!system.dead)
+            tree[system.phase][system.level].push_back(id.value);
 
     // Reduce edge crossings: reorder systems within each level (barycenter
     // sweeps over the drawn edges). Same-level systems are conflict-free, so
