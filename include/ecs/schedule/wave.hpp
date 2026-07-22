@@ -158,7 +158,19 @@ private:
         : id {id}
         , items_ {std::move(items)}
         , prepare_ {std::move(prepare)}
-        , finish_ {std::move(finish)} {}
+        , finish_ {std::move(finish)} {
+        // WavePlan::build pushes a prepare/finish context for every due system
+        // (before the zero-row skip), so seed all four per-system result maps to
+        // 0 from them. A due system that then contributes no work items -- a
+        // kernel whose query matches no rows this tick -- still gets a valid
+        // entry, so the SystemWork rollup can read every map by key.
+        for (auto const& ctx : prepare_) {
+            result_.prepare_us[ctx.system]  = 0.0;
+            result_.finish_us[ctx.system]   = 0.0;
+            result_.busy_us[ctx.system]     = 0.0;
+            result_.item_counts[ctx.system] = 0;
+        }
+    }
 
     std::vector<WorkItem> items_;
     std::vector<PrepareContext> prepare_;
@@ -185,13 +197,16 @@ public:
 
     auto push_back(SystemId const id) { systems_.push_back(id); }
 
+    // size()/empty() and iteration all refer to the systems DUE this tick, as
+    // populated by the most recent prepare(); the wave's full membership stays
+    // private (systems_). Meaningful only after prepare() has run for the tick.
     [[nodiscard]]
     auto size() const {
-        return systems_.size();
+        return due_.size();
     }
     [[nodiscard]]
     auto empty() const {
-        return systems_.empty();
+        return due_.empty();
     }
 
     auto begin() { return due_.begin(); }
