@@ -35,6 +35,7 @@
 #include "executor.hpp"
 #include "kernel_params.hpp"
 #include "system.hpp"
+#include "wave.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <memory>
@@ -165,7 +166,7 @@ public:
     [[nodiscard]]
     auto level_count() {
         rebuild();
-        return waves_.size();
+        return wave_plans_.size();
     }
     [[nodiscard]]
     auto const& systems() const {
@@ -210,22 +211,14 @@ public:
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
         using namespace sched_event;
-        events_.emit(TickBegin {waves_.size()});
-        auto cmds       = Commands {world};
-        std::size_t lvl = 0;
-        for (auto const& plan : waves_) {
-            // Cadence: run only the systems due this tick. due_wave() returns
-            // the whole plan when nothing is cadenced (the common case, no
-            // copy). A wave emptied by skips runs no barrier and emits no
-            // events, but lvl still advances below so later waves keep a stable
-            // index across ticks (a per-N-tick system's wave comes and goes).
-            auto const& wave = due_wave(plan);
-            if (!wave.empty()) {
-                events_.emit(WaveBegin {lvl, wave.size()});
-                // run_wave runs the wave AND applies its command flush (so it
-                // can attribute the flush per system), returning the wave's
-                // flush wall; it emits TickAbort and rethrows on any failure.
-                double const flush_us = run_wave(wave, world, cmds, pool, lvl);
+        events_.emit(TickBegin {wave_plans_.size()});
+        auto cmds = Commands {world};
+        auto lvl  = 0uz;
+        for (auto& plan : wave_plans_) {
+            auto sz = plan.prepare(systems_, tick_);
+            if (sz > 0) {
+                events_.emit(WaveBegin {lvl, sz});
+                double const flush_us = run_wave(plan, world, cmds, pool, lvl);
                 events_.emit(WaveEnd {lvl, flush_us});
             }
             ++lvl;
@@ -257,9 +250,10 @@ public:
     // barrier targets, but the partial's own lazy heap growth lands on tick 0.
     void prewarm(World& world) {
         rebuild();
-        for (auto const& wave : waves_) {
-            detail::build_wave_items(items_, wave, systems_, world);
-            prepare_hooks(wave, world);
+        for (auto& plan : wave_plans_) {
+            plan.prepare(systems_, tick_);
+            auto& wave = plan.build(systems_, world, tick_);
+            wave.prepare(world);
         }
     }
 
@@ -429,60 +423,16 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    //
-    // Events: every system, lone or fanned, gets a SystemWork event after the
-    // barrier hooks with its measured busy time (sum of its items across lanes)
-    // and its prepare/finish hook durations -- there is no per-system wall
-    // bracket, since a fanned wave interleaves every system's items across the
-    // lanes in one dispatch. Timing is unconditional -- measured at
-    // ~2 clock reads per >=1024-row item plus a handful per wave, it is
-    // within run-to-run noise even on an unobserved schedule, and the
-    // constant plumbing keeps every path identical.
-    // The systems in `plan` due this tick (tick % every == 0). When the schedule
-    // has no cadenced system -- has_cadence_, computed once in rebuild() -- that
-    // is the whole plan, returned by reference with no copy. Otherwise the due
-    // subset is filtered into a reused scratch buffer.
-    Wave const& due_wave(Wave const& plan) {
-        if (!has_cadence_)
-            return plan;
-        active_wave_.clear();
-        for (auto const idx : plan)
-            if (tick_ % systems_[idx].every == 0)
-                active_wave_.push_back(idx);
-        return active_wave_;
-    }
-
-    double run_wave(Wave const& wave,
-                    World& world,
-                    Commands& cmds,
-                    WorkerPool& pool,
-                    std::size_t lvl) {
+    double run_wave(
+        WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool, std::size_t lvl) {
         using namespace sched_event;
-        detail::build_wave_items(items_, wave, systems_, world);
-        prepare_hooks(wave, world);
-        finish_us_.assign(wave.size(), 0.0);
         flush_attrib_.clear();
-        double flush_us = 0;
+        auto& wave    = plan.build(systems_, world, tick_);
+        auto flush_us = 0.0;
         try {
-            detail::run_wave_items(items_, systems_, world, cmds, pool);
-            // Barrier folds (Reduce et al.) run after the join and before the
-            // command flush, single-threaded, in wave (registration) order;
-            // skipped when the dispatch aborted.
-            for (std::size_t wi = 0; wi < wave.size(); ++wi) {
-                auto& s = systems_[wave[wi]];
-                if (!s.finish_items)
-                    continue;
-                // Tag any command a kernel-command barrier enqueues (the replay
-                // of its per-item store) with this system, so the flush below
-                // attributes it correctly.
-                detail::recording_source() = s.id;
-                auto const t0              = detail::sched_clock::now();
-                s.finish_items(world);
-                finish_us_[wi] = detail::elapsed_us(t0);
-            }
-            // Command flush, attributed per recording system (flush_attrib_):
-            // reads each command's stamped source, so nothing here depends on
-            // the thread-local. cleans its own pending commands on throw.
+            wave.prepare(world);
+            wave.run(systems_, world, cmds, pool);
+            wave.finish(world);
             auto const tf = detail::sched_clock::now();
             world.apply_commands(&flush_attrib_);
             flush_us = detail::elapsed_us(tf);
@@ -491,53 +441,22 @@ private:
             events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        // Per-system work rollup, in wave (registration) order.
-        for (std::size_t wi = 0; wi < wave.size(); ++wi) {
-            auto const idx      = wave[wi];
-            double busy         = 0;
-            std::uint32_t items = 0;
-            for (auto const& it : items_)
-                if (it.system == idx) {
-                    busy += it.busy_us;
-                    ++items;
-                }
-            auto const fit    = flush_attrib_.find(systems_[idx].id);
-            double const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
-            events_.emit(SystemWork {systems_[idx].id,
-                                     systems_[idx].name,
-                                     busy,
-                                     prepare_us_[wi],
-                                     finish_us_[wi],
-                                     items,
+        // Per-system rollup, in due order. The result vectors are indexed by
+        // SystemId.value and cover every due system (zeroed slots for those
+        // with no work items), so a plain [] never misses.
+        auto const& result = wave.result();
+        for (auto id : plan) {
+            auto const fit  = flush_attrib_.find(id);
+            auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
+            events_.emit(SystemWork {id,
+                                     systems_[id].name,
+                                     result.busy_us[id],
+                                     result.prepare_us[id],
+                                     result.finish_us[id],
+                                     result.item_counts[id],
                                      flsh});
         }
         return flush_us;
-    }
-
-    // Drive stateful kernel parameters' prepare hooks: for each hooked system,
-    // hand it its items' row counts in ordinal order (slot sizing, target
-    // pre-sizing, prefix sums). Single-threaded, before the wave's dispatch.
-    // A hooked system with zero items still prepares (its reduce target must
-    // reset to "empty reduction", its extract target resize to 0).
-    void prepare_hooks(Wave const& wave, World& world) {
-        prepare_us_.assign(wave.size(), 0.0);
-        for (std::size_t wi = 0; wi < wave.size(); ++wi) {
-            auto& s = systems_[wave[wi]];
-            if (!s.prepare_items)
-                continue;
-            rows_scratch_.clear();
-            for (auto const& it : items_)
-                if (it.system == wave[wi] && it.archetype != detail::kImperative) {
-                    if (rows_scratch_.size() <= it.ordinal)
-                        rows_scratch_.resize(it.ordinal + 1);
-                    rows_scratch_[it.ordinal] = it.end - it.begin;
-                }
-            auto const t0 = detail::sched_clock::now();
-            s.prepare_items(world,
-                            rows_scratch_,
-                            detail::KernelWaveContext {s.id, tick_});
-            prepare_us_[wi] = detail::elapsed_us(t0);
-        }
     }
 
     // Tombstone spent one-shot systems (see remove()): they keep their slot so
@@ -570,11 +489,8 @@ private:
         }
     }
 
-    // Waves run in ascending (phase, level) order with a barrier between each.
-    // Tombstoned systems are skipped; live systems keep their position as their
-    // wave-member id.
-    auto build_wave_groups() const {
-        using WaveGroup  = std::pair<System::WaveKey, Wave>;
+    void build_wave_plans() {
+        using WaveGroup  = std::pair<System::WaveKey, WavePlan>;
         auto search      = [](auto const& g) { return g.first; };
         auto wave_groups = std::vector<WaveGroup> {};
         for (auto&& [id, system] : systems_.enumerate()) {
@@ -583,43 +499,33 @@ private:
             auto key = system.wave_key();
             auto it  = std::ranges::find(wave_groups, key, search);
             if (it == wave_groups.end()) {
-                wave_groups.emplace_back(key, Wave {});
+                wave_groups.emplace_back(key, WavePlan {});
                 it = std::prev(wave_groups.end());
             }
             auto& wave = it->second;
             wave.push_back(id);
         }
         std::ranges::sort(wave_groups, {}, search);
-        return wave_groups;
+        wave_plans_.clear();
+        wave_plans_.reserve(wave_groups.size());
+        std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
+                          std::back_inserter(wave_plans_));
     }
 
     void rebuild() {
         if (!dirty_)
             return;
-        has_cadence_ = std::ranges::any_of(systems_, [](System const& s) {
-            return !s.dead && s.every != 1;
-        });
         assign_levels();
-        auto groups = build_wave_groups();
-        waves_.clear();
-        waves_.reserve(groups.size());
-        std::ranges::copy(groups | std::views::values | std::views::as_rvalue,
-                          std::back_inserter(waves_));
+        build_wave_plans();
         dirty_ = false;
     }
 
     event::Emitter<ScheduleEvent> events_;
     using SystemVector = detail::IdVector<SystemId, System>;
     SystemVector systems_;
-    std::vector<Wave> waves_;
-    Wave active_wave_;                        // per-wave due-system scratch, reused
-    bool has_cadence_ = false;                // any system with every != 1
-    std::vector<detail::WorkItem> items_;     // per-wave scratch, capacity retained
-    FlushAttrib flush_attrib_;                // per-system flush time, per wave
-    std::vector<std::uint32_t> rows_scratch_; // per-system ordinal rows, reused
-    std::vector<double> prepare_us_;          // per-wave hook timing, reused
-    std::vector<double> finish_us_;
-    std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
+    std::vector<WavePlan> wave_plans_;
+    FlushAttrib flush_attrib_; // per-system flush time, per wave
+    std::uint64_t tick_ = 0;   // run() count; part of Random's stream identity
     bool dirty_         = true;
 };
 

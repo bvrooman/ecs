@@ -247,6 +247,13 @@ struct MatchCache {
     }
 };
 
+using RunFn      = move_only_function<void(World&, Commands&, WorkerPool&)>;
+using RunRangeFn = move_only_function<
+    void(World&, Commands&, ArchetypeId, std::size_t, std::size_t, std::uint32_t)>;
+using PrepareItemsFn = move_only_function<
+    void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
+using FinishItemsFn = move_only_function<void(World&)>;
+
 // One registered system, in either of its two forms.
 struct SystemRecord {
     using Phase   = int;
@@ -260,25 +267,21 @@ struct SystemRecord {
     // so the whole system is ONE work item. Null for kernel systems.
     // move_only_function (not function) so a system may capture a move-only
     // value (e.g. a unique_ptr or a move_only_function of its own).
-    move_only_function<void(World&, Commands&, WorkerPool&)> run;
+    RunFn run;
     // Kernel body (add_kernel): the executor slices the matched rows into
     // work items and invokes this once per (archetype, row-range) item. The
     // Commands& lets the kernel's other parameters bind; the trailing ordinal
     // is the item's index in generation (serial-walk) order, which indexes the
     // per-item slots of stateful parameters (Reduce/Extract -- see
     // kernel_params.hpp). Null for imperative systems.
-    move_only_function<
-        void(World&, Commands&, ArchetypeId, std::size_t, std::size_t, std::uint32_t)>
-        run_range;
+    RunRangeFn run_range;
     // Barrier hooks for stateful kernel parameters (null when the system has
     // none): prepare runs single-threaded before the wave's dispatch with the
     // system's per-item row counts in ordinal order plus the wave context;
     // finish runs single-threaded after the join, before the command flush
     // (skipped on abort).
-    move_only_function<
-        void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>
-        prepare_items;
-    move_only_function<void(World&)> finish_items;
+    PrepareItemsFn prepare_items;
+    FinishItemsFn finish_items;
     Signature query_sig; // kernel systems: sorted required-component ids
     MatchCache match;    // kernel systems: memoized query_sig match list
     Phase phase = 0;
