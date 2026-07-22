@@ -252,7 +252,7 @@ public:
         rebuild();
         for (auto& plan : wave_plans_) {
             plan.prepare(systems_, tick_);
-            auto wave = plan.build(systems_, world, tick_);
+            auto& wave = plan.build(systems_, world, tick_);
             wave.prepare(world);
         }
     }
@@ -423,21 +423,16 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    double run_wave(WavePlan const& plan,
-                    World& world,
-                    Commands& cmds,
-                    WorkerPool& pool,
-                    std::size_t lvl) {
+    double run_wave(
+        WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool, std::size_t lvl) {
         using namespace sched_event;
         flush_attrib_.clear();
-        auto wave                        = plan.build(systems_, world, tick_);
-        auto flush_us                    = 0.0;
-        std::optional<WaveResult> result = std::nullopt;
+        auto& wave    = plan.build(systems_, world, tick_);
+        auto flush_us = 0.0;
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
-            result.emplace(wave.result());
             auto const tf = detail::sched_clock::now();
             world.apply_commands(&flush_attrib_);
             flush_us = detail::elapsed_us(tf);
@@ -446,15 +441,19 @@ private:
             events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
+        // Per-system rollup, in due order. The result vectors are indexed by
+        // SystemId.value and cover every due system (zeroed slots for those
+        // with no work items), so a plain [] never misses.
+        auto const& result = wave.result();
         for (auto id : plan) {
             auto const fit  = flush_attrib_.find(id);
             auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {id,
                                      systems_[id].name,
-                                     result->busy_us.at(id),
-                                     result->prepare_us.at(id),
-                                     result->finish_us.at(id),
-                                     result->item_counts.at(id),
+                                     result.busy_us[id],
+                                     result.prepare_us[id],
+                                     result.finish_us[id],
+                                     result.item_counts[id],
                                      flsh});
         }
         return flush_us;
