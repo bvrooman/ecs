@@ -80,10 +80,10 @@ private:
     Fn* fn_;
 };
 
-// Per-system wave outcomes, indexed by SystemId.value and sized to the system
-// count. reset() clears via assign() (reusing capacity, no reallocation once
-// warm), so a steady-state run allocates nothing; a system that produced no
-// work items simply keeps its zeroed slot -- no keyed lookup that could miss.
+// Per-system wave outcomes, indexed by SystemId and sized to the system count.
+// reset() clears via assign() (reusing capacity, no reallocation once warm), so
+// a steady-state run allocates nothing; a system that produced no work items
+// simply keeps its zeroed slot -- no keyed lookup that could miss.
 struct WaveResult {
     detail::IdVector<SystemId, double> prepare_us;
     detail::IdVector<SystemId, double> finish_us;
@@ -178,7 +178,7 @@ private:
 
     // Start a fresh tick: keep buffer capacity, drop the previous tick's
     // contents, and zero the per-system result slots. `n` is the system count
-    // (the result vectors are indexed by SystemId.value).
+    // (the result IdVectors are sized to hold every SystemId).
     void reset(std::size_t const n) {
         items_.clear();
         prepare_.clear();
