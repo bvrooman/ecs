@@ -58,6 +58,8 @@ public:
     // Undo the most recent push (creation rollback only).
     void pop_back() noexcept { v_.pop_back(); }
 
+    void assign(std::size_t const n, T const& value) { v_.assign(n, value); }
+
 private:
     template <class Self>
     static auto enumerate_(Self& self) {

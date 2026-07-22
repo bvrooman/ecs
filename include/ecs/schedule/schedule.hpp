@@ -423,11 +423,8 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    double run_wave(WavePlan& plan,
-                    World& world,
-                    Commands& cmds,
-                    WorkerPool& pool,
-                    std::size_t lvl) {
+    double run_wave(
+        WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool, std::size_t lvl) {
         using namespace sched_event;
         flush_attrib_.clear();
         auto& wave    = plan.build(systems_, world, tick_);
@@ -453,10 +450,10 @@ private:
             auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {id,
                                      systems_[id].name,
-                                     result.busy_us[id.value],
-                                     result.prepare_us[id.value],
-                                     result.finish_us[id.value],
-                                     result.item_counts[id.value],
+                                     result.busy_us[id],
+                                     result.prepare_us[id],
+                                     result.finish_us[id],
+                                     result.item_counts[id],
                                      flsh});
         }
         return flush_us;

@@ -52,7 +52,7 @@ private:
         , fn_(&fn)
         , tick_(tick) {}
 
-    Fn* fn_; // pointer, not reference, so the holding vector stays assignable
+    Fn* fn_;
     uint64_t tick_;
 };
 
@@ -85,10 +85,10 @@ private:
 // warm), so a steady-state run allocates nothing; a system that produced no
 // work items simply keeps its zeroed slot -- no keyed lookup that could miss.
 struct WaveResult {
-    std::vector<double> prepare_us;
-    std::vector<double> finish_us;
-    std::vector<double> busy_us;
-    std::vector<std::uint32_t> item_counts;
+    detail::IdVector<SystemId, double> prepare_us;
+    detail::IdVector<SystemId, double> finish_us;
+    detail::IdVector<SystemId, double> busy_us;
+    detail::IdVector<SystemId, uint32_t> item_counts;
 
     void reset(std::size_t const n) {
         prepare_us.assign(n, 0.0);
@@ -119,7 +119,7 @@ public:
         for (auto const& ctx : prepare_) {
             auto const t0 = detail::sched_clock::now();
             if (ctx.prepare(world, items_, rows_scratch_))
-                result_.prepare_us[ctx.system.value] = detail::elapsed_us(t0);
+                result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
         }
         state_ = State::Prepared;
     }
@@ -149,8 +149,8 @@ public:
             });
         }
         for (auto const& item : items_) {
-            result_.busy_us[item.system.value] += item.busy_us;
-            result_.item_counts[item.system.value]++;
+            result_.busy_us[item.system] += item.busy_us;
+            result_.item_counts[item.system]++;
         }
         state_ = State::Ran;
     }
@@ -162,7 +162,7 @@ public:
         for (auto const& ctx : finish_) {
             auto const t0 = detail::sched_clock::now();
             if (ctx.finish(world))
-                result_.finish_us[ctx.system.value] = detail::elapsed_us(t0);
+                result_.finish_us[ctx.system] = detail::elapsed_us(t0);
         }
         state_ = State::Finished;
     }
