@@ -109,14 +109,14 @@ void declare_component(SystemAccess& a) {
         a.writes.push_back(component_id<C>);
 }
 
-// bind() receives the active WorkerPool the run installed -- run(World&) uses a
-// shared 1-lane pool, so it is never null here; the Query carries it so
-// for_each_chunk/for_each_parallel split their rows across the lanes.
+// bind() still receives the active WorkerPool (the uniform param protocol), but a
+// Query no longer uses it: a Query never dispatches -- parallelism is the
+// executor's job, not the query's -- so the pool is ignored here.
 template <class... Cs>
 struct system_param<Query<Cs...>> {
     static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-    static Query<Cs...> bind(World& w, Commands&, WorkerPool& pool) {
-        return Query<Cs...>(w, pool);
+    static Query<Cs...> bind(World& w, Commands&, WorkerPool&) {
+        return Query<Cs...>(w); // a Query never dispatches; parallelism is the executor's
     }
 };
 template <class T>
@@ -206,7 +206,7 @@ struct query_param_traits<Query<Cs...>> {
                                    ArchetypeId archetype,
                                    std::size_t b,
                                    std::size_t e) {
-        return Query<Cs...>(w, parallel::serial_pool(), archetype, b, e);
+        return Query<Cs...>(w, archetype, b, e);
     }
 };
 

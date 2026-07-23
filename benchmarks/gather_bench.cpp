@@ -1,8 +1,8 @@
-// gather_bench: the cost of for_each_parallel's per-row gather/scatter as a
+// gather_bench: the cost of for_each_serial's per-row gather/scatter as a
 // component grows wide or gains a non-trivially-copyable field -- vs for_each_chunk
 // (raw column spans) on the same backend, and vs the P2996 proxy path.
 //
-// On the PORTABLE backend (no reflected field names), for_each_parallel gathers the
+// On the PORTABLE backend (no reflected field names), for_each_serial gathers the
 // WHOLE component into a local and scatters the mutable fields back, regardless of
 // which fields the kernel touches. for_each_chunk -- and, on P2996, the zero-copy
 // row proxy -- touch only the columns the kernel accesses. So for a wide component
@@ -56,15 +56,15 @@ void populate(World& w, Fn fn) {
 // as every other benchmark here.
 using bench::min_ns_per;
 void report(char const* label, std::size_t n, int repeats, double ch, double par) {
-    std::printf("  %-42s chunk %8.3f ns   parallel %9.3f ns   %7.2fx\n",
+    std::printf("  %-42s chunk %8.3f ns   serial  %9.3f ns   %7.2fx\n",
                 label,
                 ch,
                 par,
                 par / ch);
     auto const r = std::size_t(repeats);
     bench::emit(label, "chunk_ns_per_entity", ch, "ns", "lower", n, 1, r);
-    bench::emit(label, "parallel_ns_per_entity", par, "ns", "lower", n, 1, r);
-    bench::emit(label, "parallel_over_chunk", par / ch, "x", "lower", n, 1, r);
+    bench::emit(label, "serial_ns_per_entity", par, "ns", "lower", n, 1, r);
+    bench::emit(label, "serial_over_chunk", par / ch, "x", "lower", n, 1, r);
 }
 } // namespace
 
@@ -79,7 +79,6 @@ static void sparse(char const* label, std::size_t N, int R) {
             cmd.spawn(ww, Vel {0.1f, 0.2f, 0.3f});
         }
     });
-    WorkerPool pool {1};
     double const ch  = min_ns_per(N, R, [&] {
         query<W, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                  chunk<W> p,
@@ -91,7 +90,7 @@ static void sparse(char const* label, std::size_t N, int R) {
         });
     });
     double const par = min_ns_per(N, R, [&] {
-        Query<W, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
+        Query<W, Vel const>(w).for_each_serial([](auto& p, auto& v) {
             p.a += v.x;
         });
     });
@@ -103,10 +102,10 @@ int main() {
     std::size_t const N = bench::env_size("ECS_ENTITIES", 200'000);
     int const R         = int(bench::env_long("ECS_REPEATS", 250));
 #if ECS_USE_P2996
-    std::printf("gather_bench -- P2996 backend (for_each_parallel = row PROXIES)\n");
+    std::printf("gather_bench -- P2996 backend (for_each_serial = row PROXIES)\n");
 #else
     std::printf(
-        "gather_bench -- portable backend (for_each_parallel = GATHER/SCATTER)\n");
+        "gather_bench -- portable backend (for_each_serial = GATHER/SCATTER)\n");
 #endif
     std::printf(
         "N=%zu, 1 lane. Sparse kernel = component has many fields, kernel touches 1:\n",
@@ -122,7 +121,6 @@ int main() {
             for (std::size_t i = 0; i < N; ++i)
                 cmd.spawn(W16 {}, Vel {0.1f, 0.2f, 0.3f});
         });
-        WorkerPool pool {1};
         double const ch  = min_ns_per(N, R, [&] {
             query<W16, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                        chunk<W16> p,
@@ -136,7 +134,7 @@ int main() {
             });
         });
         double const par = min_ns_per(N, R, [&] {
-            Query<W16, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
+            Query<W16, Vel const>(w).for_each_serial([](auto& p, auto& v) {
                 p.a += v.x;
                 p.b += v.x;
                 p.c += v.x;
@@ -166,7 +164,6 @@ int main() {
             for (std::size_t i = 0; i < N; ++i)
                 cmd.spawn(Named {big, float(i)}, Vel {0.1f, 0.2f, 0.3f});
         });
-        WorkerPool pool {1};
         double const ch  = min_ns_per(N, R, [&] {
             query<Named, Vel const>(w).for_each_chunk([](std::span<Entity>,
                                                          chunk<Named> p,
@@ -179,7 +176,7 @@ int main() {
             });
         });
         double const par = min_ns_per(N, R, [&] {
-            Query<Named, Vel const>(w, pool).for_each_parallel([](auto& p, auto& v) {
+            Query<Named, Vel const>(w).for_each_serial([](auto& p, auto& v) {
                 p.v += v.x;
             });
         });

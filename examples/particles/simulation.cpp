@@ -99,7 +99,7 @@ void build_particle_schedule(Schedule& schedule) {
     });
 
     // gravity: read the Gravity resource, write Velocity (data-parallel). wave 0.
-    schedule.add("gravity", [](Query<Velocity> q, Res<Gravity> grav) {
+    schedule.add_kernel("gravity", [](Query<Velocity> q, Res<Gravity> grav) {
         float const a = grav->accel;
         q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel) {
             for (auto& vy : vel.column<1>())
@@ -108,7 +108,7 @@ void build_particle_schedule(Schedule& schedule) {
     });
 
     // age: advance each particle's clock (data-parallel). wave 0.
-    schedule.add("age", [](Query<Age> q) {
+    schedule.add_kernel("age", [](Query<Age> q) {
         q.for_each_chunk([](std::span<Entity>, chunk<Age> age) {
             for (auto& t : age.column<0>())
                 t += cfg::kDt;
@@ -118,9 +118,9 @@ void build_particle_schedule(Schedule& schedule) {
     // The three turbulence fields: independent + compute-bound. Each is split
     // across lanes (within-system) *and* they are independent (across-system),
     // so the pool has plenty of parallel work. wave 1.
-    schedule.add("swirl", field_system<Swirl>(0.0f));
-    schedule.add("drift", field_system<Drift>(1.7f));
-    schedule.add("gust", field_system<Gust>(3.3f));
+    schedule.add_kernel("swirl", field_system<Swirl>(0.0f));
+    schedule.add_kernel("drift", field_system<Drift>(1.7f));
+    schedule.add_kernel("gust", field_system<Gust>(3.3f));
 
     // reaper: destroy particles past their lifespan (deferred). Serial. wave 1.
     schedule.add("reaper", [](Query<Age const> q, Commands& cmd) {
@@ -131,7 +131,7 @@ void build_particle_schedule(Schedule& schedule) {
     });
 
     // accumulate: sum the three fields into Velocity (data-parallel). wave 2.
-    schedule.add("accumulate",
+    schedule.add_kernel("accumulate",
                  [](Query<Velocity, Swirl const, Drift const, Gust const> q) {
                      q.for_each_chunk([](std::span<Entity>,
                                          chunk<Velocity> vel,
@@ -155,7 +155,7 @@ void build_particle_schedule(Schedule& schedule) {
                  });
 
     // integrate: read the final Velocity, write Position (data-parallel). wave 3.
-    schedule.add("integrate", [](Query<Position, Velocity const> q) {
+    schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {

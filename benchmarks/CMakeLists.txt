@@ -10,7 +10,7 @@ endfunction()
 # soa_bench: SoA storage vs an AoS baseline + the two query iteration paths.
 ecs_add_benchmark(soa_bench soa_bench.cpp)
 
-# gather_bench: how for_each_parallel's per-row gather/scatter scales with component
+# gather_bench: how for_each_serial's per-row gather/scatter (vs for_each_chunk) scales with component
 # complexity (wide/sparse, non-trivial fields) vs for_each_chunk. Most illustrative
 # on the portable backend (-DECS_USE_P2996=OFF) -- see the file header.
 ecs_add_benchmark(gather_bench gather_bench.cpp)

@@ -106,7 +106,7 @@ using field_view = typename detail::field_view_holder<C>::type;
 
 // Generated per-element proxy: one named reference per field of C (const when C
 // is const). row<Position> = { float& x, y, z; }; row<Position const> = { const
-// float& x, y, z; }. Used by Query::for_each_serial / for_each_parallel to hand a
+// float& x, y, z; }. Used by Query::for_each_serial to hand a
 // kernel one entity's row with write-through fields (p.x = ...), no gather/scatter.
 template <class C>
 using row = typename detail::row_holder<C>::type;

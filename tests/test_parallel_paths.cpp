@@ -41,7 +41,7 @@ static void multi_lane_chunk_split_covers_every_row() {
 
     WorkerPool pool {4};
     Schedule s;
-    s.add("bump", [](Query<Position, const Velocity> q) {
+    s.add_kernel("bump", [](Query<Position, const Velocity> q) {
         q.for_each_chunk([](std::span<Entity>, chunk<Position> p,
                             chunk<const Velocity> v) {
             auto px = p.column<0>();
@@ -62,8 +62,8 @@ static void multi_lane_chunk_split_covers_every_row() {
     CHECK(all_exact);
 }
 
-// Same property through for_each_parallel (the per-row ergonomic path).
-static void multi_lane_for_each_parallel_covers_every_row() {
+// Same property through a kernel's per-row (for_each_serial) path.
+static void multi_lane_kernel_serial_covers_every_row() {
     World w;
     setup(w, [&](Commands& cmd) {
         for (int i = 0; i < 10'000; ++i)
@@ -71,8 +71,8 @@ static void multi_lane_for_each_parallel_covers_every_row() {
     });
     WorkerPool pool {4};
     Schedule s;
-    s.add("inc", [](Query<Health> q) {
-        q.for_each_parallel([](auto& h) { h.hp += 1; });
+    s.add_kernel("inc", [](Query<Health> q) {
+        q.for_each_serial([](auto& h) { h.hp += 1; });
     });
     s.run(w, pool);
     CHECK(query<const Health>(w).count() == 10'000);
@@ -115,11 +115,11 @@ static void commands_recorded_from_parallel_kernel() {
     CHECK(w.size() == 8'192);
 }
 
-// A Query iterated inside another query's chunk kernel would dispatch on the
-// pool that is already mid-dispatch. That is disallowed: the nested dispatch
-// throws (surfacing at the outer join like any kernel exception) instead of
-// corrupting the in-flight job slot or deadlocking.
-static void nested_query_inside_kernel_throws() {
+// A Query no longer dispatches -- parallelism is the executor's job, not the
+// query's -- so iterating one query inside another query's chunk kernel is just
+// nested serial iteration: no nested dispatch, no throw. The old hazard (a
+// nested dispatch on a pool already mid-dispatch) is designed out.
+static void nested_query_inside_kernel_is_serial() {
     World w;
     setup(w, [&](Commands& cmd) {
         for (int i = 0; i < 4'096; ++i)
@@ -130,23 +130,19 @@ static void nested_query_inside_kernel_throws() {
 
     WorkerPool pool {4};
     Schedule s;
-    // Both queries bind the SAME schedule pool; q2's for_each_chunk inside q's
-    // kernel is a nested dispatch on a pool that is already mid-dispatch.
-    s.add("nested", [](Query<Position> q, Query<const Health> q2) {
+    std::atomic<int> seen {0};
+    s.add("nested", [&](Query<Position> q, Query<const Health> q2) {
         q.for_each_chunk([&](std::span<Entity>, chunk<Position>) {
-            q2.for_each_chunk([](std::span<Entity>, chunk<const Health>) {});
+            q2.for_each_chunk([&](std::span<Entity> e, chunk<const Health>) {
+                seen.fetch_add(int(e.size()), std::memory_order_relaxed);
+            });
         });
     });
-    bool threw = false;
-    try {
-        s.run(w, pool);
-    } catch (std::logic_error const&) {
-        threw = true;
-    }
-    CHECK(threw);
-    CHECK(w.size() == 8'192); // the aborted run left the world intact
+    s.run(w, pool); // completes normally -- no throw
+    CHECK(seen.load() == 4'096); // the inner query walked all Health rows
+    CHECK(w.size() == 8'192);
 
-    // The pool remains fully usable after the rejected nested dispatch.
+    // The pool is untouched by the queries and fully usable.
     std::atomic<int> hits {0};
     pool.parallel_for(10'000, [&](std::size_t b, std::size_t e) {
         hits.fetch_add(int(e - b), std::memory_order_relaxed);
@@ -820,9 +816,9 @@ static void prewarm_sizes_state_without_changing_results() {
 
 int main() {
     RUN_SUITE(multi_lane_chunk_split_covers_every_row);
-    RUN_SUITE(multi_lane_for_each_parallel_covers_every_row);
+    RUN_SUITE(multi_lane_kernel_serial_covers_every_row);
     RUN_SUITE(commands_recorded_from_parallel_kernel);
-    RUN_SUITE(nested_query_inside_kernel_throws);
+    RUN_SUITE(nested_query_inside_kernel_is_serial);
     RUN_SUITE(kernel_system_covers_every_row);
     RUN_SUITE(mixed_wave_flattened_dispatch_is_exact);
     RUN_SUITE(kernel_with_resource_and_commands_extras);

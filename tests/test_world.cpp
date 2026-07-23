@@ -103,8 +103,8 @@ static void for_each_rows() {
         for (int i = 0; i < 4; ++i)
             cmd.spawn(Position {float(i), 0.f}, Velocity {1.f, 2.f});
     });
-    // for_each_parallel: named proxy fields write through, no manual loop.
-    query<Position, Velocity const>(w).for_each_parallel([](auto& p, auto& v) {
+    // for_each_serial: named proxy fields write through, no manual loop.
+    query<Position, Velocity const>(w).for_each_serial([](auto& p, auto& v) {
         p.x += v.dx; // +1
         p.y += v.dy; // +2
     });
@@ -122,7 +122,7 @@ static void for_each_rows() {
         (void)p;
         ++es;
     });
-    query<Position const>(w).for_each_parallel([&](Entity e, auto& p) {
+    query<Position const>(w).for_each_serial([&](Entity e, auto& p) {
         CHECK(w.alive(e));
         (void)p;
         ++ep;

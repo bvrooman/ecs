@@ -12,31 +12,29 @@
 // const/non-const marks, so the declared access cannot drift from actual use.
 //
 //   q.for_each_serial([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
-//       SERIAL per-entity: never uses the pool. Each component is passed by
-//       reference (a write-through proxy under P2996, a gathered local on the
-//       portable backend), accessed as p.x. The path for kernels that touch shared
-//       state (reductions, ordered gathers, command recording).
-//
-//   q.for_each_parallel([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
-//       PARALLEL per-entity: same as for_each_serial but splits the rows across the
-//       WorkerPool lanes -- for INDEPENDENT per-entity work only.
+//       ROW-shaped iteration: each component passed by reference (a write-through
+//       proxy under P2996, a gathered local on the portable backend), accessed as
+//       p.x, plus an optional leading Entity.
 //
 //   q.for_each_chunk([](std::span<Entity> ents,
 //                       chunk<Position> pos, chunk<Velocity const> vel){ ... });
-//       The SoA fast path: hands each lane a `chunk` per component, already
-//       scoped to that lane's slice of the archetype's rows. chunk::column<I>()
-//       returns that field's contiguous std::span for this lane (span<const F>
-//       for a read-only component), so you run a tight, vectorizer-friendly loop
-//       -- `for (auto& x : pos.column<0>())` -- with no per-element
-//       gather/scatter and no begin/end bookkeeping. The executor splits each
-//       archetype's rows across the WorkerPool's lanes; because a chunk exposes
-//       only its own slice, writing through it is data-parallel and race-free.
+//       COLUMN-shaped (SoA) iteration: a `chunk` per component whose column<I>()
+//       is that field's contiguous std::span (span<const F> for a read-only
+//       component), so you run a tight, vectorizer-friendly loop -- `for (auto& x
+//       : pos.column<0>())` -- touching only the fields you use with NO per-row
+//       gather/scatter. Prefer it for a wide or sparsely-touched component on the
+//       portable backend, where for_each_serial reassembles the whole struct.
+//
+// A Query never dispatches: both forms iterate on the calling thread. Parallelism
+// is the executor's job -- an add_kernel system slices its rows into work items
+// across the pool's lanes, each binding a Query restricted to its slice. So the
+// iteration form is purely an access shape (rows vs columns), not a parallelism or
+// safety choice.
 
 #pragma once
 
 #include "chunk.hpp"
 #include "detail/for_each_row.hpp"
-#include "parallel/worker_pool.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -98,15 +96,13 @@ class Query {
     // A Query restricted to rows [b, e) of ONE matching archetype -- how a
     // kernel system's work item binds its Query parameter (the executor owns
     // the slicing; see schedule/executor.hpp). Every iteration method then
-    // walks just that slice, inline on the calling lane. Constructed only by
-    // detail::query_param_traits (befriended above).
+    // walks just that slice. Constructed only by detail::query_param_traits
+    // (befriended above).
     Query(World& world,
-          WorkerPool& pool,
           ArchetypeId slice_archetype,
           std::size_t slice_begin,
           std::size_t slice_end)
         : world_(world)
-        , pool_(pool)
         , slice_arch_(slice_archetype)
         , slice_b_(slice_begin)
         , slice_e_(slice_end) {}
@@ -114,21 +110,17 @@ class Query {
     static constexpr ArchetypeId kNoSlice {0xFFFF'FFFFu};
 
 public:
-    // `pool` is the data-parallel WorkerPool the executor binds. Ad-hoc queries
-    // (query()/WorldView, outside a schedule) reference a shared 1-lane serial pool,
-    // so pool_ is always valid -- no null check on the iteration path.
-    explicit Query(World& world, WorkerPool& pool)
-        : world_(world)
-        , pool_(pool) {}
+    // A Query is a pure iterator: it never dispatches. Parallelism is the
+    // executor's job -- an add_kernel system's rows are sliced into work items
+    // that each bind a restricted Query -- so a Query holds no WorkerPool.
+    explicit Query(World& world)
+        : world_(world) {}
 
-    // for_each_serial: SERIAL per-element iteration -- never uses the pool. Hands
-    // the kernel each entity's components with the same ergonomics as
-    // for_each_parallel (a write-through proxy per component under P2996, gathered
-    // references on the portable backend, accessed as p.x; plus an optional leading
-    // Entity if the kernel declares one). This is the path for a kernel that touches
-    // SHARED state -- a reduction into a resource, an ordered gather into a snapshot,
-    // command recording -- since for_each_parallel/for_each_chunk may split the rows
-    // across WorkerPool lanes.
+    // for_each_serial: per-element iteration. Hands the kernel each entity's
+    // components (a write-through proxy per component under P2996, a gathered
+    // value on the portable backend, accessed as p.x), plus an optional leading
+    // Entity if the kernel declares one. Row-shaped access; pair with
+    // for_each_chunk when you want the raw SoA columns instead.
     //
     //   q.for_each_serial([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
@@ -149,40 +141,15 @@ public:
         }
     }
 
-    // for_each_parallel: PARALLEL per-element iteration -- built on for_each_chunk,
-    // so it splits an archetype's rows across the WorkerPool lanes. Use it for
-    // INDEPENDENT per-entity work (each row touches only its own components); for a
-    // kernel that writes shared state use for_each_serial instead. Same ergonomics
-    // as for_each_serial: under P2996 a write-through row<C> proxy per component
-    // (named fields p.x reference this entity's SoA slot in place, so it vectorizes
-    // like a hand index loop), with an optional leading Entity if declared:
-    //
-    //   q.for_each_parallel([](auto& p, auto& v){ p.x += v.x * dt; });      // rows
-    //   q.for_each_parallel([](Entity e, auto& p, auto& v){ ...use e... }); // +entity
-    //
-    // Both backends split rows across the pool's lanes (lanes own disjoint rows, so
-    // it is race-free). Under P2996 each row is a zero-copy proxy -- it touches only
-    // the fields the kernel uses, so it costs the same as for_each_chunk. The
-    // portable backend (no field names) instead gathers the WHOLE component into a
-    // local and scatters the mutable fields back, regardless of what the kernel
-    // touches: cheap for a small component the kernel mostly uses, but it scales with
-    // the field count and is severe for a WIDE component read/written sparsely or one
-    // with a non-trivially-copyable field (e.g. std::string) -- there, on the
-    // portable backend, prefer for_each_chunk. Quantified by benchmarks/gather_bench.
-    template <class F>
-    void for_each_parallel(F&& fn) {
-        for_each_chunk([&fn](std::span<Entity> ents, chunk<Cs>... cs) {
-            detail::for_each_row(fn, ents, cs...);
-        });
-    }
-
-    // The SoA fast path. Splits each matching archetype's rows across the bound
-    // WorkerPool's lanes and calls the kernel once per (archetype x lane) with
-    // that lane's entities and a `chunk` per component, each already scoped to
-    // the lane's row slice (const for read-only components). A chunk exposes only
-    // its own rows, so the deterministic partition is race-free with no locking.
-    // A 1-lane pool (or an ad-hoc query with no pool) runs the whole archetype in
-    // one call, so the same kernel serves serial and parallel.
+    // for_each_chunk: the SoA access shape. Calls the kernel once per matching
+    // archetype (or once for a kernel-item's slice) with that archetype's
+    // entities and a `chunk` per component -- each `chunk` exposing its columns
+    // as contiguous spans, so you run a tight vectorizer-friendly loop over just
+    // the fields you touch with NO per-row gather/scatter. Prefer it over
+    // for_each_serial for a wide or sparsely-touched component on the portable
+    // backend (where for_each_serial reassembles the whole struct per row). Like
+    // for_each_serial it never dispatches: parallelism comes only from an
+    // add_kernel system's row slicing.
     //
     //   q.for_each_chunk([](std::span<Entity>,
     //                       chunk<Position> pos, chunk<Velocity const> vel) {
@@ -192,45 +159,19 @@ public:
     template <class F>
     void for_each_chunk(F&& fn) {
         if (slice_arch_ != kNoSlice) {
-            // Sliced (kernel-item) query: exactly this row range, inline on
-            // the calling lane -- the executor already parallelized the items.
-            auto& arch = *world_.archetypes()[slice_arch_];
+            auto& arch = *world_.archetypes()[slice_arch_]; // kernel-item slice
             fn(std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
                chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
             return;
         }
-        auto const& archs   = world_.archetypes();
-        auto const& matched = matches();
-        // ONE dispatch over the query's total row count, with each lane mapping
-        // its global range back onto (archetype, row-range) segments -- rather
-        // than a full fork-join barrier per archetype. This also makes the
-        // pool's serial threshold apply to the query total, not per archetype
-        // (a fragmented world used to run entirely serial even with millions of
-        // total rows), and empty archetypes are skipped instead of invoking the
-        // kernel with zero rows.
-        std::size_t total = 0;
-        for (auto const ai : matched)
-            total += archs[ai]->size();
-        if (total == 0)
-            return;
-        auto run = [&](std::size_t b, std::size_t e) {
-            std::size_t base = 0;
-            for (auto const ai : matched) {
-                auto& arch          = *archs[ai];
-                std::size_t const n = arch.size();
-                if (base + n > b) {
-                    std::size_t const lo = b > base ? b - base : 0;
-                    std::size_t const hi = std::min(n, e - base);
-                    if (lo < hi)
-                        fn(std::span(arch.entities).subspan(lo, hi - lo),
-                           chunk_arg<Cs>(arch, lo, hi)...);
-                }
-                base += n;
-                if (base >= e)
-                    break;
-            }
-        };
-        pool_.parallel_for(total, run); // a 1-lane pool runs [0, total) inline
+        auto const& archs = world_.archetypes();
+        for (auto const ai : matches()) {
+            auto& arch          = *archs[ai];
+            std::size_t const n = arch.size();
+            if (n == 0)
+                continue; // never invoke the kernel with an empty chunk
+            fn(std::span(arch.entities), chunk_arg<Cs>(arch, 0, n)...);
+        }
     }
 
     [[nodiscard]]
@@ -252,7 +193,6 @@ private:
     }
 
     World& world_;
-    WorkerPool& pool_; // data-parallel lanes; a shared 1-lane pool for ad-hoc queries
     // Slice restriction for kernel-item queries (kNoSlice = iterate all
     // matching archetypes, the normal mode).
     ArchetypeId slice_arch_ = kNoSlice;
@@ -262,7 +202,7 @@ private:
 
 template <class... Cs>
 Query<Cs...> query(World& world) {
-    return Query<Cs...>(world, parallel::serial_pool());
+    return Query<Cs...>(world);
 }
 
 // A read-only view of the world for systems that need ad-hoc reads (size, get,
@@ -296,7 +236,7 @@ public:
     // Read-only query: every component is iterated by const reference.
     template <class... Cs>
     auto query() const {
-        return Query<std::remove_const_t<Cs> const...>(*world_, parallel::serial_pool());
+        return Query<std::remove_const_t<Cs> const...>(*world_);
     }
 
 private:

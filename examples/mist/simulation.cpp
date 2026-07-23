@@ -346,8 +346,8 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // A KERNEL -- the compute-bound heart of the tick: components-in-the-Query
     // plus read-only resources, per-row independent, exactly the shape
     // add_kernel slices. The body is untouched from the imperative version;
-    // the registration changed one word and for_each_parallel became
-    // for_each_serial (the executor parallelizes ACROSS the sliced items now,
+    // the registration changed one word (add -> add_kernel) and the body
+    // iterates with for_each_serial (the executor parallelizes ACROSS the items,
     // and each item's slice iterates inline on its claiming lane).
     schedule.add_kernel(
         "steer",

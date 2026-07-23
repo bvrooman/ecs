@@ -80,7 +80,7 @@ int main() {
     // component or Res<T> is a read, a non-const component or ResMut<T> a write.
 
     // gravity: read Mass + the Gravity resource, write Velocity.
-    schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
+    schedule.add_kernel("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
         q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel, chunk<Mass const>) {
             for (auto& vy : vel.column<1>())
@@ -110,7 +110,7 @@ int main() {
 
     // integrate: read Velocity, write Position. Reads what gravity wrote, so the
     // scheduler places it on a later level automatically.
-    schedule.add("integrate", [](Query<Position, Velocity const> q) {
+    schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
