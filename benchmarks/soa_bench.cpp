@@ -1,7 +1,7 @@
 // SoA layout microbenchmarks.
 //
 // Measures the structure-of-arrays storage against a plain array-of-structures
-// baseline, and the two query iteration paths (for_each_serial vs for_each_chunk)
+// baseline, and the two query iteration paths (for_each vs for_each_chunk)
 // against each other, across representative ECS workloads:
 //
 //   * integrate         -- one written component, one read-only component
@@ -96,8 +96,8 @@ int main(int argc, char** argv) {
                 bench::g_iters);
 
     // 1/2) integrate: write Pos, read Vel ------------------------------------
-    bench::run("for_each_serial integrate (1 RW, 1 RO)", N, [&] {
-        query<Pos, Vel const>(w).for_each_serial([](auto& p, auto& v) {
+    bench::run("for_each integrate (1 RW, 1 RO)", N, [&] {
+        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
@@ -120,8 +120,8 @@ int main(int argc, char** argv) {
     });
 
     // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
-    bench::run("for_each_serial multi (2 RW, 1 RO)", N, [&] {
-        query<Pos, Vel, Acc const>(w).for_each_serial([](auto& p, auto& v, auto& a) {
+    bench::run("for_each multi (2 RW, 1 RO)", N, [&] {
+        query<Pos, Vel, Acc const>(w).for_each([](auto& p, auto& v, auto& a) {
             v.x += a.x;
             v.y += a.y;
             v.z += a.z;
@@ -174,8 +174,8 @@ int main(int argc, char** argv) {
     });
 
     // 7/8) compute-bound: many FLOPs per entity ------------------------------
-    bench::run("for_each_serial compute-bound", N, [&] {
-        query<Pos, Vel const>(w).for_each_serial([](auto& p, auto& v) {
+    bench::run("for_each compute-bound", N, [&] {
+        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
             p.x = heavy(p.x, v.x, v.y);
             p.y = heavy(p.y, v.y, v.z);
             p.z = heavy(p.z, v.z, v.x);
@@ -196,15 +196,15 @@ int main(int argc, char** argv) {
     });
 
     // 9) write-back cost: read Vel but leave it non-const (scattered back) ----
-    bench::run("for_each_serial read Vel NON-const (write-back)", N, [&] {
-        query<Pos, Vel>(w).for_each_serial([](auto& p, auto& v) {
+    bench::run("for_each read Vel NON-const (write-back)", N, [&] {
+        query<Pos, Vel>(w).for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
         });
     });
-    bench::run("for_each_serial read Vel const (no write-back)", N, [&] {
-        query<Pos, Vel const>(w).for_each_serial([](auto& p, auto& v) {
+    bench::run("for_each read Vel const (no write-back)", N, [&] {
+        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;

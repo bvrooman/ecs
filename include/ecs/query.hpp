@@ -11,7 +11,7 @@
 // the scheduler derives that system's read/write access directly from these
 // const/non-const marks, so the declared access cannot drift from actual use.
 //
-//   q.for_each_serial([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
+//   q.for_each([](auto& p, auto& v){ p.x += v.x; }); // + optional Entity
 //       ROW-shaped iteration: each component passed by reference (a write-through
 //       proxy under P2996, a gathered local on the portable backend), accessed as
 //       p.x, plus an optional leading Entity.
@@ -23,7 +23,7 @@
 //       component), so you run a tight, vectorizer-friendly loop -- `for (auto& x
 //       : pos.column<0>())` -- touching only the fields you use with NO per-row
 //       gather/scatter. Prefer it for a wide or sparsely-touched component on the
-//       portable backend, where for_each_serial reassembles the whole struct.
+//       portable backend, where for_each reassembles the whole struct.
 //
 // A Query never dispatches: both forms iterate on the calling thread. Parallelism
 // is the executor's job -- an add_kernel system slices its rows into work items
@@ -114,15 +114,15 @@ public:
     explicit Query(World& world)
         : world_(world) {}
 
-    // for_each_serial: per-element iteration. Hands the kernel each entity's
+    // for_each: per-element iteration. Hands the kernel each entity's
     // components (a write-through proxy per component under P2996, a gathered
     // value on the portable backend, accessed as p.x), plus an optional leading
     // Entity if the kernel declares one. Row-shaped access; pair with
     // for_each_chunk when you want the raw SoA columns instead.
     //
-    //   q.for_each_serial([&](auto& p){ out.push_back({p.x, p.y}); });
+    //   q.for_each([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
-    void for_each_serial(F&& fn) {
+    void for_each(F&& fn) {
         if (slice_arch_ != kNoSlice) {
             auto& arch = *world_.archetypes()[slice_arch_];
             detail::for_each_row(
@@ -144,9 +144,9 @@ public:
     // entities and a `chunk` per component -- each `chunk` exposing its columns
     // as contiguous spans, so you run a tight vectorizer-friendly loop over just
     // the fields you touch with NO per-row gather/scatter. Prefer it over
-    // for_each_serial for a wide or sparsely-touched component on the portable
-    // backend (where for_each_serial reassembles the whole struct per row). Like
-    // for_each_serial it never dispatches: parallelism comes only from an
+    // for_each for a wide or sparsely-touched component on the portable
+    // backend (where for_each reassembles the whole struct per row). Like
+    // for_each it never dispatches: parallelism comes only from an
     // add_kernel system's row slicing.
     //
     //   q.for_each_chunk([](std::span<Entity>,

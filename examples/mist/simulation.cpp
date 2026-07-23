@@ -325,7 +325,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
         "grid",
         [](Query<Position const, Velocity const> q,
            Reduce<FlockGrid, MergeCells, CellAccum> g) {
-            q.for_each_serial([&](auto& p, auto& v) {
+            q.for_each([&](auto& p, auto& v) {
                 int const c = FlockGrid::index(FlockGrid::axis(p.x),
                                                FlockGrid::axis(p.y),
                                                FlockGrid::axis(p.z));
@@ -347,7 +347,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // plus read-only resources, per-row independent, exactly the shape
     // add_kernel slices. The body is untouched from the imperative version;
     // the registration changed one word (add -> add_kernel) and the body
-    // iterates with for_each_serial (the executor parallelizes ACROSS the items,
+    // iterates with for_each (the executor parallelizes ACROSS the items,
     // and each item's slice iterates inline on its claiming lane).
     schedule.add_kernel(
         "steer",
@@ -360,7 +360,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
             float const goalw  = cur->active ? T.goalFollow : T.goalSeek;
             float const t      = clk->t;
             FlockGrid const& g = *grid;
-            q.for_each_serial([G, goalw, t, &g, T](auto& p, auto& v) {
+            q.for_each([G, goalw, t, &g, T](auto& p, auto& v) {
                 float const x = p.x, y = p.y, z = p.z;
                 float ax = 0, ay = 0, az = 0; // steering acceleration
 
@@ -477,7 +477,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // held in the roaming region by steer's soft boundary. A kernel: pure
     // per-row map over the components in the Query.
     schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.x * cfg::kDt;
             p.y += v.y * cfg::kDt;
             p.z += v.z * cfg::kDt;
@@ -529,7 +529,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
         schedule.add_kernel("metrics",
                             [](Query<Position const, Velocity const> q,
                                Reduce<FlockStats, AddStats> st) {
-                                q.for_each_serial([&](auto& p, auto& v) {
+                                q.for_each([&](auto& p, auto& v) {
                                     st->x += p.x;
                                     st->y += p.y;
                                     st->z += p.z;

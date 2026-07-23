@@ -173,7 +173,7 @@ int main() {
         auto imperative = [](Schedule& s) {
             s.add("hits", [](Query<P const> q, ResMut<Hits> out) {
                 out->clear();
-                q.for_each_serial([&](auto& p) {
+                q.for_each([&](auto& p) {
                     if (p.y > 156.0f) // ~half of y in [0, 313)
                         out->push_back(p.x);
                 });
@@ -181,7 +181,7 @@ int main() {
         };
         auto kernel = [](Schedule& s) {
             s.add_kernel("hits", [](Query<P const> q, Collect<Hits> out) {
-                q.for_each_serial([&](auto& p) {
+                q.for_each([&](auto& p) {
                     if (p.y > 156.0f)
                         out->push_back(p.x);
                 });
@@ -204,7 +204,7 @@ int main() {
             s.add("bin", [](Query<P const> q, ResMut<Buckets> out) {
                 for (auto& b : out->v)
                     b.clear();
-                q.for_each_serial([&](auto& p) {
+                q.for_each([&](auto& p) {
                     out->v[std::uint32_t(p.x) & 63].push_back(p.z);
                 });
             });
@@ -214,7 +214,7 @@ int main() {
         };
         auto kernel = [](Schedule& s) {
             s.add_kernel("bin", [](Query<P const> q, Bin<float> out) {
-                q.for_each_serial([&](auto& p) {
+                q.for_each([&](auto& p) {
                     out.emit(std::uint32_t(p.x) & 63, p.z);
                 });
             });
@@ -240,7 +240,7 @@ int main() {
             s.add("write", [](Query<P const> q, ResMut<PingBuf> out) {
                 out->v.clear();
                 std::uint32_t i = 0;
-                q.for_each_serial([&](auto&) {
+                q.for_each([&](auto&) {
                     if (i % 20 == 0)
                         out->v.push_back(Ping {i});
                     ++i;
@@ -260,7 +260,7 @@ int main() {
         auto kernel = [](Schedule& s) {
             s.add_kernel("write", [](Query<P const> q, EventWriter<Ping> out) {
                 std::uint32_t i = 0;
-                q.for_each_serial([&](auto&) {
+                q.for_each([&](auto&) {
                     if (i % 20 == 0)
                         out.emit(Ping {i});
                     ++i;

@@ -126,7 +126,7 @@ void build_particle_schedule(Schedule& schedule) {
 
     // reaper: destroy particles past their lifespan (deferred). Serial. wave 1.
     schedule.add("reaper", [](Query<Age const> q, Commands& cmd) {
-        q.for_each_serial([&](Entity e, auto& a) {
+        q.for_each([&](Entity e, auto& a) {
             if (a.t >= a.max)
                 cmd.destroy(e);
         });
@@ -179,7 +179,7 @@ void build_particle_schedule(Schedule& schedule) {
                     ResMut<TripleBuffer<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.for_each_serial([&](auto& p, auto& c, auto& a) {
+                     q.for_each([&](auto& p, auto& c, auto& a) {
                          float alpha = 1.0f - a.t / a.max; // linear fade-out
                          if (alpha < 0.0f)
                              alpha = 0.0f;

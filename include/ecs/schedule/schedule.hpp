@@ -80,13 +80,13 @@ public:
     // exactly ONE Query<Cs...> parameter. That query is the iteration the
     // executor slices: the system body is invoked once per work item with the
     // Query restricted to that item's rows, so `q.for_each_chunk(...)` /
-    // `q.for_each_serial(...)` inside iterate just the slice, inline on the
+    // `q.for_each(...)` inside iterate just the slice, inline on the
     // claiming lane. An imperative add() system with independent per-row work
     // becomes a kernel system by changing one word:
     //
     //   sched.add_kernel("steer",
     //       [](Query<const Position, Velocity> q, Res<Clock> clk) {
-    //           q.for_each_serial([&](auto& p, auto& v) { ... });
+    //           q.for_each([&](auto& p, auto& v) { ... });
     //       });
     //
     // Unlike an imperative system (an opaque callable the executor must run

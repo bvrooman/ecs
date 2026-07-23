@@ -56,14 +56,14 @@ static void run_on_thread_pool_executes_all_systems() {
     Schedule sched;
     // writes Position, reads Velocity
     sched.add("physics", [](Query<Position, Velocity const> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
     });
     // writes Health
     sched.add("damage",
-              [](Query<Health> q) { q.for_each_serial([](auto& h) { h.hp -= 1; }); });
+              [](Query<Health> q) { q.for_each([](auto& h) { h.hp -= 1; }); });
     // no ECS access -- just a side effect
     sched.add("render", [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 
@@ -220,7 +220,7 @@ static void multiple_observers_notified_in_order() {
             c.spawn(Position {});
     });
     Schedule sched;
-    sched.add("physics", [](Query<Position> q) { q.for_each_serial([](auto&) {}); });
+    sched.add("physics", [](Query<Position> q) { q.for_each([](auto&) {}); });
     sched.add("render", [](Query<Position const>) {}); // reads Position -> wave 1
 
     std::vector<char> order;

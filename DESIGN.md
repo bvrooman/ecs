@@ -130,24 +130,19 @@ Structural edits use swap-and-pop to keep every column dense, patching the
 relocated entity's row record in O(1). Archetype objects are heap-allocated so
 their addresses stay stable as new archetypes appear.
 
-Queries offer three iteration styles. Mark a component `const` in the query type
-to read it without writing it back -- a read-only component is passed by
-`const&` and skipped by the write-back (and `for_each_chunk` hands a `const`
-chunk), which avoids both the cost and the *undeclared write* of touching a
-component you only read:
+Queries offer two iteration styles -- both pure iterators that never dispatch.
+Mark a component `const` in the query type to read it without writing it back --
+a read-only component is passed by `const&` and skipped by the write-back (and
+`for_each_chunk` hands a `const` chunk), which avoids both the cost and the
+*undeclared write* of touching a component you only read:
 
 ```cpp
-// per-element, SERIAL -- for reductions / shared state / command recording
-query<Position, const Velocity>(w).for_each_serial([](auto& p, auto& v){
+// per-element (ROW-shaped) -- each component by reference, accessed as p.x
+query<Position, const Velocity>(w).for_each([](auto& p, auto& v){
   p.x += v.x;   // Velocity is read-only: not written back
 });
 
-// per-element, PARALLEL -- splits rows across the pool; INDEPENDENT work only
-query<Position, const Velocity>(w).for_each_parallel([](auto& p, auto& v){
-  p.x += v.x;
-});
-
-// per-chunk, PARALLEL -- each lane gets a `chunk` per component (raw column spans)
+// per-chunk (COLUMN-shaped, SoA) -- a `chunk` per component (raw column spans)
 query<Position, const Velocity>(w).for_each_chunk(
   [](std::span<Entity>, chunk<Position> pos, chunk<const Velocity> vel){
     auto px = pos.column<0>(); auto vx = vel.column<0>(); // vx is span<const>
@@ -155,19 +150,22 @@ query<Position, const Velocity>(w).for_each_chunk(
   });
 ```
 
-`for_each_serial` and `for_each_parallel` share ergonomics -- each entity's
-components are handed to the kernel accessed as `p.x` (a write-through proxy
-referencing the SoA column in place under P2996; a gathered local on the portable
-backend), with an optional leading `Entity`. They differ only in execution:
-`for_each_serial` never uses the pool, so it is the correct path for a kernel that
-touches **shared state** (a reduction into a resource, an ordered snapshot gather,
-command recording); `for_each_parallel` splits an archetype's rows across the
-worker pool's lanes and so is for **independent** per-entity work only.
-`for_each_chunk` is the raw hot path -- the executor splits rows across lanes and
-calls the kernel once per lane with a `chunk` per component. `chunk::column<I>()`
-returns the field's contiguous span for *this lane only*, so a lane physically
-cannot reach another's rows: the split is data-parallel and race-free, and the
-kernel carries no `begin`/`end` (you iterate `column<I>()` directly).
+`for_each` is the **row** shape: each entity's components are handed to the kernel
+accessed as `p.x` (a write-through proxy referencing the SoA column in place under
+P2996; a gathered local on the portable backend), with an optional leading
+`Entity`. `for_each_chunk` is the **column** shape: it hands the kernel a `chunk`
+per component whose `column<I>()` is that field's contiguous span, so you run a
+tight vectorizer-friendly loop over just the fields you touch with **no per-row
+gather/scatter** -- prefer it for a wide or sparsely-touched component on the
+portable backend, where `for_each` reassembles the whole struct.
+
+Neither form dispatches: both iterate on the calling thread. Parallelism is the
+executor's job, not the query's -- an `add_kernel` system slices its matched rows
+into work items across the worker pool's lanes, and each item binds a `Query`
+restricted to its own `[begin, end)` slice (so a lane physically cannot reach
+another's rows: the split is data-parallel and race-free). The same `for_each` /
+`for_each_chunk` body then runs over that slice. An imperative `add` system is one
+opaque work item, so its query iterates every matched row serially.
 
 The set of archetypes a query matches is **cached** per required-component
 signature, so a repeated query costs an O(1) lookup plus iteration of just the
@@ -229,7 +227,7 @@ contributes one item per row-range slice of each archetype that query matches
 of the lane count, so the slicing and therefore every barrier-time fold is
 identical whether the schedule runs on 1 lane or N): its iteration is *visible* to
 the scheduler, which invokes the body once per item with the Query restricted
-to that item's rows, so `q.for_each_chunk(...)`/`q.for_each_serial(...)` inside
+to that item's rows, so `q.for_each_chunk(...)`/`q.for_each(...)` inside
 iterate just the slice, inline on the claiming lane. The other parameters
 (`Res<T>`, `Commands&`, `WorldView`, and the per-item primitives — `Reduce<T,
 Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
@@ -244,7 +242,7 @@ independent per-row work becomes a kernel system by changing one word:
 
 ```cpp
 sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
-  q.for_each_serial([&](auto& p, auto& v) { /* ... */ });
+  q.for_each([&](auto& p, auto& v) { /* ... */ });
 });
 ```
 
@@ -259,10 +257,11 @@ Genuinely ordered iteration still belongs in `add()` systems. An
 **imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
 persisting across ticks, do reductions or ordered work)
-contributes itself as a single item; inside a multi-item wave it is bound to a
-1-lane pool, so its queries iterate inline on the lane that claimed it (the
-common single-system wave instead runs inline on the caller with the full pool,
-so a lone system's `for_each_chunk` still fans across every lane). Items are
+contributes itself as a single item; its queries are pure iterators that always
+walk their matched rows serially on whichever lane claims the item (a
+single-system wave runs inline on the caller). Parallelism within a wave comes
+only from kernel items -- an imperative system never fans its own rows across
+lanes. Items are
 sorted longest-first (greedy LPT — the biggest work cannot become the join's
 straggler) and claimed by the lanes from an atomic cursor, so a heavy kernel
 system's slices overlap both with each other and with the wave's other systems:
@@ -327,7 +326,7 @@ remaining caveats:
   cross-lane order is unspecified, and `reserve()`'s id handout then depends on
   timing. Record structural edits from a system's serial part instead (the common
   case — an emitter that loops and `cmd.spawn()`s, a reaper using
-  `for_each_serial`), or use
+  `for_each`), or use
   a 1-lane pool, when you need reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
@@ -371,7 +370,7 @@ pointer/reference can escape, which is a pointer-to-local bug C++ cannot prevent
 ```cpp
 // a system: a Query param (here read-only Emitter) + Commands for mutation
 sched.add("spawn_particles", [](Query<const Emitter> q, Commands& cmd) {
-  q.for_each_serial([&](auto& em) {
+  q.for_each([&](auto& em) {
     if (em.fire) {
       Entity p = cmd.spawn(Position{...}, Velocity{...}); // recorded
       cmd.add<Lifetime>(p, {...});                        // edit the handle now
@@ -536,10 +535,10 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
 
 * Portable reflection treats a component as a flat aggregate of ≤32 scalar-ish
   fields; nested aggregates count as one field (P2996 handles these natively).
-* `for_each_serial`/`for_each_parallel` hand each entity a reflection-generated
-  reference proxy -- named field accessors (`p.x`) that write through to the SoA
-  column in place under P2996, with a gather/scatter fallback on the portable
-  backend; `for_each_chunk`'s column API is the raw zero-copy path.
+* `for_each` hands each entity a reflection-generated reference proxy -- named
+  field accessors (`p.x`) that write through to the SoA column in place under
+  P2996, with a gather/scatter fallback on the portable backend;
+  `for_each_chunk`'s column API is the raw zero-copy path.
 * The scheduler uses wavefront leveling (simple, correct, parallel). A full
   per-edge sender DAG would extract a little more overlap across levels.
 * All structural mutation is deferred to a flush point, so it is always safe

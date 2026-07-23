@@ -30,7 +30,7 @@ struct Velocity {
 static Schedule make_sched() {
     Schedule sched;
     sched.add("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
@@ -140,10 +140,10 @@ static void fanned_wave_reports_real_busy_time() {
     Schedule sched;
     // Disjoint access -> one wave, two systems, flattened items.
     sched.add_kernel("move", [](Query<Position> q) {
-        q.for_each_serial([](auto& p) { p.x += 0.5f; });
+        q.for_each([](auto& p) { p.x += 0.5f; });
     });
     sched.add_kernel("drag", [](Query<Velocity> q) {
-        q.for_each_serial([](auto& v) { v.dx *= 0.999f; });
+        q.for_each([](auto& v) { v.dx *= 0.999f; });
     });
     CHECK(sched.level_count() == 1);
 

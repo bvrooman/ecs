@@ -49,7 +49,7 @@ int main() {
     Schedule sched;
     // Cheap: advance positions (writes Position, reads Velocity).
     sched.add("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
@@ -58,14 +58,14 @@ int main() {
     // It conflicts with integrate, so it lands in a later wave -- and the sin/cos
     // makes it visibly the hottest system in the report.
     sched.add("turbulence", [](Query<Position const, Velocity> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             v.dx += 0.01f * std::sin(p.y);
             v.dy += 0.01f * std::cos(p.x);
         });
     });
     // Cheap independent branch (writes Health) -- shares wave 0 with integrate.
     sched.add("damage", [](Query<Health> q) {
-        q.for_each_serial([](auto& h) {
+        q.for_each([](auto& h) {
             if (--h.hp <= 0)
                 h.hp = 100;
         });
