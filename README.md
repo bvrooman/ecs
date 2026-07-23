@@ -24,15 +24,18 @@ int main() {
   init.run(world);                                // serial (a 1-lane pool)
 
   Schedule schedule;
-  // A system: its access is derived from its parameter types. Here, write
-  // Position (non-const) and read Velocity (const).
-  schedule.add("integrate", [](Query<Position, const Velocity> q) {
-    // for_each_chunk hands each lane a `chunk` per component, already scoped to
-    // that lane's slice of rows -- so column<I>() is the field's contiguous SoA
-    // span for this lane, and the split is data-parallel and race-free.
+  // A kernel system: its access is derived from its parameter types (here, write
+  // Position, read const Velocity). `add_kernel` lets the executor slice the
+  // matched rows into work items across the pool's lanes -- that IS the
+  // parallelism. Each work item binds `q` to its own slice, so the body below
+  // runs once per lane over disjoint rows (race-free by construction).
+  schedule.add_kernel("integrate", [](Query<Position, const Velocity> q) {
+    // for_each_chunk is the SoA access shape (not the source of parallelism): a
+    // `chunk` per component whose column<I>() is that field's contiguous span
+    // over this work item's slice -- no per-row gather/scatter.
     q.for_each_chunk([](std::span<Entity>,
                         chunk<Position> pos, chunk<const Velocity> vel) {
-      auto px = pos.column<0>(); // this lane's slice of the x column (SoA)
+      auto px = pos.column<0>(); // this slice's x column (SoA)
       auto vx = vel.column<0>();
       for (std::size_t i = 0; i < px.size(); ++i)
         px[i] += vx[i];          // tight, vectorizable loop
@@ -40,7 +43,7 @@ int main() {
   });
 
   WorkerPool pool{8};                            // 8 lanes (1 = plain serial)
-  schedule.run(world, pool);                     // each system data-parallel across lanes
+  schedule.run(world, pool);                     // kernel rows fan out across lanes
 }
 ```
 
@@ -52,7 +55,7 @@ int main() {
 | Entities define groups of components | Generational handles; dynamic archetypes (add/remove at runtime) |
 | AoS → SoA automatically via reflection | `soa_storage<T>` splits each struct into per-field columns using the reflection facade |
 | Cache-friendly layout | Dense per-archetype tables + per-field columns + swap-and-pop |
-| Data-parallel execution | A persistent `WorkerPool` (resident, performance-core-pinned, spin-wait, allocation-free dispatch) splits each system's rows across lanes; systems run in dependency order derived from access **declared by their parameter types** (can't drift from actual use), so the split is race-free with no locks |
+| Data-parallel execution | A persistent `WorkerPool` (resident, performance-core-pinned, spin-wait, allocation-free dispatch) slices each `add_kernel` system's rows into work items across lanes (an imperative `add` system is one opaque item); systems run in dependency order derived from access **declared by their parameter types** (can't drift from actual use), so the split is race-free with no locks |
 | System parameters | a system's access comes from its params: `Query<const A, B>` (read A, write B), `Res<T>`/`ResMut<T>` (read/write resource), `Commands&` (deferred mutation), `WorldView` (ad-hoc **read-only** access → runs with readers, after writers). No raw `World&` — unanalyzable access is not a system parameter. No separate `reads<>/writes<>` tags |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `Res<T>`/`ResMut<T>` system params track read/write access to them |
 | Mutation via `Commands` | `cmd.spawn/destroy/add/remove/set` only record, applied at each schedule wave barrier. `Commands` only exists inside a run (mutation-outside-a-system is a *compile* error) and is non-copyable/non-movable. `spawn` returns a usable handle immediately. Mid-iteration edits are always safe. Commands record into a per-thread monotonic arena, so a steady-state tick records and flushes them **without touching the heap** (zero allocation per tick) |
@@ -76,7 +79,7 @@ ctest --test-dir build --output-on-failure
 ### Benchmarks
 
 `benchmarks/soa_bench` measures the structure-of-arrays storage against a plain
-array-of-structures baseline and the two query paths (`for_each_serial` vs
+array-of-structures baseline and the two query paths (`for_each` vs
 `for_each_chunk`) across representative workloads — integrate, multi
 read+write, single-field read, compute-bound, and the write-back cost of an
 unmarked read. It is always built `-O3 -march=native`. Override the workload

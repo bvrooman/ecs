@@ -32,7 +32,7 @@
 // A dispatch is NOT re-entrant: there is one job slot, so a nested
 // parallel_for on the same pool -- e.g. a query iterated from inside another
 // query's kernel -- throws std::logic_error rather than corrupting the
-// in-flight dispatch. Run inner iteration serially (for_each_serial / an
+// in-flight dispatch. Run inner iteration serially (for_each / an
 // ad-hoc 1-lane query) or restructure the system.
 
 #pragma once
@@ -122,7 +122,7 @@ public:
             throw std::logic_error(
                 "WorkerPool::parallel_for: nested dispatch on a pool that is "
                 "already mid-dispatch (a Query iterated inside another query's "
-                "kernel?); use for_each_serial for inner iteration");
+                "kernel?); use for_each for inner iteration");
         count_ = count;
         fn_    = +[](void* ctx, std::size_t b, std::size_t e) {
             (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(b, e);

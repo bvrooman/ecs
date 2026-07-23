@@ -32,7 +32,7 @@ concept CollectTarget = requires(T& into, T& part) {
 // reaches THIS ITEM's private partial of T -- no sharing, no atomics, no
 // pre-counting. At the wave barrier the partials are moved-appended into the
 // T resource in item-ordinal (serial-walk) order: the collected sequence is
-// identical to a serial `for_each_serial` filter at any lane count.
+// identical to a serial `for_each` filter at any lane count.
 // Precondition, checked at prepare: the world owns a T resource.
 template <CollectTarget T>
 class Collect {

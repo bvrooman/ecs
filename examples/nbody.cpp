@@ -80,7 +80,7 @@ int main() {
     // component or Res<T> is a read, a non-const component or ResMut<T> a write.
 
     // gravity: read Mass + the Gravity resource, write Velocity.
-    schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
+    schedule.add_kernel("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
         q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel, chunk<Mass const>) {
             for (auto& vy : vel.column<1>())
@@ -102,7 +102,7 @@ int main() {
 
     // reaper: age every Lifetime and destroy the expired ones (deferred).
     schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-        q.for_each_serial([&](Entity e, auto& l) {
+        q.for_each([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
         });
@@ -110,7 +110,7 @@ int main() {
 
     // integrate: read Velocity, write Position. Reads what gravity wrote, so the
     // scheduler places it on a later level automatically.
-    schedule.add("integrate", [](Query<Position, Velocity const> q) {
+    schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
@@ -135,7 +135,7 @@ int main() {
                     ResMut<SnapshotChannel<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.for_each_serial([&](auto& p, auto&) {
+                     q.for_each([&](auto& p, auto&) {
                          out.push_back({p.x, p.y, p.z});
                      });
                      ch->publish();

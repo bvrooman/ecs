@@ -9,8 +9,8 @@ scripts and the A/B driver configure them uniformly.
 
 | suite | question |
 |---|---|
-| `soa_bench` | SoA storage vs AoS baseline; `for_each_serial` vs `for_each_chunk` |
-| `gather_bench` | `for_each_parallel`'s gather/scatter cost vs component width (contrast a portable vs P2996 build) |
+| `soa_bench` | SoA storage vs AoS baseline; `for_each` vs `for_each_chunk` |
+| `gather_bench` | `for_each`'s per-row gather/scatter cost vs `for_each_chunk`, by component width (portable vs P2996) |
 | `scale_bench` | per-tick cost vs population size; where the pool pays off |
 | `schedule_bench` | tick distribution + allocs/tick of the particle schedule; lane sweep; imperative vs kernel registration |
 | `churn_bench` | structural throughput: spawn/despawn/add/remove ns/op + an emitter/reaper steady state with allocs/tick |

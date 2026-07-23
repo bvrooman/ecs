@@ -136,7 +136,7 @@ static void world_extraction_fans_out_to_two_consumers() {
               [](Query<Position const> q, ResMut<SnapshotChannel<Snapshot>> ch) {
                   Snapshot& out = ch->back();
                   out.clear();
-                  q.for_each_serial([&](auto& p) { out.push_back({p.x, p.y}); });
+                  q.for_each([&](auto& p) { out.push_back({p.x, p.y}); });
                   ch->publish();
               });
 

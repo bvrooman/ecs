@@ -67,7 +67,7 @@ static void sort_orders_rows_and_preserves_handles() {
     auto ascending = [](auto q) {
         float prev = -1.0f;
         bool ok    = true;
-        q.for_each_serial([&](Position const& p, auto const&...) {
+        q.for_each([&](Position const& p, auto const&...) {
             if (p.x < prev)
                 ok = false;
             prev = p.x;
@@ -92,7 +92,7 @@ static void sort_is_stable() {
     float prev_key = -1.0f;
     int prev_hp    = -1;
     bool ok        = true;
-    query<Position const, Health const>(w).for_each_serial(
+    query<Position const, Health const>(w).for_each(
         [&](Position const& p, Health const& h) {
             if (p.x < prev_key)
                 ok = false; // keys ascend
@@ -128,7 +128,7 @@ static void sort_after_churn() {
     float prev = -1.0f;
     bool ok    = true;
     int seen   = 0;
-    query<Position const, Health const>(w).for_each_serial(
+    query<Position const, Health const>(w).for_each(
         [&](Position const& p, Health const& h) {
             if (p.x < prev)
                 ok = false;
@@ -160,7 +160,7 @@ static void integral_keys_sort_correctly_on_both_paths() {
         int prev_hp   = -1;
         bool first    = true;
         bool ok       = true;
-        query<Position const, Health const>(w).for_each_serial(
+        query<Position const, Health const>(w).for_each(
             [&](Position const& p, Health const& h) {
                 auto const k = key(p);
                 if (!first) {
@@ -201,7 +201,7 @@ static void min_disorder_skips_small_drift() {
     });
     auto descents = [&] {
         int prev = -1, d = 0;
-        query<Position const>(w).for_each_serial([&](Position const& p) {
+        query<Position const>(w).for_each([&](Position const& p) {
             if (int(p.x) < prev)
                 ++d;
             prev = int(p.x);
@@ -367,7 +367,7 @@ static void sort_command_applies_at_barrier() {
     });
     auto descents = [&] {
         int prev = -1, d = 0;
-        query<Position const>(w).for_each_serial([&](Position const& p) {
+        query<Position const>(w).for_each([&](Position const& p) {
             if (int(p.x) < prev)
                 ++d;
             prev = int(p.x);

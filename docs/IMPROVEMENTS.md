@@ -299,7 +299,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    Design notes settled in discussion (implemented for Reduce/Extract):
    - **Fold in canonical world order** — item generation order (archetype
      ascending, rows ascending), not LPT claim order: an extraction-shaped
-     reduce reproduces exactly what a serial `for_each_serial` gather
+     reduce reproduces exactly what a serial `for_each` gather
      produces, and float folds are reproducible at any lane count.
    - **Slots persist per system and are reset, not reconstructed** (`clear()`
      when the type has one, else assign `T{}`), so vector-like partials keep
@@ -500,7 +500,8 @@ diagonal so the turnover past the physical-core count is a picture.
 ## 9. Examples & tooling (roadmap)
 
 - `examples/hello.cpp` minimal example built in CI (the README snippet is
-  untested documentation); lead the quickstart with `for_each_parallel`.
+  untested documentation); lead the quickstart with an `add_kernel` system
+  (parallelism lives on the executor, not the query).
 - De-macOS-ify `particles`/`mist` (glad instead of CGL includes) or point
   non-Mac users at the wasm build explicitly.
 - Best missing demo: fixed timestep + render interpolation (publish

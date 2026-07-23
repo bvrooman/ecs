@@ -9,8 +9,8 @@
 // Two interchangeable backends implement it: for_each_row_p2996.hpp hands
 // write-through row<C> proxies; for_each_row_portable.hpp gathers each component
 // into a local and scatters the mutable ones back. Because both expose the same
-// surface, Query drives them the same way (for_each_serial over a whole archetype,
-// for_each_parallel via for_each_chunk) and carries no backend #if of its own.
+// surface, Query drives it the same way (for_each hands the kernel one row
+// at a time) and carries no backend #if of its own.
 
 #pragma once
 
