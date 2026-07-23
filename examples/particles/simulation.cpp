@@ -11,10 +11,12 @@
 //   wave 3: integrate                            (Velocity -> Position)
 //   wave 4: extract                              (publish the draw-ready frame)
 //
-// The per-entity systems iterate with `for_each_chunk`: the executor splits each
-// system's row range across the pool's lanes (data parallelism within a system).
-// The few structural/gather systems (clock, emitter, reaper, extract) use the
-// serial `for_each_serial`. Commands flush at each wave barrier.
+// The per-entity systems are registered with `add_kernel`, so the executor
+// splits each system's row range across the pool's lanes (data parallelism
+// within a system); each work item then iterates its slice with `for_each_chunk`
+// -- the SoA access shape, not the source of the parallelism. The few
+// structural/gather systems (clock, emitter, reaper, extract) stay imperative
+// `add` and iterate serially. Commands flush at each wave barrier.
 #include "simulation.hpp"
 
 #include "ecs/ecs.hpp"
