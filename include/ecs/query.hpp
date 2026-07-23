@@ -27,9 +27,7 @@
 //
 // A Query never dispatches: both forms iterate on the calling thread. Parallelism
 // is the executor's job -- an add_kernel system slices its rows into work items
-// across the pool's lanes, each binding a Query restricted to its slice. So the
-// iteration form is purely an access shape (rows vs columns), not a parallelism or
-// safety choice.
+// across the pool's lanes, each binding a Query restricted to its slice.
 
 #pragma once
 

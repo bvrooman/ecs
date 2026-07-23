@@ -115,10 +115,9 @@ static void commands_recorded_from_parallel_kernel() {
     CHECK(w.size() == 8'192);
 }
 
-// A Query no longer dispatches -- parallelism is the executor's job, not the
-// query's -- so iterating one query inside another query's chunk kernel is just
-// nested serial iteration: no nested dispatch, no throw. The old hazard (a
-// nested dispatch on a pool already mid-dispatch) is designed out.
+// A Query never dispatches, so iterating one query inside another query's chunk
+// kernel is just nested serial iteration: the inner query walks its rows inline,
+// with no dispatch and no throw.
 static void nested_query_inside_kernel_is_serial() {
     World w;
     setup(w, [&](Commands& cmd) {
