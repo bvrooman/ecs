@@ -15,9 +15,9 @@
 #pragma once
 
 #include "../detail/move_only_function.hpp"
-#include "../query.hpp"
 #include "../world.hpp"
 #include "access.hpp"
+#include "work_item.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +28,7 @@
 #include <vector>
 
 namespace ecs::detail {
+struct WorkItem;
 
 // --- extract a callable's parameter types ----------------------------------
 // fn_traits covers the member-call-operator forms (cv/ref/noexcept variants);
@@ -109,32 +110,31 @@ void declare_component(SystemAccess& a) {
         a.writes.push_back(component_id<C>);
 }
 
-// bind() still receives the active WorkerPool (the uniform param protocol), but a
-// Query no longer uses it: a Query never dispatches -- parallelism is the
-// executor's job, not the query's -- so the pool is ignored here.
 template <class... Cs>
 struct system_param<Query<Cs...>> {
     static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-    static Query<Cs...> bind(World& w, Commands&, WorkerPool&) {
-        return Query<Cs...>(w); // a Query never dispatches; parallelism is the executor's
+    static Query<Cs...> bind(World& w, Commands&, WorkItem const& item) {
+        w.declare_archetype<Cs...>();
+        return Query<Cs...>(w, item);
     }
+    static Signature const& signature() { return Query<Cs...>::required(); }
 };
 template <class T>
 struct system_param<Res<T>> {
     static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-    static Res<T> bind(World& w, Commands&, WorkerPool&) { return Res<T>(w); }
+    static Res<T> bind(World& w, Commands&, WorkItem const&) { return Res<T>(w); }
 };
 template <class T>
 struct system_param<ResMut<T>> {
     static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-    static ResMut<T> bind(World& w, Commands&, WorkerPool&) { return ResMut<T>(w); }
+    static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
 };
 template <>
 struct system_param<Commands&> {
     // A side channel: no tracked component/resource access. We still flag it
     // so tooling can surface that the system records commands.
     static void declare(SystemAccess& a) { a.commands = true; }
-    static Commands& bind(World&, Commands& c, WorkerPool&) { return c; }
+    static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
 };
 // Read-only ad-hoc access: WorldView reads everything but writes nothing,
 // so it runs in parallel with other readers and is serialized only against
@@ -142,7 +142,7 @@ struct system_param<Commands&> {
 template <>
 struct system_param<WorldView> {
     static void declare(SystemAccess& a) { a.reads_all = true; }
-    static WorldView bind(World& w, Commands&, WorkerPool&) { return WorldView(w); }
+    static WorldView bind(World& w, Commands&, WorkItem const&) { return WorldView(w); }
 };
 // Note there is deliberately NO system_param<World&>: raw world access cannot
 // be analyzed and is dangerous under any concurrent executor, so it is not a
@@ -156,10 +156,11 @@ struct system_param<WorldView> {
 // unsupported type (Query<..> const&, T*, int, ...) fails this concept instead
 // of erroring inside an instantiation.
 template <class P>
-concept SystemParam = requires(SystemAccess& a, World& w, Commands& c, WorkerPool& p) {
-    system_param<P>::declare(a);
-    system_param<P>::bind(w, c, p);
-};
+concept SystemParam =
+    requires(SystemAccess& a, World& w, Commands& c, WorkItem const& item) {
+        system_param<P>::declare(a);
+        system_param<P>::bind(w, c, item);
+    };
 
 template <class P>
 inline constexpr bool is_query_param_v = false;
@@ -192,22 +193,6 @@ struct query_info<std::tuple<A...>> {
                 return i;
         return ~std::size_t {0};
     }();
-};
-
-// The slicing half of a kernel system's Query parameter: its required
-// signature (for match building) and the restricted bind the executor hands
-// each work item. Befriended by Query for the private pieces.
-template <class P>
-struct query_param_traits;
-template <class... Cs>
-struct query_param_traits<Query<Cs...>> {
-    static Signature const& signature() { return Query<Cs...>::required(); }
-    static Query<Cs...> bind_slice(World& w,
-                                   ArchetypeId archetype,
-                                   std::size_t b,
-                                   std::size_t e) {
-        return Query<Cs...>(w, archetype, b, e);
-    }
 };
 
 // The whole-parameter-list declare/invoke drivers live with the parameter
@@ -247,9 +232,9 @@ struct MatchCache {
     }
 };
 
-using RunFn      = move_only_function<void(World&, Commands&, WorkerPool&)>;
-using RunRangeFn = move_only_function<
-    void(World&, Commands&, ArchetypeId, std::size_t, std::size_t, std::uint32_t)>;
+using RunFn = move_only_function<void(World&, Commands&, WorkItem const&, std::uint32_t)>;
+// using RunRangeFn =
+//     move_only_function<void(World&, Commands&, WorkItem const&, std::uint32_t)>;
 using PrepareItemsFn = move_only_function<
     void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
@@ -274,7 +259,7 @@ struct SystemRecord {
     // is the item's index in generation (serial-walk) order, which indexes the
     // per-item slots of stateful parameters (Reduce/Extract -- see
     // kernel_params.hpp). Null for imperative systems.
-    RunRangeFn run_range;
+    // RunRangeFn run_range;
     // Barrier hooks for stateful kernel parameters (null when the system has
     // none): prepare runs single-threaded before the wave's dispatch with the
     // system's per-item row counts in ordinal order plus the wave context;
@@ -295,11 +280,7 @@ struct SystemRecord {
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.
     std::uint64_t every = 1;
-
-    [[nodiscard]]
-    bool is_kernel() const noexcept {
-        return static_cast<bool>(run_range);
-    }
+    bool is_kernel      = false;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {

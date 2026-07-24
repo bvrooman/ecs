@@ -33,6 +33,7 @@
 
 #include "chunk.hpp"
 #include "detail/for_each_row.hpp"
+#include "schedule/work_item.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -44,7 +45,7 @@ namespace ecs {
 
 namespace detail {
     template <class P>
-    struct query_param_traits; // schedule/system.hpp; befriended for slicing
+    struct system_param; // schedule/system.hpp; befriended for slicing
 }
 
 template <class... Cs>
@@ -53,7 +54,7 @@ class Query {
     using bare = std::remove_const_t<C>; // component type minus the read-only mark
 
     template <class P>
-    friend struct detail::query_param_traits;
+    friend struct detail::system_param;
 
     // Duplicate component types (Query<A, A> or Query<A, const A>) would hand a
     // kernel two chunks aliasing the same column -- one possibly mutable --
@@ -96,14 +97,18 @@ class Query {
     // the slicing; see schedule/executor.hpp). Every iteration method then
     // walks just that slice. Constructed only by detail::query_param_traits
     // (befriended above).
-    Query(World& world,
-          ArchetypeId slice_archetype,
-          std::size_t slice_begin,
-          std::size_t slice_end)
+    // Query(World& world,
+    //       ArchetypeId slice_archetype,
+    //       std::size_t slice_begin,
+    //       std::size_t slice_end)
+    //     : world_(world)
+    //     , slice_arch_(slice_archetype)
+    //     , slice_b_(slice_begin)
+    //     , slice_e_(slice_end) {}
+
+    Query(World& world, detail::WorkItem const& item)
         : world_(world)
-        , slice_arch_(slice_archetype)
-        , slice_b_(slice_begin)
-        , slice_e_(slice_end) {}
+        , item_(item) {}
 
     static constexpr ArchetypeId kNoSlice {0xFFFF'FFFFu};
 
@@ -111,8 +116,8 @@ public:
     // A Query is a pure iterator: it never dispatches. Parallelism is the
     // executor's job -- an add_kernel system's rows are sliced into work items
     // that each bind a restricted Query -- so a Query holds no WorkerPool.
-    explicit Query(World& world)
-        : world_(world) {}
+    // explicit Query(World& world)
+    //     : world_(world) {}
 
     // for_each: per-element iteration. Hands the kernel each entity's
     // components (a write-through proxy per component under P2996, a gathered
@@ -123,19 +128,27 @@ public:
     //   q.for_each([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
     void for_each(F&& fn) {
-        if (slice_arch_ != kNoSlice) {
-            auto& arch = *world_.archetypes()[slice_arch_];
-            detail::for_each_row(
-                fn,
-                std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
-                chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
-            return;
-        }
-        auto const& archs = world_.archetypes();
-        for (auto const ai : matches()) {
-            auto& arch      = *archs[ai];
-            auto const ents = std::span(arch.entities);
-            detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
+        // if (slice_arch_ != kNoSlice) {
+        //     auto& arch = *world_.archetypes()[slice_arch_];
+        //     detail::for_each_row(
+        //         fn,
+        //         std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
+        //         chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
+        // } else {
+        //     auto const& archs = world_.archetypes();
+        //     for (auto const ai : matches()) {
+        //         auto& arch      = *archs[ai];
+        //         auto const ents = std::span(arch.entities);
+        //         detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
+        //     }
+        // }
+        for (auto const& unit : item_.units) {
+            auto& arch = *world_.archetypes()[unit.archetype];
+            auto b     = unit.begin;
+            auto e     = unit.end;
+            detail::for_each_row(fn,
+                                 std::span(arch.entities).subspan(b, e - b),
+                                 chunk_arg<Cs>(arch, b, e)...);
         }
     }
 
@@ -156,30 +169,36 @@ public:
     //   });
     template <class F>
     void for_each_chunk(F&& fn) {
-        if (slice_arch_ != kNoSlice) {
-            auto& arch = *world_.archetypes()[slice_arch_]; // kernel-item slice
-            fn(std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
-               chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
-            return;
-        }
-        auto const& archs = world_.archetypes();
-        for (auto const ai : matches()) {
-            auto& arch          = *archs[ai];
-            std::size_t const n = arch.size();
-            if (n == 0)
-                continue; // never invoke the kernel with an empty chunk
-            fn(std::span(arch.entities), chunk_arg<Cs>(arch, 0, n)...);
+        // if (slice_arch_ != kNoSlice) {
+        //     auto& arch = *world_.archetypes()[slice_arch_]; // kernel-item slice
+        //     auto entities =
+        //         std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_);
+        //     fn(entities, chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
+        // } else {
+        //     auto const& archs = world_.archetypes();
+        //     for (auto const ai : matches()) {
+        //         auto& arch    = *archs[ai];
+        //         auto const n  = arch.size();
+        //         auto entities = std::span(arch.entities);
+        //         if (n == 0)
+        //             continue;
+        //         fn(entities, chunk_arg<Cs>(arch, 0, n)...);
+        //     }
+        // }
+        for (auto const& unit : item_.units) {
+            auto& arch    = *world_.archetypes()[unit.archetype];
+            auto b        = unit.begin;
+            auto e        = unit.end;
+            auto entities = std::span(arch.entities).subspan(b, e - b);
+            fn(entities, chunk_arg<Cs>(arch, b, e)...);
         }
     }
 
     [[nodiscard]]
     std::size_t count() const {
-        if (slice_arch_ != kNoSlice)
-            return slice_e_ - slice_b_;
-        std::size_t n = 0;
-        for (auto const ai : matches())
-            n += world_.archetypes()[ai]->size();
-        return n;
+        auto b = item_.begin;
+        auto e = item_.end;
+        return e - b;
     }
 
 private:
@@ -193,9 +212,10 @@ private:
     World& world_;
     // Slice restriction for kernel-item queries (kNoSlice = iterate all
     // matching archetypes, the normal mode).
-    ArchetypeId slice_arch_ = kNoSlice;
-    std::size_t slice_b_    = 0;
-    std::size_t slice_e_    = 0;
+    // ArchetypeId slice_arch_ = kNoSlice;
+    // std::size_t slice_b_    = 0;
+    // std::size_t slice_e_    = 0;
+    detail::WorkItem const& item_;
 };
 
 template <class... Cs>

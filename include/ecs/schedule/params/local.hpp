@@ -57,8 +57,8 @@ namespace detail {
         static constexpr bool allowed = SystemParam<P>;
         using state                   = no_state;
         static void declare(SystemAccess& a) { system_param<P>::declare(a); }
-        static P bind(state&, World& w, Commands& c, WorkerPool& pool) {
-            return system_param<P>::bind(w, c, pool);
+        static P bind(state&, World& w, Commands& c, WorkItem const& item) {
+            return system_param<P>::bind(w, c, item);
         }
     };
 
@@ -69,9 +69,7 @@ namespace detail {
             T value {};
         };
         static void declare(SystemAccess&) {} // private state: no access
-        static Local<T> bind(state& s, World&, Commands&, WorkerPool&) {
-            return Local<T>(s.value);
-        }
+        static Local<T> bind(state& s, World&, Commands&) { return Local<T>(s.value); }
     };
 
     // Pack helpers over an imperative system's full parameter tuple.
@@ -96,10 +94,12 @@ namespace detail {
                            States& st,
                            World& w,
                            Commands& c,
-                           WorkerPool& pool,
+                           WorkItem const& item,
                            std::index_sequence<I...>) {
-        fn(imperative_param<std::tuple_element_t<I, Args>>::bind(
-            std::get<I>(st), w, c, pool)...);
+        fn(imperative_param<std::tuple_element_t<I, Args>>::bind(std::get<I>(st),
+                                                                 w,
+                                                                 c,
+                                                                 item)...);
     }
 
 } // namespace detail

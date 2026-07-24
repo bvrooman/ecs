@@ -310,25 +310,30 @@ private:
                 using Info       = detail::imperative_params_info<Args>;
                 using Seq        = std::make_index_sequence<N>;
                 System sys;
-                sys.name  = std::move(name);
-                sys.phase = phase;
-                sys.once  = once;
-                sys.every = std::max<std::uint64_t>(1, every);
+                sys.name      = std::move(name);
+                sys.phase     = phase;
+                sys.once      = once;
+                sys.every     = std::max<std::uint64_t>(1, every);
+                sys.is_kernel = false;
                 detail::imperative_declare<Args>(sys.access, Seq {});
                 if constexpr (Info::any_stateful) {
                     // Per-system state (Local<T>): lives with the closure, so
                     // it persists exactly as long as the system is registered.
                     auto states = std::make_shared<typename Info::states>();
                     sys.run     = [fn = std::forward<Fn>(fn),
-                               states](World& w, Commands& c, WorkerPool& pool) mutable {
-                        detail::imperative_invoke<Args>(fn, *states, w, c, pool, Seq {});
+                               states](World& w,
+                                       Commands& c,
+                                       detail::WorkItem const& item,
+                                       uint32_t) mutable {
+                        detail::imperative_invoke<Args>(fn, *states, w, c, item, Seq {});
                     };
                 } else {
                     sys.run = [fn = std::forward<Fn>(fn)](World& w,
                                                           Commands& c,
-                                                          WorkerPool& pool) mutable {
+                                                          detail::WorkItem const& item,
+                                                          uint32_t) mutable {
                         typename Info::states st;
-                        detail::imperative_invoke<Args>(fn, st, w, c, pool, Seq {});
+                        detail::imperative_invoke<Args>(fn, st, w, c, item, Seq {});
                     };
                 }
                 return register_system(std::move(sys));
@@ -378,32 +383,23 @@ private:
                 using Info        = detail::kernel_params_info<Args>;
                 using Seq         = std::make_index_sequence<N>;
                 System sys;
-                sys.name  = std::move(name);
-                sys.phase = phase;
-                sys.every = std::max<std::uint64_t>(1, every);
+                sys.name      = std::move(name);
+                sys.phase     = phase;
+                sys.every     = std::max<std::uint64_t>(1, every);
+                sys.is_kernel = true;
                 detail::kernel_declare<Args>(sys.access, Seq {});
-                sys.query_sig = detail::query_param_traits<Q>::signature();
+                sys.query_sig = detail::system_param<Q>::signature();
 
                 // Per-item slot state for stateful parameters (Reduce/Extract),
                 // shared between the item bind and the barrier hooks; persists
                 // for the system's lifetime so slot capacity is retained.
-                auto states   = std::make_shared<typename Info::states>();
-                sys.run_range = [fn = std::forward<Fn>(fn),
-                                 states](World& w,
-                                         Commands& cmds,
-                                         ArchetypeId ai,
-                                         std::size_t b,
-                                         std::size_t e,
-                                         std::uint32_t ord) mutable {
-                    detail::kernel_invoke<Args, QI>(fn,
-                                                    *states,
-                                                    w,
-                                                    cmds,
-                                                    ai,
-                                                    b,
-                                                    e,
-                                                    ord,
-                                                    Seq {});
+                auto states = std::make_shared<typename Info::states>();
+                sys.run     = [fn = std::forward<Fn>(fn),
+                           states](World& w,
+                                   Commands& cmds,
+                                   detail::WorkItem const& item,
+                                   std::uint32_t ord) mutable {
+                    detail::kernel_invoke<Args>(fn, *states, w, cmds, item, ord, Seq {});
                 };
                 if constexpr (Info::any_stateful) {
                     sys.prepare_items = [states](World& w,

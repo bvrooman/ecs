@@ -4,6 +4,7 @@
 #include "../detail/strong_id.hpp"
 #include "executor.hpp"
 #include "system.hpp"
+#include "work_item.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -35,7 +36,7 @@ public:
             return false;
         rows.clear();
         for (auto const& it : items) {
-            if (it.system != system || it.archetype == detail::kImperative)
+            if (it.system != system)
                 continue;
             if (rows.size() <= it.ordinal)
                 rows.resize(it.ordinal + 1);
@@ -131,21 +132,20 @@ public:
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
-        auto run_one = [&](WorkItem& item, WorkerPool& p) {
+        auto run_one = [&](WorkItem& item) {
             auto const t0 = clock::now();
-            run_work_item(item, systems, world, cmds, p);
+            run_work_item(item, systems, world, cmds);
             item.busy_us = detail::elapsed_us(t0);
         };
         if (items_.size() == 1) {
-            run_one(items_[0], pool);
+            run_one(items_[0]);
         } else if (items_.size() > 1) {
-            auto next   = std::atomic {0uz};
-            auto& inner = parallel::serial_pool(); // 1-lane: dispatch-free
+            auto next = std::atomic {0uz};
             pool.parallel_for(items_.size(), 2, [&](std::size_t, std::size_t) {
                 for (auto i = next.fetch_add(1, std::memory_order_relaxed);
                      i < items_.size();
                      i = next.fetch_add(1, std::memory_order_relaxed))
-                    run_one(items_[i], inner);
+                    run_one(items_[i]);
             });
         }
         for (auto const& item : items_) {
@@ -248,50 +248,62 @@ public:
         auto& prepare = wave_.prepare_;
         auto& finish  = wave_.finish_;
         for (auto const id : due_) {
-            auto& s = systems[id];
-            // Every due system gets a prepare/finish context (even without a
-            // hook: the context is a no-op), so every due system has a result
-            // slot regardless of how many work items it contributes.
-            prepare.push_back({s.prepare_items, id, tick});
-            finish.push_back({s.finish_items, id});
-            if (!s.is_kernel()) {
-                items.push_back({id, detail::kImperative, 0, 0, 0});
-                continue;
-            }
+            auto& s             = systems[id];
             auto const& matches = s.match.resolve(world, s.query_sig);
             auto total          = 0uz;
             for (auto const ai : matches)
                 total += world.archetypes()[ai]->size();
             if (total == 0)
                 continue;
-            std::size_t const grain =
-                std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
-            std::uint32_t ordinal = 0; // generation order == serial-walk order
-            for (auto const ai : matches) {
-                auto const n = world.archetypes()[ai]->size();
-                for (std::size_t b = 0; b < n; b += grain) {
-                    auto const e = std::min(n, b + grain);
-                    items.push_back({id,
-                                     ai,
-                                     static_cast<std::uint32_t>(b),
-                                     static_cast<std::uint32_t>(e),
-                                     ordinal++});
+            // Every due system gets a prepare/finish context (even without a
+            // hook: the context is a no-op), so every due system has a result
+            // slot regardless of how many work items it contributes.
+            prepare.push_back({s.prepare_items, id, tick});
+            finish.push_back({s.finish_items, id});
+            if (!s.is_kernel) {
+                auto units = std::vector<detail::Unit> {};
+                for (auto const ai : matches) {
+                    auto const n    = world.archetypes()[ai]->size();
+                    auto const unit = detail::Unit {
+                        ai,
+                        static_cast<std::uint32_t>(0),
+                        static_cast<std::uint32_t>(n),
+                    };
+                    units.push_back(unit);
+                }
+                items.push_back({id, units, 0});
+            } else {
+                auto const grain =
+                    std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
+                std::uint32_t ordinal = 0; // generation order == serial-walk order
+                for (auto const ai : matches) {
+                    auto const n = world.archetypes()[ai]->size();
+                    for (auto b = 0; b < n; b += grain) {
+                        auto const e    = std::min(n, b + grain);
+                        auto const unit = detail::Unit {
+                            ai,
+                            static_cast<std::uint32_t>(b),
+                            static_cast<std::uint32_t>(e),
+                        };
+                        auto units = std::vector {unit};
+                        items.push_back({id, units, ordinal++});
+                    }
                 }
             }
         }
         // Longest first (imperative items -- unknown cost -- ahead of
         // everything); deterministic tie-break so a 1-lane run replays.
         std::ranges::sort(items, [](WorkItem const& a, WorkItem const& b) {
-            bool const ia = a.archetype == detail::kImperative;
-            bool const ib = b.archetype == detail::kImperative;
-            if (ia != ib)
-                return ia;
+            // bool const ia = a.archetype == detail::kImperative;
+            // bool const ib = b.archetype == detail::kImperative;
+            // if (ia != ib)
+            //     return ia;
             auto const ra = a.end - a.begin;
             auto const rb = b.end - b.begin;
             if (ra != rb)
                 return ra > rb;
-            return std::tie(a.system, a.archetype, a.begin) <
-                   std::tie(b.system, b.archetype, b.begin);
+            return std::tie(a.system, /*a.archetype,*/ a.begin) <
+                   std::tie(b.system, /*b.archetype,*/ b.begin);
         });
         return wave_;
     }

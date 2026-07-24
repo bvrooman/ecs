@@ -37,9 +37,7 @@ public:
         auto const rot          = std::uint32_t(old >> 59u);
         return (xorshifted >> rot) | (xorshifted << ((32u - rot) & 31u));
     }
-    std::uint64_t u64() noexcept {
-        return (std::uint64_t(u32()) << 32) | u32();
-    }
+    std::uint64_t u64() noexcept { return (std::uint64_t(u32()) << 32) | u32(); }
     float f32() noexcept { return float(u32() >> 8) * 0x1.0p-24f; }
     double f64() noexcept { return double(u64() >> 11) * 0x1.0p-53; }
     // Uniform integer in [0, n) (n > 0). Cheap bounded form (negligible
@@ -95,13 +93,8 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static Random bind(state& s,
-                           World&,
-                           Commands&,
-                           std::uint32_t,
-                           std::size_t,
-                           std::size_t,
-                           std::uint32_t ordinal) {
+        static Random bind(
+            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
             return Random(mix64(s.stream_base ^ ordinal), ordinal);
         }
     };

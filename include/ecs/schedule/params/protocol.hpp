@@ -98,14 +98,9 @@ namespace detail {
                             std::span<std::uint32_t const>,
                             KernelWaveContext const&) {}
         static void finish(state&, World&) {}
-        static P bind(state&,
-                      World& w,
-                      Commands& c,
-                      std::uint32_t /*archetype*/,
-                      std::size_t /*begin*/,
-                      std::size_t /*end*/,
-                      std::uint32_t /*ordinal*/) {
-            return system_param<P>::bind(w, c, parallel::serial_pool());
+        static P bind(
+            state&, World& w, Commands& c, WorkItem const& item, std::uint32_t) {
+            return system_param<P>::bind(w, c, item);
         }
     };
 
@@ -120,27 +115,6 @@ namespace detail {
             (!std::is_same_v<typename kernel_param<A>::state, no_state> || ...);
         using states = std::tuple<typename kernel_param<A>::state...>;
     };
-
-    // Bind one kernel-system parameter for a work item: the (single) Query
-    // binds restricted to the item's rows; everything else goes through the
-    // kernel_param protocol above.
-    template <class P, bool Sliced, class State>
-    decltype(auto) kernel_bind(State& s,
-                               World& w,
-                               Commands& c,
-                               ArchetypeId archetype,
-                               std::size_t b,
-                               std::size_t e,
-                               std::uint32_t ordinal) {
-        if constexpr (Sliced) {
-            return query_param_traits<P>::bind_slice(w, archetype, b, e);
-        } else {
-            // Non-query parameters take the archetype as an ignored placeholder
-            // slot in the uniform bind signature (see the `/*archetype*/` args
-            // above) -- pass the raw index; only the sliced query path uses it.
-            return kernel_param<P>::bind(s, w, c, archetype.value, b, e, ordinal);
-        }
-    }
 
     // Whole-parameter-list drivers, folded over the kernel's Args tuple.
     // Plain function templates (not nested generic lambdas): they are called
@@ -164,8 +138,10 @@ namespace detail {
                             std::span<std::uint32_t const> rows,
                             KernelWaveContext const& ctx,
                             std::index_sequence<I...>) {
-        (kernel_param<std::tuple_element_t<I, Args>>::prepare(
-             std::get<I>(st), w, rows, ctx),
+        (kernel_param<std::tuple_element_t<I, Args>>::prepare(std::get<I>(st),
+                                                              w,
+                                                              rows,
+                                                              ctx),
          ...);
     }
     template <class Args, class States, std::size_t... I>
@@ -173,18 +149,40 @@ namespace detail {
         (kernel_param<std::tuple_element_t<I, Args>>::finish(std::get<I>(st), w), ...);
     }
 
-    template <class Args, std::size_t QI, class Fn, class States, std::size_t... I>
+    template <class P>
+    struct KernelBind {
+        template <class State>
+        static decltype(auto) bind(State& s,
+                                   World& w,
+                                   Commands& c,
+                                   WorkItem const& item,
+                                   std::uint32_t ordinal) {
+
+            return kernel_param<P>::bind(s, w, c, item, ordinal);
+        }
+    };
+    template <class... Cs>
+    struct KernelBind<Query<Cs...>> {
+        template <class State>
+        static decltype(auto) bind(
+            State&, World& w, Commands& c, WorkItem const& item, std::uint32_t) {
+            return system_param<Query<Cs...>>::bind(w, c, item);
+        }
+    };
+
+    template <class Args, class Fn, class States, std::size_t... I>
     void kernel_invoke(Fn& fn,
                        States& st,
                        World& w,
                        Commands& c,
-                       ArchetypeId archetype,
-                       std::size_t b,
-                       std::size_t e,
+                       WorkItem const& item,
                        std::uint32_t ordinal,
                        std::index_sequence<I...>) {
-        fn(kernel_bind<std::tuple_element_t<I, Args>, I == QI>(
-            std::get<I>(st), w, c, archetype, b, e, ordinal)...);
+        fn(KernelBind<std::tuple_element_t<I, Args>>::bind(std::get<I>(st),
+                                                           w,
+                                                           c,
+                                                           item,
+                                                           ordinal)...);
     }
 
 } // namespace detail
