@@ -80,7 +80,7 @@ static void sparse(char const* label, std::size_t N, int R) {
         }
     });
     double const ch  = min_ns_per(N, R, [&] {
-        query<W, Vel const>(w).for_each_chunk([](std::span<Entity>,
+        w.for_each_chunk<W, Vel const>([](std::span<Entity>,
                                                  chunk<W> p,
                                                  chunk<Vel const> v) {
             auto a  = p.template column<0>();
@@ -90,7 +90,7 @@ static void sparse(char const* label, std::size_t N, int R) {
         });
     });
     double const par = min_ns_per(N, R, [&] {
-        Query<W, Vel const>(w).for_each([](auto& p, auto& v) {
+        w.for_each<W, Vel const>([](auto& p, auto& v) {
             p.a += v.x;
         });
     });
@@ -122,7 +122,7 @@ int main() {
                 cmd.spawn(W16 {}, Vel {0.1f, 0.2f, 0.3f});
         });
         double const ch  = min_ns_per(N, R, [&] {
-            query<W16, Vel const>(w).for_each_chunk([](std::span<Entity>,
+            w.for_each_chunk<W16, Vel const>([](std::span<Entity>,
                                                        chunk<W16> p,
                                                        chunk<Vel const> v) {
                 [&]<std::size_t... I>(std::index_sequence<I...>) {
@@ -134,7 +134,7 @@ int main() {
             });
         });
         double const par = min_ns_per(N, R, [&] {
-            Query<W16, Vel const>(w).for_each([](auto& p, auto& v) {
+            w.for_each<W16, Vel const>([](auto& p, auto& v) {
                 p.a += v.x;
                 p.b += v.x;
                 p.c += v.x;
@@ -165,7 +165,7 @@ int main() {
                 cmd.spawn(Named {big, float(i)}, Vel {0.1f, 0.2f, 0.3f});
         });
         double const ch  = min_ns_per(N, R, [&] {
-            query<Named, Vel const>(w).for_each_chunk([](std::span<Entity>,
+            w.for_each_chunk<Named, Vel const>([](std::span<Entity>,
                                                          chunk<Named> p,
                                                          chunk<Vel const> v) {
                 auto x =
@@ -176,7 +176,7 @@ int main() {
             });
         });
         double const par = min_ns_per(N, R, [&] {
-            Query<Named, Vel const>(w).for_each([](auto& p, auto& v) {
+            w.for_each<Named, Vel const>([](auto& p, auto& v) {
                 p.v += v.x;
             });
         });

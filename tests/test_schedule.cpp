@@ -102,7 +102,7 @@ static void worldview_reads_all_parallel_but_after_writers() {
         // system declares itself exclusive via add_dynamic.
         SystemAccess excl;
         excl.exclusive = true;
-        sched.add_dynamic("exclusive", excl, [](World&, Commands&, WorkerPool&) {});
+        sched.add_dynamic("exclusive", excl, [](World&, Commands&, detail::WorkItem const&) {});
         CHECK(sched.level_count() == 2); // exclusive conflicts with all
     }
 }

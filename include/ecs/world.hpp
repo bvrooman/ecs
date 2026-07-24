@@ -13,6 +13,10 @@
 #include "entity.hpp"
 #include "resource.hpp"
 #include "world_id.hpp"
+// chunk / for_each_row power World's ad-hoc read iteration (count / for_each /
+// for_each_chunk), defined at the end of this header.
+#include "chunk.hpp"
+#include "detail/for_each_row.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -23,6 +27,7 @@
 #include <mutex>
 #include <numeric>
 #include <ranges>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -186,6 +191,29 @@ public:
         auto const& rec = entities_[e];
         return archetypes_[rec.archetype]->column<C>().store.gather(rec.row);
     }
+
+    // --- ad-hoc read iteration --------------------------------------------
+    // Walk every archetype matching {Cs...} on the CALLING THREAD -- the read /
+    // verification counterpart to a system's work-item-bound Query, for setup,
+    // tests, and diagnostics. There is no standalone Query; iteration inside a
+    // real system is through the Query the executor binds.
+    //
+    //   count<Cs...>()               row tally across matching archetypes
+    //   for_each<Cs...>(fn)          row-shaped: one write-through proxy per
+    //                                component (const C -> read-only), plus an
+    //                                optional leading Entity
+    //   for_each_chunk<Cs...>(fn)    SoA: a `chunk` per component
+    //
+    // Defined out-of-class at the end of this header (they need the chunk /
+    // for_each_row machinery, and count() must see matching_archetypes()' deduced
+    // return type, which is complete only after the class).
+    template <class... Cs>
+    [[nodiscard]]
+    std::size_t count() const;
+    template <class... Cs, class F>
+    void for_each(F&& fn);
+    template <class... Cs, class F>
+    void for_each_chunk(F&& fn);
 
     // --- resources (singletons not owned by any entity) -------------------
     // Set up resources before running a schedule; like structural edits, do not
@@ -664,5 +692,40 @@ public:
 private:
     T* ptr_;
 };
+
+// --- ad-hoc read iteration: definitions (declared on World above) ------------
+// Out-of-class so count() sees matching_archetypes()' deduced return type; the
+// chunk / for_each_row machinery is included at the top of this header.
+template <class... Cs>
+std::size_t World::count() const {
+    std::size_t n = 0;
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...}))
+        n += archetypes_[ai]->size();
+    return n;
+}
+template <class... Cs, class F>
+void World::for_each(F&& fn) {
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+        auto& arch    = *archetypes_[ai];
+        auto entities = std::span(arch.entities);
+        detail::for_each_row(
+            fn, entities,
+            chunk<Cs>(arch.column<std::remove_const_t<Cs>>().store, 0, arch.size())...);
+    }
+}
+template <class... Cs, class F>
+void World::for_each_chunk(F&& fn) {
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+        auto& arch = *archetypes_[ai];
+        if (arch.size() == 0)
+            continue;
+        auto entities = std::span(arch.entities);
+        fn(entities,
+           chunk<Cs>(arch.column<std::remove_const_t<Cs>>().store, 0, arch.size())...);
+    }
+}
 
 } // namespace ecs

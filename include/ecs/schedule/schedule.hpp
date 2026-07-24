@@ -28,6 +28,7 @@
 
 #include "../detail/id_vector.hpp"
 #include "../event/emitter.hpp"
+#include "../parallel/worker_pool.hpp"
 #include "../query.hpp"
 #include "../world.hpp"
 #include "access.hpp"
@@ -122,7 +123,7 @@ public:
     // Register a system whose access is *declared* (a runtime SystemAccess)
     // rather than derived from C++ parameter types -- the entry point for a
     // JS-defined system. `run` is the type-erased body (typically a runtime query
-    // that dispatches per chunk) with the usual (World&, Commands&, WorkerPool&)
+    // that dispatches per chunk) with the usual (World&, Commands&, WorkItem const&)
     // signature. It conflicts and levels against every other system by `access`
     // exactly like a native one, so JS and C++ systems share one wave plan.
     template <class Run>
@@ -278,7 +279,7 @@ private:
     // whether a one-shot `once` is possible.
     //
     // The requirements are phrased as self-gating predicates (params_allowed /
-    // one_query / has_res_mut), not inline conditions -- load-bearing, because a
+    // at_most_one_query / has_res_mut), not inline conditions -- load-bearing, because a
     // check over system_args_t<Fn> cannot even be NAMED for a non-introspectable
     // Fn (that alias is ill-formed), so it must gate that instantiation itself.
     // Each returns its deferring value when Fn is not introspectable, so the
@@ -327,8 +328,7 @@ private:
         }
 
         auto states = std::make_shared<typename Info::states>();
-
-        sys.run = [fn = std::forward<Fn>(fn),
+        sys.run     = [fn = std::forward<Fn>(fn),
                    states](World& w, Commands& c, detail::WorkItem const& item) mutable {
             detail::invoke<Param, Args>(fn, *states, w, c, item, Seq {});
         };
@@ -346,9 +346,10 @@ private:
     }
 
     // Self-gating checks used by the static_asserts and build guards below. Each
-    // returns its DEFERRING value when Fn is not introspectable (params/one_query
-    // -> true, has_res_mut -> false), so that case yields the IntrospectableSystem
-    // assert alone; otherwise it reports the real check over the argument list.
+    // returns its DEFERRING value when Fn is not introspectable (params /
+    // at_most_one_query -> true, has_res_mut -> false), so that case yields the
+    // IntrospectableSystem assert alone; otherwise it reports the real check over
+    // the argument list.
     template <template <class> class Param, class Fn>
     static consteval bool params_allowed() {
         if constexpr (detail::IntrospectableSystem<Fn>)
@@ -357,9 +358,9 @@ private:
             return true;
     }
     template <class Fn>
-    static consteval bool one_query() {
+    static consteval bool at_most_one_query() {
         if constexpr (detail::IntrospectableSystem<Fn>)
-            return detail::query_info<detail::system_args_t<Fn>>::count == 1;
+            return detail::query_info<detail::system_args_t<Fn>>::count <= 1;
         else
             return true;
     }
@@ -382,6 +383,13 @@ private:
                       "one non-template call operator -- a generic (auto-parameter) "
                       "lambda cannot work here, because the parameter TYPES are what "
                       "declare the system's access");
+        static_assert(at_most_one_query<Fn>(),
+                      "a system may take AT MOST ONE Query<Cs...> parameter -- the "
+                      "work-item model binds a system's one query to its one work "
+                      "item, and kernels already require exactly one. For "
+                      "pairwise/neighbor work, build a spatial structure with "
+                      "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
+                      "several component sets, use WorldView");
         static_assert(params_allowed<ParamI, Fn>(),
                       "unsupported system parameter type: a system may take "
                       "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
@@ -391,7 +399,8 @@ private:
                       "primitives (Reduce/Extract/Collect/EventWriter/"
                       "EventReader/Scratch/Random) are kernel-only (register "
                       "with add_kernel)");
-        if constexpr (detail::IntrospectableSystem<Fn> && params_allowed<ParamI, Fn>())
+        if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
+                      params_allowed<ParamI, Fn>())
             return build_system<ParamI>(std::move(name),
                                         std::forward<Fn>(fn),
                                         once,
@@ -411,10 +420,13 @@ private:
                       "one non-template call operator -- a generic (auto-parameter) "
                       "lambda cannot work here, because the parameter TYPES are what "
                       "declare the system's access");
-        static_assert(one_query<Fn>(),
-                      "add_kernel: the system must take exactly ONE Query<Cs...> "
-                      "parameter -- it is the iteration the executor slices into "
-                      "work items (use add() for zero or several queries)");
+        static_assert(at_most_one_query<Fn>(),
+                      "a system may take AT MOST ONE Query<Cs...> parameter -- the "
+                      "work-item model binds a system's one query to its one work "
+                      "item, and kernels already require exactly one. For "
+                      "pairwise/neighbor work, build a spatial structure with "
+                      "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
+                      "several component sets, use WorldView");
         static_assert(!has_res_mut<Fn>(),
                       "add_kernel: ResMut<T> is not allowed in a kernel system -- "
                       "its work items run concurrently, so writes through ResMut "
@@ -430,7 +442,7 @@ private:
                       "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
                       "Random (Local<T> is imperative-only: per-system state has "
                       "no race-free meaning across a kernel's concurrent items)");
-        if constexpr (detail::IntrospectableSystem<Fn> && one_query<Fn>() &&
+        if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
                       !has_res_mut<Fn>() && params_allowed<ParamK, Fn>())
             return build_system<ParamK>(std::move(name),
                                         std::forward<Fn>(fn),
@@ -461,9 +473,6 @@ private:
             events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        // Per-system rollup, in due order. The result vectors are indexed by
-        // SystemId.value and cover every due system (zeroed slots for those
-        // with no work items), so a plain [] never misses.
         auto const& result = wave.result();
         for (auto id : plan) {
             auto const fit  = flush_attrib_.find(id);

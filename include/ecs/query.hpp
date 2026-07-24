@@ -122,9 +122,7 @@ public:
 
     [[nodiscard]]
     std::size_t count() const {
-        auto b = item_.begin;
-        auto e = item_.end;
-        return e - b;
+        return item_.end - item_.begin;
     }
 
 private:
@@ -138,11 +136,6 @@ private:
     World& world_;
     detail::WorkItem const& item_;
 };
-
-template <class... Cs>
-Query<Cs...> query(World& world) {
-    return Query<Cs...>(world);
-}
 
 // A read-only view of the world for systems that need ad-hoc reads (size, get,
 // has, alive, queries) beyond what Query/Res express. Everything it exposes is
@@ -172,10 +165,20 @@ public:
     auto get(Entity const e) const {
         return world_->get<C>(e);
     }
-    // Read-only query: every component is iterated by const reference.
+    // Read-only iteration: every component is forced const, so nothing can be
+    // written through the view. Delegates to World's ad-hoc read iteration.
     template <class... Cs>
-    auto query() const {
-        return Query<std::remove_const_t<Cs> const...>(*world_);
+    [[nodiscard]]
+    std::size_t count() const {
+        return world_->count<std::remove_const_t<Cs>...>();
+    }
+    template <class... Cs, class F>
+    void for_each(F&& fn) const {
+        world_->for_each<std::remove_const_t<Cs> const...>(fn);
+    }
+    template <class... Cs, class F>
+    void for_each_chunk(F&& fn) const {
+        world_->for_each_chunk<std::remove_const_t<Cs> const...>(fn);
     }
 
 private:

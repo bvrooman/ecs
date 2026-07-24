@@ -97,14 +97,14 @@ int main(int argc, char** argv) {
 
     // 1/2) integrate: write Pos, read Vel ------------------------------------
     bench::run("for_each integrate (1 RW, 1 RO)", N, [&] {
-        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
+        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
         });
     });
     bench::run("for_each_chunk integrate (1 RW, 1 RO)", N, [&] {
-        query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
+        w.for_each_chunk<Pos, Vel const>([](std::span<Entity>,
                                                    chunk<Pos> p,
                                                    chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
 
     // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
     bench::run("for_each multi (2 RW, 1 RO)", N, [&] {
-        query<Pos, Vel, Acc const>(w).for_each([](auto& p, auto& v, auto& a) {
+        w.for_each<Pos, Vel, Acc const>([](auto& p, auto& v, auto& a) {
             v.x += a.x;
             v.y += a.y;
             v.z += a.z;
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
         });
     });
     bench::run("for_each_chunk multi (2 RW, 1 RO)", N, [&] {
-        query<Pos, Vel, Acc const>(w).for_each_chunk(
+        w.for_each_chunk<Pos, Vel, Acc const>(
             [](std::span<Entity>, chunk<Pos> p, chunk<Vel> v, chunk<Acc const> a) {
                 auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
                 auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
     // 6) single-field read: sum only Pos.x -----------------------------------
     bench::run("for_each_chunk sum 1 field (SoA)", N, [&] {
         float s = 0;
-        query<Pos const>(w).for_each_chunk([&](std::span<Entity>, chunk<Pos const> p) {
+        w.for_each_chunk<Pos const>([&](std::span<Entity>, chunk<Pos const> p) {
             for (float x : p.column<0>())
                 s += x;
         });
@@ -175,14 +175,14 @@ int main(int argc, char** argv) {
 
     // 7/8) compute-bound: many FLOPs per entity ------------------------------
     bench::run("for_each compute-bound", N, [&] {
-        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
+        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
             p.x = heavy(p.x, v.x, v.y);
             p.y = heavy(p.y, v.y, v.z);
             p.z = heavy(p.z, v.z, v.x);
         });
     });
     bench::run("for_each_chunk compute-bound", N, [&] {
-        query<Pos, Vel const>(w).for_each_chunk([](std::span<Entity>,
+        w.for_each_chunk<Pos, Vel const>([](std::span<Entity>,
                                                    chunk<Pos> p,
                                                    chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
@@ -197,14 +197,14 @@ int main(int argc, char** argv) {
 
     // 9) write-back cost: read Vel but leave it non-const (scattered back) ----
     bench::run("for_each read Vel NON-const (write-back)", N, [&] {
-        query<Pos, Vel>(w).for_each([](auto& p, auto& v) {
+        w.for_each<Pos, Vel>([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
         });
     });
     bench::run("for_each read Vel const (no write-back)", N, [&] {
-        query<Pos, Vel const>(w).for_each([](auto& p, auto& v) {
+        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;

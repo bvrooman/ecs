@@ -27,10 +27,10 @@ static void create_and_query() {
     CHECK(w.has<Velocity>(a));
     CHECK(!w.has<Velocity>(b));
     CHECK(w.has<Frozen>(c));
-    CHECK((query<Position, Velocity>(w).count() == 2));
+    CHECK((w.count<Position, Velocity>() == 2));
 
     // Value mutation through a query is not a structural change -- needs no Commands.
-    query<Position, Velocity>(w).for_each([](auto& p, auto& v) {
+    w.for_each<Position, Velocity>([](auto& p, auto& v) {
         p.x += v.dx;
         p.y += v.dy;
     });
@@ -43,17 +43,17 @@ static void add_remove_moves_archetype_preserving_data() {
     World w;
     Entity b = Entity::null();
     setup(w, [&](Commands& cmd) { b = cmd.spawn(Position {10, 20}); });
-    CHECK((query<Position, Velocity>(w).count() == 0));
+    CHECK((w.count<Position, Velocity>() == 0));
 
     setup(w, [&](Commands& cmd) { cmd.add<Velocity>(b, Velocity {3, 3}); });
     CHECK(w.has<Velocity>(b));
     CHECK(w.get<Position>(b).y == 20.f); // Position survived the move
-    CHECK((query<Position, Velocity>(w).count() == 1));
+    CHECK((w.count<Position, Velocity>() == 1));
 
     setup(w, [&](Commands& cmd) { cmd.remove<Velocity>(b); });
     CHECK(!w.has<Velocity>(b));
     CHECK(w.get<Position>(b).x == 10.f);
-    CHECK((query<Position, Velocity>(w).count() == 0));
+    CHECK((w.count<Position, Velocity>() == 0));
 }
 
 static void destroy_and_generation_reuse() {
@@ -82,13 +82,13 @@ static void soa_fast_path() {
         for (int i = 0; i < 4; ++i)
             cmd.spawn(Position {float(i), 0});
     });
-    query<Position>(w).for_each_chunk([](std::span<Entity>, chunk<Position> pos) {
+    w.for_each_chunk<Position>([](std::span<Entity>, chunk<Position> pos) {
         for (auto& x : pos.column<0>())
             x += 100.f;
     });
     // every Position.x was bumped by 100 via a contiguous column loop
     std::size_t seen = 0;
-    query<Position>(w).for_each([&](auto& p) {
+    w.for_each<Position>([&](auto& p) {
         CHECK(p.x >= 100.f);
         ++seen;
     });
@@ -104,25 +104,25 @@ static void for_each_rows() {
             cmd.spawn(Position {float(i), 0.f}, Velocity {1.f, 2.f});
     });
     // for_each: named proxy fields write through, no manual loop.
-    query<Position, Velocity const>(w).for_each([](auto& p, auto& v) {
+    w.for_each<Position, Velocity const>([](auto& p, auto& v) {
         p.x += v.dx; // +1
         p.y += v.dy; // +2
     });
     // for_each: same ergonomics, serial path (read here).
     std::size_t seen = 0;
-    query<Position const>(w).for_each([&](auto& p) {
+    w.for_each<Position const>([&](auto& p) {
         CHECK(p.y == 2.f); // 0 + dy
         ++seen;
     });
     CHECK(seen == 4);
     // entity form: a leading Entity parameter is detected and passed, both methods.
     std::size_t es = 0, ep = 0;
-    query<Position const>(w).for_each([&](Entity e, auto& p) {
+    w.for_each<Position const>([&](Entity e, auto& p) {
         CHECK(w.alive(e));
         (void)p;
         ++es;
     });
-    query<Position const>(w).for_each([&](Entity e, auto& p) {
+    w.for_each<Position const>([&](Entity e, auto& p) {
         CHECK(w.alive(e));
         (void)p;
         ++ep;
@@ -137,7 +137,7 @@ static void const_query_marks_read_only() {
     Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
     // Velocity read-only (const), Position mutable: only Position is written back.
-    query<Velocity const, Position>(w).for_each([](auto& v, auto& p) {
+    w.for_each<Velocity const, Position>([](auto& v, auto& p) {
         p.x += v.dx;
     });
     CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
@@ -148,7 +148,7 @@ static void const_query_marks_read_only() {
     // the incremental spawn, so accumulate across chunks.)
     float sum_x      = 0;
     std::size_t seen = 0;
-    query<Position const>(w).for_each_chunk([&](std::span<Entity>,
+    w.for_each_chunk<Position const>([&](std::span<Entity>,
                                                 chunk<Position const> pos) {
         for (float x : pos.column<0>()) { // span<const float>
             sum_x += x;
@@ -166,7 +166,7 @@ static void spawn_goes_directly_to_final_archetype() {
             cmd.spawn(Position {float(i), 0}, Velocity {1, 1});
     });
     CHECK(w.size() == 100);
-    CHECK((query<Position, Velocity>(w).count() == 100));
+    CHECK((w.count<Position, Velocity>() == 100));
     // Only the empty archetype and {Position, Velocity} exist -- spawning does not
     // pass through (and leave behind) an empty intermediate {Position} archetype.
     CHECK(std::as_const(w).archetypes().size() == 2);
@@ -175,12 +175,12 @@ static void spawn_goes_directly_to_final_archetype() {
 static void query_cache_sees_archetypes_created_after_first_query() {
     World w;
     setup(w, [&](Commands& cmd) { cmd.spawn(Position {1, 1}); }); // {Position}
-    CHECK((query<Position>(w).count() == 1)); // builds the cache for {Position}
+    CHECK((w.count<Position>() == 1)); // builds the cache for {Position}
 
     // A new archetype {Position, Velocity} created later must enter the cache.
     setup(w, [&](Commands& cmd) { cmd.spawn(Position {2, 2}, Velocity {1, 1}); });
-    CHECK((query<Position>(w).count() == 2));
-    CHECK((query<Position, Velocity>(w).count() == 1));
+    CHECK((w.count<Position>() == 2));
+    CHECK((w.count<Position, Velocity>() == 1));
 }
 
 // Repeated add/remove of the same component cycles an entity between two

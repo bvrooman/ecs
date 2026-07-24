@@ -47,7 +47,7 @@ void run_setup(World& w, auto fn) {
 std::vector<Entity> live_entities(World& w) {
     std::vector<Entity> es;
     es.reserve(w.size());
-    query<P const>(w).for_each_chunk(
+    w.for_each_chunk<P const>(
         [&](std::span<Entity> ids, chunk<P const>) {
             es.insert(es.end(), ids.begin(), ids.end());
         });

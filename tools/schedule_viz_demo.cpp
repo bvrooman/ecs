@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     excl.exclusive = true;
     sched.add_dynamic("debug_overlay",
                       excl,
-                      [](ecs::World&, ecs::Commands&, ecs::WorkerPool&) {},
+                      [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},
                       /*phase=*/1); // exclusive -> runs alone
 
     // Component/resource names come from reflection at build time (this target

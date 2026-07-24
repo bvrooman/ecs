@@ -42,7 +42,7 @@ static void destroy_during_iteration_is_safe() {
     });
 
     setup(w, [&](WorldView view, Commands& cmd) {
-        view.query<Position, Doomed>().for_each([&](Entity e, auto&, auto&) {
+        view.for_each<Position, Doomed>([&](Entity e, auto&, auto&) {
             cmd.destroy(e);
         });
         CHECK(view.size() == 10); // nothing applied yet (still recording)
@@ -156,15 +156,15 @@ static void bulk_spawn_loop() {
             cmd.spawn(Position {float(i), -1});
     });
     CHECK(w.size() == 1050);
-    CHECK((query<Position, Velocity>(w).count() == 1000));
-    CHECK((query<Position>(w).count() == 1050));
+    CHECK((w.count<Position, Velocity>() == 1000));
+    CHECK((w.count<Position>() == 1050));
 
     CHECK(es.size() == 1000);
     CHECK(w.alive(es.front()) && w.alive(es.back()));
     CHECK(w.get<Position>(es[500]).x == 500.f);
 
     double sum_x = 0;
-    query<Position, Velocity>(w).for_each([&](auto& p, auto&) { sum_x += p.x; });
+    w.for_each<Position, Velocity>([&](auto& p, auto&) { sum_x += p.x; });
     CHECK(sum_x == double(999) * 1000 / 2); // 0+1+...+999
 }
 
@@ -215,7 +215,7 @@ static void concurrent_reserve_and_followup_edits() {
     sched.run(w, pool);
     std::size_t const total = std::size_t(kSystems * kPerSystem);
     CHECK(w.size() == total);
-    CHECK((query<Position, Velocity>(w).count() == total)); // no lost edits
+    CHECK((w.count<Position, Velocity>() == total)); // no lost edits
 }
 
 static void add_once_runs_once_then_removed() {
