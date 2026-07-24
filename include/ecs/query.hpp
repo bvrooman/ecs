@@ -97,15 +97,6 @@ class Query {
     // the slicing; see schedule/executor.hpp). Every iteration method then
     // walks just that slice. Constructed only by detail::query_param_traits
     // (befriended above).
-    // Query(World& world,
-    //       ArchetypeId slice_archetype,
-    //       std::size_t slice_begin,
-    //       std::size_t slice_end)
-    //     : world_(world)
-    //     , slice_arch_(slice_archetype)
-    //     , slice_b_(slice_begin)
-    //     , slice_e_(slice_end) {}
-
     Query(World& world, detail::WorkItem const& item)
         : world_(world)
         , item_(item) {}
