@@ -80,12 +80,6 @@ class Query {
         , item_(item) {}
 
 public:
-    // A Query is a pure iterator: it never dispatches. Parallelism is the
-    // executor's job -- an add_kernel system's rows are sliced into work items
-    // that each bind a restricted Query -- so a Query holds no WorkerPool.
-    // explicit Query(World& world)
-    //     : world_(world) {}
-
     // for_each: per-element iteration. Hands the kernel each entity's
     // components (a write-through proxy per component under P2996, a gathered
     // value on the portable backend, accessed as p.x), plus an optional leading

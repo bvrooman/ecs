@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "parallel.hpp"
 #include "protocol.hpp"
 #include <cstddef>
 #include <cstdint>

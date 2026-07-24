@@ -47,21 +47,6 @@ private:
 
 namespace detail {
 
-    // The imperative-parameter protocol: how each parameter type of an
-    // add()/add_once() system declares access, owns per-system state, and
-    // binds for a run. The primary template covers every ordinary system
-    // parameter (stateless, binds through system_param); Local<T> is the one
-    // stateful face.
-    template <class P>
-    struct imperative_param {
-        static constexpr bool allowed = SystemParam<P>;
-        using state                   = no_state;
-        static void declare(SystemAccess& a) { system_param<P>::declare(a); }
-        static P bind(state&, World& w, Commands& c, WorkItem const& item) {
-            return system_param<P>::bind(w, c, item);
-        }
-    };
-
     template <class T>
     struct imperative_param<Local<T>> {
         static constexpr bool allowed = true;
@@ -69,38 +54,15 @@ namespace detail {
             T value {};
         };
         static void declare(SystemAccess&) {} // private state: no access
-        static Local<T> bind(state& s, World&, Commands&) { return Local<T>(s.value); }
+        static void prepare(state&,
+                            World&,
+                            std::span<std::uint32_t const>,
+                            KernelWaveContext const&) {}
+        static void finish(state&, World&) {}
+        static Local<T> bind(state& s, World&, Commands&, WorkItem const&) {
+            return Local<T>(s.value);
+        }
     };
-
-    // Pack helpers over an imperative system's full parameter tuple.
-    template <class Args>
-    struct imperative_params_info;
-    template <class... A>
-    struct imperative_params_info<std::tuple<A...>> {
-        static constexpr bool all_allowed = (imperative_param<A>::allowed && ...);
-        static constexpr bool any_stateful =
-            (!std::is_same_v<typename imperative_param<A>::state, no_state> || ...);
-        using states = std::tuple<typename imperative_param<A>::state...>;
-    };
-
-    // Whole-parameter-list drivers, folded over the system's Args tuple
-    // (plain function templates, like the kernel drivers in protocol.hpp).
-    template <class Args, std::size_t... I>
-    void imperative_declare(SystemAccess& a, std::index_sequence<I...>) {
-        (imperative_param<std::tuple_element_t<I, Args>>::declare(a), ...);
-    }
-    template <class Args, class Fn, class States, std::size_t... I>
-    void imperative_invoke(Fn& fn,
-                           States& st,
-                           World& w,
-                           Commands& c,
-                           WorkItem const& item,
-                           std::index_sequence<I...>) {
-        fn(imperative_param<std::tuple_element_t<I, Args>>::bind(std::get<I>(st),
-                                                                 w,
-                                                                 c,
-                                                                 item)...);
-    }
 
 } // namespace detail
 } // namespace ecs

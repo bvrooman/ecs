@@ -115,7 +115,7 @@ public:
         normalize();
     }
 
-    static constexpr Signature none() noexcept {
+    static constexpr Signature null() noexcept {
         return Signature {{component_id<Dummy>}};
     }
 
@@ -216,7 +216,7 @@ public:
     }
 
 private:
-    // Dummy component to initialize empty Signature.
+    // Dummy component to initialize null (unmatchable) Signature.
     struct Dummy {};
 
     // FNV-1a over the ids. Accumulate in an explicit 64-bit type: the offset
@@ -241,7 +241,7 @@ private:
 };
 
 struct Archetype {
-    Signature signature = Signature::none();
+    Signature signature;
     std::vector<Entity> entities; // row -> entity
     // One column per signature entry, in signature (sorted-id) order, indexed
     // by ColumnId. A flat parallel vector instead of a hash map: lookup is a

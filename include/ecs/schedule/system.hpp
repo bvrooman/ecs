@@ -176,6 +176,9 @@ inline constexpr bool any_res_mut_v = false;
 template <class... A>
 inline constexpr bool any_res_mut_v<std::tuple<A...>> = (is_res_mut_v<A> || ...);
 
+template <class P>
+concept KernelParam = SystemParam<P> && !is_res_mut_v<P>;
+
 // How many parameters of Args are Query<Cs...>, and where the first one sits.
 // A kernel system must have exactly one: it is the iteration the executor
 // slices into work items.
@@ -192,6 +195,7 @@ struct query_info<std::tuple<A...>> {
                 return i;
         return ~std::size_t {0};
     }();
+    static constexpr bool has_query = index != ~std::size_t {0};
 };
 
 // The whole-parameter-list declare/invoke drivers live with the parameter
@@ -248,7 +252,7 @@ struct SystemRecord {
     RunFn run;
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
-    Signature query_sig = Signature::none();
+    Signature query_sig = Signature::null();
     MatchCache match; // kernel systems: memoized query_sig match list
     Phase phase = 0;
     Level level = 0;
