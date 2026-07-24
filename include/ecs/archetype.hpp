@@ -115,7 +115,13 @@ public:
         normalize();
     }
 
-    static constexpr Signature null() noexcept {
+    // The unmatchable sentinel: a signature holding a private Dummy component id
+    // that no real query carries, so it includes() no archetype (an *empty*
+    // signature would match every archetype instead). Not constexpr -- it reads
+    // component_id<Dummy>, an inline variable minted at runtime by
+    // ComponentId::next(), so this can never be constant-evaluated. Marking it
+    // constexpr is ill-formed (Clang rejects it under -Winvalid-constexpr).
+    static Signature null() noexcept {
         return Signature {{component_id<Dummy>}};
     }
 
