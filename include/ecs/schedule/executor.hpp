@@ -32,22 +32,4 @@
 #include <tuple>
 #include <vector>
 
-namespace ecs::detail {
-
-inline constexpr ArchetypeId kImperative {0xFFFF'FFFFu};
-
-using SystemVector = IdVector<SystemId, SystemRecord>;
-
-// Run one item. An imperative system receives `pool` -- the caller decides
-// whether that is the real pool (lone-item shortcut) or the shared 1-lane one
-// (inside a multi-item dispatch, where a nested dispatch would be an error).
-inline void run_work_item(WorkItem const& it,
-                          SystemVector& systems,
-                          World& world,
-                          Commands& cmds) {
-    auto& system       = systems[it.system];
-    recording_source() = system.id;
-    system.run(world, cmds, it, it.ordinal);
-}
-
-} // namespace ecs::detail
+namespace ecs::detail {} // namespace ecs::detail

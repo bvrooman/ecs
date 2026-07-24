@@ -310,11 +310,11 @@ private:
                 using Info       = detail::imperative_params_info<Args>;
                 using Seq        = std::make_index_sequence<N>;
                 System sys;
-                sys.name      = std::move(name);
-                sys.phase     = phase;
-                sys.once      = once;
-                sys.every     = std::max<std::uint64_t>(1, every);
-                sys.is_kernel = false;
+                sys.name        = std::move(name);
+                sys.phase       = phase;
+                sys.once        = once;
+                sys.every       = std::max<std::uint64_t>(1, every);
+                sys.is_parallel = false;
                 detail::imperative_declare<Args>(sys.access, Seq {});
                 if constexpr (Info::any_stateful) {
                     // Per-system state (Local<T>): lives with the closure, so
@@ -383,10 +383,10 @@ private:
                 using Info        = detail::kernel_params_info<Args>;
                 using Seq         = std::make_index_sequence<N>;
                 System sys;
-                sys.name      = std::move(name);
-                sys.phase     = phase;
-                sys.every     = std::max<std::uint64_t>(1, every);
-                sys.is_kernel = true;
+                sys.name        = std::move(name);
+                sys.phase       = phase;
+                sys.every       = std::max<std::uint64_t>(1, every);
+                sys.is_parallel = true;
                 detail::kernel_declare<Args>(sys.access, Seq {});
                 sys.query_sig = detail::system_param<Q>::signature();
 

@@ -233,22 +233,6 @@ public:
     // confuse two Worlds (or a new World reusing a destroyed one's address).
     WorldId instance_id() const noexcept { return instance_id_; }
 
-    template <class... Cs>
-    void declare_archetype() {
-        static_assert(detail::are_distinct_v<Cs...>,
-                      "declare_archetype(): duplicate component type");
-        using Col             = std::pair<ComponentId, std::unique_ptr<IColumn>>;
-        static auto const sig = Signature {component_id<Cs>...};
-        auto const to         = get_or_create_archetype(sig, [](Archetype& b) {
-            std::array<Col, sizeof...(Cs)> cols {
-                Col {component_id<Cs>, std::make_unique<Column<Cs>>()}...};
-            std::ranges::sort(cols, {}, [](auto const& p) { return p.first; });
-            b.columns.reserve(cols.size());
-            for (auto& [id, col] : cols)
-                b.columns.push_back(std::move(col));
-        });
-    }
-
     // Indices of the archetypes whose signature contains all of `required`
     // (sorted). Cached per required-signature and kept current as archetypes
     // are created, so a repeated query does not re-scan every archetype.

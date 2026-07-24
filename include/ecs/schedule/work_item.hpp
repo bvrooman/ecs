@@ -6,8 +6,9 @@
 namespace ecs::detail {
 
 struct Unit {
-    ArchetypeId archetype; // world archetype, or kImperative
-    std::uint32_t begin, end;
+    ArchetypeId archetype;
+    std::uint32_t begin;
+    std::uint32_t end;
 };
 
 // One unit of claimable work: a row-range of one kernel system's matched
@@ -20,7 +21,8 @@ struct Unit {
 struct WorkItem {
     SystemId system; // index into the schedule's system list
     std::vector<Unit> units;
-    std::uint32_t begin, end;
+    std::uint32_t begin;
+    std::uint32_t end;
     std::uint32_t ordinal;
     double busy_us = 0;
 };

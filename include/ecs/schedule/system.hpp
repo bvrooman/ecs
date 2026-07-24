@@ -114,7 +114,6 @@ template <class... Cs>
 struct system_param<Query<Cs...>> {
     static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
     static Query<Cs...> bind(World& w, Commands&, WorkItem const& item) {
-        w.declare_archetype<Cs...>();
         return Query<Cs...>(w, item);
     }
     static Signature const& signature() { return Query<Cs...>::required(); }
@@ -233,8 +232,6 @@ struct MatchCache {
 };
 
 using RunFn = move_only_function<void(World&, Commands&, WorkItem const&, std::uint32_t)>;
-// using RunRangeFn =
-//     move_only_function<void(World&, Commands&, WorkItem const&, std::uint32_t)>;
 using PrepareItemsFn = move_only_function<
     void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
@@ -280,7 +277,7 @@ struct SystemRecord {
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.
     std::uint64_t every = 1;
-    bool is_kernel      = false;
+    bool is_parallel    = false;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {
