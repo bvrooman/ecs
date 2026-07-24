@@ -157,8 +157,8 @@ namespace detail {
             }
         }
 
-        static EventWriter<T> bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
+        static EventWriter<T> bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return EventWriter<T>(s.parts[ordinal]);
         }
     };
@@ -188,8 +188,7 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static EventReader<T> bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t) {
+        static EventReader<T> bind(state& s, World&, Commands&, WorkItem const&) {
             return EventReader<T>(s.events);
         }
     };

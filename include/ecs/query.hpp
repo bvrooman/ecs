@@ -95,13 +95,10 @@ public:
     //   q.for_each([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
     void for_each(F&& fn) {
-        for (auto const& unit : item_.units) {
-            auto& arch = *world_.archetypes()[unit.archetype];
-            auto b     = unit.begin;
-            auto e     = unit.end;
-            detail::for_each_row(fn,
-                                 std::span(arch.entities).subspan(b, e - b),
-                                 chunk_arg<Cs>(arch, b, e)...);
+        for (auto const& [archetype, begin, end] : item_.units) {
+            auto& arch    = *world_.archetypes()[archetype];
+            auto entities = std::span(arch.entities).subspan(begin, end - begin);
+            detail::for_each_row(fn, entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }
 
@@ -122,12 +119,10 @@ public:
     //   });
     template <class F>
     void for_each_chunk(F&& fn) {
-        for (auto const& unit : item_.units) {
-            auto& arch    = *world_.archetypes()[unit.archetype];
-            auto b        = unit.begin;
-            auto e        = unit.end;
-            auto entities = std::span(arch.entities).subspan(b, e - b);
-            fn(entities, chunk_arg<Cs>(arch, b, e)...);
+        for (auto const& [archetype, begin, end] : item_.units) {
+            auto& arch    = *world_.archetypes()[archetype];
+            auto entities = std::span(arch.entities).subspan(begin, end - begin);
+            fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }
 

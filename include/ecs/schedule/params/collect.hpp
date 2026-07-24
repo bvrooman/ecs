@@ -81,8 +81,8 @@ namespace detail {
             }
         }
 
-        static Collect<T> bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
+        static Collect<T> bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return Collect<T>(s.parts[ordinal]);
         }
     };

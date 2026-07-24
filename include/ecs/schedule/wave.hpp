@@ -135,7 +135,7 @@ public:
             auto& system               = systems[item.system];
             detail::recording_source() = system.id;
             auto const t0              = clock::now();
-            system.run(world, cmds, item, item.ordinal);
+            system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);
         };
         if (items_.size() == 1) {
@@ -277,7 +277,7 @@ private:
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
         auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerKernel);
-        std::uint32_t ordinal = 0; // generation order == serial-walk order
+        std::uint32_t ordinal = 0;
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();
             for (auto b = 0uz; b < n; b += grain) {

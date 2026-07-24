@@ -231,7 +231,7 @@ struct MatchCache {
     }
 };
 
-using RunFn = move_only_function<void(World&, Commands&, WorkItem const&, std::uint32_t)>;
+using RunFn          = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn = move_only_function<
     void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
@@ -248,8 +248,8 @@ struct SystemRecord {
     RunFn run;
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
-    Signature query_sig; // kernel systems: sorted required-component ids
-    MatchCache match;    // kernel systems: memoized query_sig match list
+    Signature query_sig = Signature::none();
+    MatchCache match; // kernel systems: memoized query_sig match list
     Phase phase = 0;
     Level level = 0;
     bool once   = false;

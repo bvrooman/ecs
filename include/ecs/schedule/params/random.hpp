@@ -93,8 +93,8 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static Random bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
+        static Random bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return Random(mix64(s.stream_base ^ ordinal), ordinal);
         }
     };

@@ -98,8 +98,7 @@ namespace detail {
                             std::span<std::uint32_t const>,
                             KernelWaveContext const&) {}
         static void finish(state&, World&) {}
-        static P bind(
-            state&, World& w, Commands& c, WorkItem const& item, std::uint32_t) {
+        static P bind(state&, World& w, Commands& c, WorkItem const& item) {
             return system_param<P>::bind(w, c, item);
         }
     };
@@ -155,17 +154,15 @@ namespace detail {
         static decltype(auto) bind(State& s,
                                    World& w,
                                    Commands& c,
-                                   WorkItem const& item,
-                                   std::uint32_t ordinal) {
+                                   WorkItem const& item) {
 
-            return kernel_param<P>::bind(s, w, c, item, ordinal);
+            return kernel_param<P>::bind(s, w, c, item);
         }
     };
     template <class... Cs>
     struct KernelBind<Query<Cs...>> {
         template <class State>
-        static decltype(auto) bind(
-            State&, World& w, Commands& c, WorkItem const& item, std::uint32_t) {
+        static decltype(auto) bind(State&, World& w, Commands& c, WorkItem const& item) {
             return system_param<Query<Cs...>>::bind(w, c, item);
         }
     };
@@ -176,13 +173,11 @@ namespace detail {
                        World& w,
                        Commands& c,
                        WorkItem const& item,
-                       std::uint32_t ordinal,
                        std::index_sequence<I...>) {
         fn(KernelBind<std::tuple_element_t<I, Args>>::bind(std::get<I>(st),
                                                            w,
                                                            c,
-                                                           item,
-                                                           ordinal)...);
+                                                           item)...);
     }
 
 } // namespace detail

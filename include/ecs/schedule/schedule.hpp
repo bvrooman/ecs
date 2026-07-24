@@ -305,9 +305,10 @@ private:
                           "EventReader/Scratch/Random) are kernel-only (register "
                           "with add_kernel)");
             if constexpr (detail::imperative_params_info<Args>::all_allowed) {
-                constexpr auto N = std::tuple_size_v<Args>;
-                using Info       = detail::imperative_params_info<Args>;
-                using Seq        = std::make_index_sequence<N>;
+                constexpr auto QI = detail::query_info<Args>::index;
+                constexpr auto N  = std::tuple_size_v<Args>;
+                using Info        = detail::imperative_params_info<Args>;
+                using Seq         = std::make_index_sequence<N>;
                 System sys;
                 sys.name        = std::move(name);
                 sys.phase       = phase;
@@ -315,6 +316,11 @@ private:
                 sys.every       = std::max<std::uint64_t>(1, every);
                 sys.is_parallel = false;
                 detail::imperative_declare<Args>(sys.access, Seq {});
+                if constexpr (QI != ~std::size_t {0}) {
+                    using Q       = std::tuple_element_t<QI, Args>;
+                    sys.query_sig = detail::system_param<Q>::signature();
+                }
+
                 if constexpr (Info::any_stateful) {
                     // Per-system state (Local<T>): lives with the closure, so
                     // it persists exactly as long as the system is registered.
@@ -322,18 +328,18 @@ private:
                     sys.run     = [fn = std::forward<Fn>(fn),
                                states](World& w,
                                        Commands& c,
-                                       detail::WorkItem const& item,
-                                       uint32_t) mutable {
+                                       detail::WorkItem const& item) mutable {
                         detail::imperative_invoke<Args>(fn, *states, w, c, item, Seq {});
                     };
                 } else {
-                    sys.run = [fn = std::forward<Fn>(fn)](World& w,
-                                                          Commands& c,
-                                                          detail::WorkItem const& item,
-                                                          uint32_t) mutable {
-                        typename Info::states st;
-                        detail::imperative_invoke<Args>(fn, st, w, c, item, Seq {});
-                    };
+                    sys.run =
+                        [fn =
+                             std::forward<Fn>(fn)](World& w,
+                                                   Commands& c,
+                                                   detail::WorkItem const& item) mutable {
+                            typename Info::states st;
+                            detail::imperative_invoke<Args>(fn, st, w, c, item, Seq {});
+                        };
                 }
                 return register_system(std::move(sys));
             }
@@ -378,7 +384,6 @@ private:
                           detail::kernel_params_info<Args>::all_allowed) {
                 constexpr auto QI = detail::query_info<Args>::index;
                 constexpr auto N  = std::tuple_size_v<Args>;
-                using Q           = std::tuple_element_t<QI, Args>;
                 using Info        = detail::kernel_params_info<Args>;
                 using Seq         = std::make_index_sequence<N>;
                 System sys;
@@ -387,7 +392,10 @@ private:
                 sys.every       = std::max<std::uint64_t>(1, every);
                 sys.is_parallel = true;
                 detail::kernel_declare<Args>(sys.access, Seq {});
-                sys.query_sig = detail::system_param<Q>::signature();
+                if constexpr (QI != ~size_t {0}) {
+                    using Q       = std::tuple_element_t<QI, Args>;
+                    sys.query_sig = detail::system_param<Q>::signature();
+                }
 
                 // Per-item slot state for stateful parameters (Reduce/Extract),
                 // shared between the item bind and the barrier hooks; persists
@@ -396,9 +404,8 @@ private:
                 sys.run     = [fn = std::forward<Fn>(fn),
                            states](World& w,
                                    Commands& cmds,
-                                   detail::WorkItem const& item,
-                                   std::uint32_t ord) mutable {
-                    detail::kernel_invoke<Args>(fn, *states, w, cmds, item, ord, Seq {});
+                                   detail::WorkItem const& item) mutable {
+                    detail::kernel_invoke<Args>(fn, *states, w, cmds, item, Seq {});
                 };
                 if constexpr (Info::any_stateful) {
                     sys.prepare_items = [states](World& w,

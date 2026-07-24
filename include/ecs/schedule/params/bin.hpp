@@ -123,8 +123,8 @@ namespace detail {
                     target.items_[s.cursors[k]++] = std::move(v);
         }
 
-        static Bin<V> bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
+        static Bin<V> bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return Bin<V>(s.parts[ordinal]);
         }
     };

@@ -81,8 +81,8 @@ namespace detail {
                     s.slots[i]->cmds.enqueue_local();
         }
 
-        static Commands& bind(
-            state& s, World&, Commands&, WorkItem const&, std::uint32_t ordinal) {
+        static Commands& bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return s.slots[ordinal]->cmds;
         }
     };
