@@ -96,7 +96,7 @@ namespace detail {
         static void finish(state&, World&) {} // writes were direct + disjoint
 
         static Extract<T> bind(
-            state& s, World& w, Commands&, WorkItem const& item, std::uint32_t ordinal) {
+            state& s, World& w, Commands&, x` , std::uint32_t ordinal) {
             auto& target = w.resource<T>();
             auto b       = item.begin;
             auto e       = item.end;

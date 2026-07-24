@@ -2,7 +2,6 @@
 
 #include "../detail/id_vector.hpp"
 #include "../detail/strong_id.hpp"
-#include "executor.hpp"
 #include "system.hpp"
 #include "work_item.hpp"
 #include <algorithm>

@@ -70,28 +70,6 @@ class Query {
         return s;
     }
 
-    // The matching archetype list, memoized per (query type, thread) against
-    // the world's archetype generation: the steady state is two relaxed-ish
-    // loads and two compares -- no mutex, no signature hash -- while a new
-    // matching archetype (created at flush; the generation only changes there)
-    // or a different World forces one locked re-lookup. The world instance id
-    // guards against a destroyed World's address being reused.
-    [[nodiscard]]
-    std::vector<ArchetypeId> const& matches() const {
-        struct Cache {
-            WorldId world                        = WorldId::none();
-            std::uint64_t gen                    = ~std::uint64_t {0};
-            std::vector<ArchetypeId> const* list = nullptr;
-        };
-        thread_local Cache cache;
-        auto const gen = world_.archetype_generation();
-        if (cache.world == world_.instance_id() && cache.gen == gen)
-            return *cache.list;
-        auto const& list = world_.matching_archetypes(required());
-        cache            = {world_.instance_id(), gen, &list};
-        return list;
-    }
-
     // A Query restricted to rows [b, e) of ONE matching archetype -- how a
     // kernel system's work item binds its Query parameter (the executor owns
     // the slicing; see schedule/executor.hpp). Every iteration method then

@@ -221,7 +221,7 @@ struct MatchCache {
     WorldId world                        = WorldId::none();
     std::uint64_t gen                    = ~std::uint64_t {0};
 
-    std::vector<ArchetypeId> const& resolve(World const& w, Signature const& sig) {
+    auto const& resolve(World const& w, Signature const& sig) {
         if (world != w.instance_id() || gen != w.archetype_generation()) {
             list  = &w.matching_archetypes(sig);
             world = w.instance_id();
@@ -245,23 +245,7 @@ struct SystemRecord {
     SystemId id = {};
     std::string name;
     SystemAccess access;
-    // Imperative body (add/add_once/add_dynamic): opaque to the scheduler,
-    // so the whole system is ONE work item. Null for kernel systems.
-    // move_only_function (not function) so a system may capture a move-only
-    // value (e.g. a unique_ptr or a move_only_function of its own).
     RunFn run;
-    // Kernel body (add_kernel): the executor slices the matched rows into
-    // work items and invokes this once per (archetype, row-range) item. The
-    // Commands& lets the kernel's other parameters bind; the trailing ordinal
-    // is the item's index in generation (serial-walk) order, which indexes the
-    // per-item slots of stateful parameters (Reduce/Extract -- see
-    // kernel_params.hpp). Null for imperative systems.
-    // RunRangeFn run_range;
-    // Barrier hooks for stateful kernel parameters (null when the system has
-    // none): prepare runs single-threaded before the wave's dispatch with the
-    // system's per-item row counts in ordinal order plus the wave context;
-    // finish runs single-threaded after the join, before the command flush
-    // (skipped on abort).
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
     Signature query_sig; // kernel systems: sorted required-component ids

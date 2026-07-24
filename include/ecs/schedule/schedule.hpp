@@ -32,7 +32,6 @@
 #include "../world.hpp"
 #include "access.hpp"
 #include "events.hpp"
-#include "executor.hpp"
 #include "kernel_params.hpp"
 #include "system.hpp"
 #include "wave.hpp"
