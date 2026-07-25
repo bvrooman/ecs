@@ -199,6 +199,12 @@ private:
     State state_ = State::New;
 };
 
+// The build outcome of a WavePlan for one tick.
+struct WavePlanResult {
+    double build_us = 0; // the build_parallel/build_serial flatten loop
+    double sort_us  = 0; // the LPT sort (disjoint from build_us)
+};
+
 // The persistent plan for one wave: its member systems (set once at rebuild),
 // the due-this-tick subset (recomputed each tick), and a reused Wave the tick's
 // work is compiled into. Nothing here allocates in steady state -- systems_ is
@@ -249,6 +255,7 @@ public:
         auto& items   = wave_.items_;
         auto& prepare = wave_.prepare_;
         auto& finish  = wave_.finish_;
+        auto const t_build = detail::sched_clock::now();
         for (auto const id : due_) {
             auto& s = systems[id];
             prepare.push_back({s.prepare_items, id, tick});
@@ -259,6 +266,7 @@ public:
                 build_serial(world, s, items);
             }
         }
+        result_.build_us = detail::elapsed_us(t_build); // flatten loop, sans sort
         // Greedy LPT: opaque (imperative) items first, then longest-first, with a
         // deterministic tie-break so a 1-lane run replays. An imperative system's
         // item has unknown cost -- and a Commands-only / WorldView one has a zero
@@ -266,6 +274,7 @@ public:
         // expensive one becomes the join straggler. Claiming it before the kernel
         // slices (whose cost is proportional to their known row count) keeps the
         // biggest unknown off the tail.
+        auto const t_sort = detail::sched_clock::now();
         std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
             bool const ia = !systems[a.system].is_parallel;
             bool const ib = !systems[b.system].is_parallel;
@@ -277,7 +286,14 @@ public:
                 return ra > rb;
             return std::tie(a.system, a.begin) < std::tie(b.system, b.begin);
         });
+        result_.sort_us = detail::elapsed_us(t_sort);
         return wave_;
+    }
+
+    // The build timings of the most recent build().
+    [[nodiscard]]
+    WavePlanResult const& result() const noexcept {
+        return result_;
     }
 
 private:
@@ -337,5 +353,6 @@ private:
     std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
     std::vector<SystemId> due_;     // due this tick (reused scratch)
     Wave wave_;                     // this tick's compiled wave (reused buffers)
+    WavePlanResult result_;         // build timings of the last build()
 };
 } // namespace ecs
