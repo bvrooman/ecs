@@ -165,8 +165,8 @@ public:
     auto get(Entity const e) const {
         return world_->get<C>(e);
     }
-    // Read-only iteration: every component is forced const, so nothing can be
-    // written through the view. Delegates to World's ad-hoc read iteration.
+    // Read-only iteration: delegates to World's ad-hoc read-only iteration
+    // (which forces every component const, so nothing can be written through it).
     template <class... Cs>
     [[nodiscard]]
     std::size_t count() const {
@@ -174,11 +174,11 @@ public:
     }
     template <class... Cs, class F>
     void for_each(F&& fn) const {
-        world_->for_each<std::remove_const_t<Cs> const...>(fn);
+        world_->for_each<std::remove_const_t<Cs>...>(fn);
     }
     template <class... Cs, class F>
     void for_each_chunk(F&& fn) const {
-        world_->for_each_chunk<std::remove_const_t<Cs> const...>(fn);
+        world_->for_each_chunk<std::remove_const_t<Cs>...>(fn);
     }
 
 private:

@@ -10,16 +10,18 @@
 //   * compute-bound     -- many independent FLOPs per entity
 //   * write-back cost   -- a read-only component left non-const (scattered back)
 //
-// All single-threaded; the point here is the memory layout, not the scheduler.
-// Build in Release (-O3 -march=native is applied below) and run:
+// Each iteration path runs as a real (single-lane) system via bench_system, so
+// the numbers are the production execution path; a single serial system adds
+// only O(1) scheduler overhead per run against the O(entities) kernel, so the
+// layout / access-shape signal is what moves. Build in Release (-O3
+// -march=native is applied below) and run:
 //
 //   ./build/benchmarks/soa_bench [entities] [iters] [repeats]
 //
 // Numbers are ns per entity per sweep; lower is better. Ratios are stable
 // run-to-run, absolute values less so (they track the host's memory subsystem).
 
-#include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include "bench_ecs.hpp"
 #include <cstdlib>
 #include <span>
 #include <vector>
@@ -96,17 +98,15 @@ int main(int argc, char** argv) {
                 bench::g_iters);
 
     // 1/2) integrate: write Pos, read Vel ------------------------------------
-    bench::run("for_each integrate (1 RW, 1 RO)", N, [&] {
-        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
+    bench_system("for_each integrate (1 RW, 1 RO)", N, w, [](Query<Pos, Vel const> q) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
         });
     });
-    bench::run("for_each_chunk integrate (1 RW, 1 RO)", N, [&] {
-        w.for_each_chunk<Pos, Vel const>([](std::span<Entity>,
-                                                   chunk<Pos> p,
-                                                   chunk<Vel const> v) {
+    bench_system("for_each_chunk integrate (1 RW, 1 RO)", N, w, [](Query<Pos, Vel const> q) {
+        q.for_each_chunk([](std::span<Entity>, chunk<Pos> p, chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
             auto const vx = v.column<0>();
             auto const vy = v.column<1>();
@@ -120,8 +120,8 @@ int main(int argc, char** argv) {
     });
 
     // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
-    bench::run("for_each multi (2 RW, 1 RO)", N, [&] {
-        w.for_each<Pos, Vel, Acc const>([](auto& p, auto& v, auto& a) {
+    bench_system("for_each multi (2 RW, 1 RO)", N, w, [](Query<Pos, Vel, Acc const> q) {
+        q.for_each([](auto& p, auto& v, auto& a) {
             v.x += a.x;
             v.y += a.y;
             v.z += a.z;
@@ -130,8 +130,8 @@ int main(int argc, char** argv) {
             p.z += v.z;
         });
     });
-    bench::run("for_each_chunk multi (2 RW, 1 RO)", N, [&] {
-        w.for_each_chunk<Pos, Vel, Acc const>(
+    bench_system("for_each_chunk multi (2 RW, 1 RO)", N, w, [](Query<Pos, Vel, Acc const> q) {
+        q.for_each_chunk(
             [](std::span<Entity>, chunk<Pos> p, chunk<Vel> v, chunk<Acc const> a) {
                 auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
                 auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
         }
     });
 
-    // 6) single-field read: sum only Pos.x -----------------------------------
+    // 6) single-field read: sum only Pos.x (read-only, no system) -------------
     bench::run("for_each_chunk sum 1 field (SoA)", N, [&] {
         float s = 0;
         w.for_each_chunk<Pos const>([&](std::span<Entity>, chunk<Pos const> p) {
@@ -174,17 +174,15 @@ int main(int argc, char** argv) {
     });
 
     // 7/8) compute-bound: many FLOPs per entity ------------------------------
-    bench::run("for_each compute-bound", N, [&] {
-        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
+    bench_system("for_each compute-bound", N, w, [](Query<Pos, Vel const> q) {
+        q.for_each([](auto& p, auto& v) {
             p.x = heavy(p.x, v.x, v.y);
             p.y = heavy(p.y, v.y, v.z);
             p.z = heavy(p.z, v.z, v.x);
         });
     });
-    bench::run("for_each_chunk compute-bound", N, [&] {
-        w.for_each_chunk<Pos, Vel const>([](std::span<Entity>,
-                                                   chunk<Pos> p,
-                                                   chunk<Vel const> v) {
+    bench_system("for_each_chunk compute-bound", N, w, [](Query<Pos, Vel const> q) {
+        q.for_each_chunk([](std::span<Entity>, chunk<Pos> p, chunk<Vel const> v) {
             auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
             auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
             for (std::size_t i = 0; i < px.size(); ++i) {
@@ -196,15 +194,15 @@ int main(int argc, char** argv) {
     });
 
     // 9) write-back cost: read Vel but leave it non-const (scattered back) ----
-    bench::run("for_each read Vel NON-const (write-back)", N, [&] {
-        w.for_each<Pos, Vel>([](auto& p, auto& v) {
+    bench_system("for_each read Vel NON-const (write-back)", N, w, [](Query<Pos, Vel> q) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;
         });
     });
-    bench::run("for_each read Vel const (no write-back)", N, [&] {
-        w.for_each<Pos, Vel const>([](auto& p, auto& v) {
+    bench_system("for_each read Vel const (no write-back)", N, w, [](Query<Pos, Vel const> q) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.x;
             p.y += v.y;
             p.z += v.z;

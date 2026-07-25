@@ -29,10 +29,13 @@ static void create_and_query() {
     CHECK(w.has<Frozen>(c));
     CHECK((w.count<Position, Velocity>() == 2));
 
-    // Value mutation through a query is not a structural change -- needs no Commands.
-    w.for_each<Position, Velocity>([](auto& p, auto& v) {
-        p.x += v.dx;
-        p.y += v.dy;
+    // Value mutation runs through a real system's Query -- Position is the
+    // declared write, Velocity a read. (Ad-hoc World iteration is read-only.)
+    run_system(w, [](Query<Position, Velocity const> q) {
+        q.for_each([](auto& p, auto& v) {
+            p.x += v.dx;
+            p.y += v.dy;
+        });
     });
     CHECK(w.get<Position>(a).x == 1.f);
     CHECK(w.get<Position>(c).x == 4.f);
@@ -82,9 +85,11 @@ static void soa_fast_path() {
         for (int i = 0; i < 4; ++i)
             cmd.spawn(Position {float(i), 0});
     });
-    w.for_each_chunk<Position>([](std::span<Entity>, chunk<Position> pos) {
-        for (auto& x : pos.column<0>())
-            x += 100.f;
+    run_system(w, [](Query<Position> q) {
+        q.for_each_chunk([](std::span<Entity>, chunk<Position> pos) {
+            for (auto& x : pos.column<0>())
+                x += 100.f;
+        });
     });
     // every Position.x was bumped by 100 via a contiguous column loop
     std::size_t seen = 0;
@@ -103,10 +108,12 @@ static void for_each_rows() {
         for (int i = 0; i < 4; ++i)
             cmd.spawn(Position {float(i), 0.f}, Velocity {1.f, 2.f});
     });
-    // for_each: named proxy fields write through, no manual loop.
-    w.for_each<Position, Velocity const>([](auto& p, auto& v) {
-        p.x += v.dx; // +1
-        p.y += v.dy; // +2
+    // A mutating system: named proxy fields write through, no manual loop.
+    run_system(w, [](Query<Position, Velocity const> q) {
+        q.for_each([](auto& p, auto& v) {
+            p.x += v.dx; // +1
+            p.y += v.dy; // +2
+        });
     });
     // for_each: same ergonomics, serial path (read here).
     std::size_t seen = 0;
@@ -136,9 +143,11 @@ static void const_query_marks_read_only() {
     World w;
     Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
-    // Velocity read-only (const), Position mutable: only Position is written back.
-    w.for_each<Velocity const, Position>([](auto& v, auto& p) {
-        p.x += v.dx;
+    // Velocity read-only (const), Position the declared write.
+    run_system(w, [](Query<Velocity const, Position> q) {
+        q.for_each([](auto& v, auto& p) {
+            p.x += v.dx;
+        });
     });
     CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
     CHECK(w.get<Velocity>(e).dx == 2.f); // untouched

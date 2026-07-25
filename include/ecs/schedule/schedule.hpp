@@ -126,19 +126,48 @@ public:
     // that dispatches per chunk) with the usual (World&, Commands&, WorkItem const&)
     // signature. It conflicts and levels against every other system by `access`
     // exactly like a native one, so JS and C++ systems share one wave plan.
+    //
+    // Serial: the scheduler emits ONE opaque work item, so `run` is invoked once
+    // per tick and must iterate every matching archetype itself. The WorkItem it
+    // is handed carries no row slice (a serial system has no query_sig for the
+    // wave to build one from), so `run` ignores it.
     template <class Run>
     SystemId add_dynamic(std::string name,
                          SystemAccess access,
                          Run&& run,
                          int phase = 0,
                          bool once = false) {
-        System sys;
-        sys.name   = std::move(name);
-        sys.access = std::move(access); // caller-supplied ids: normalized below
-        sys.phase  = phase;
-        sys.once   = once;
-        sys.run    = std::forward<Run>(run);
-        return register_system(std::move(sys));
+        return emplace_dynamic(std::move(name),
+                               std::move(access),
+                               Signature::null(),
+                               std::forward<Run>(run),
+                               phase,
+                               once,
+                               /*is_parallel=*/false);
+    }
+
+    // Parallel counterpart of add_dynamic -- the dynamic mirror of add_kernel.
+    // The scheduler resolves `query_sig`'s matched archetypes, slices them into
+    // row-range work items, and fans those across the pool, invoking `run` once
+    // per slice. `run` reads its WorkItem for the archetype and [begin, end) rows
+    // to process (see Wave::build_parallel); it must NOT self-iterate or
+    // self-dispatch -- the pool is already fanned, and a nested parallel_for on
+    // it would throw. `query_sig` is REQUIRED (a null signature matches nothing,
+    // so the scheduler would build zero items and never call `run`).
+    template <class Run>
+    SystemId add_dynamic_parallel(std::string name,
+                                  SystemAccess access,
+                                  Signature query_sig,
+                                  Run&& run,
+                                  int phase = 0,
+                                  bool once = false) {
+        return emplace_dynamic(std::move(name),
+                               std::move(access),
+                               std::move(query_sig),
+                               std::forward<Run>(run),
+                               phase,
+                               once,
+                               /*is_parallel=*/true);
     }
 
     // Unschedule a system by handle. Returns true if it was present (and live).
@@ -270,6 +299,28 @@ private:
         systems_[id].id = id;
         dirty_          = true;
         return id;
+    }
+
+    // Shared body of add_dynamic / add_dynamic_parallel: assemble a declared-access
+    // System and hand it to register_system. is_parallel + query_sig decide how the
+    // wave builds this system's work items (one opaque item vs. sliced row ranges).
+    template <class Run>
+    SystemId emplace_dynamic(std::string name,
+                             SystemAccess access,
+                             Signature query_sig,
+                             Run&& run,
+                             int phase,
+                             bool once,
+                             bool is_parallel) {
+        System sys;
+        sys.name        = std::move(name);
+        sys.access      = std::move(access); // caller-supplied ids: normalized below
+        sys.query_sig   = std::move(query_sig);
+        sys.phase       = phase;
+        sys.once        = once;
+        sys.is_parallel = is_parallel;
+        sys.run         = std::forward<Run>(run);
+        return register_system(std::move(sys));
     }
 
     // The bodies behind add/add_once and add_kernel. Each states its parameter

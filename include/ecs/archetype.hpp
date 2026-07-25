@@ -115,7 +115,10 @@ public:
         normalize();
     }
 
-    static constexpr Signature null() noexcept {
+    // The unmatchable sentinel: a signature holding a private Dummy component id
+    // that no real query carries, so it includes() no archetype (an *empty*
+    // signature would match every archetype instead).
+    static Signature null() noexcept {
         return Signature {{component_id<Dummy>}};
     }
 

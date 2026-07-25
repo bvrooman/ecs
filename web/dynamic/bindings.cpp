@@ -293,10 +293,15 @@ public:
 
         auto run = [query, blobStr, values, sid, np](World& w,
                                                      Commands&,
-                                                     WorkerPool& pool) {
-            Signature const required(query);
-            for (auto const ai : w.matching_archetypes(required)) {
-                auto& arch       = WorldOps::archetype_at(w, ai);
+                                                     detail::WorkItem const& item) {
+            // The scheduler hands this parallel system ONE row-range slice per
+            // call (see Schedule::add_dynamic_parallel); process exactly that
+            // slice. Field views span the whole archetype column (base = row 0)
+            // while the kernel runs over [lo, hi) only, so slices dispatched to
+            // different lanes touch disjoint rows -- no double work, and no
+            // parallel_for on the pool the scheduler is already fanning us across.
+            for (auto const& u : item.units) {
+                auto& arch       = WorldOps::archetype_at(w, u.archetype);
                 auto const count = arch.size();
                 if (count == 0)
                     continue;
@@ -315,11 +320,11 @@ public:
                 auto const vptr = static_cast<std::uint32_t>(
                     reinterpret_cast<std::uintptr_t>(values->data()));
                 auto const cnt = static_cast<std::uint32_t>(count);
-                // 1-lane pool -> serial on the caller; N-lane -> across worker lanes.
-                pool.parallel_for(count, [=](std::size_t b, std::size_t e) {
-                    // EM_ASM body must have NO top-level commas (the preprocessor
-                    // splits macro args on them) -- commas live only inside ( ).
-                    // clang-format off
+                auto const lo  = static_cast<int>(u.begin);
+                auto const hi  = static_cast<int>(u.end);
+                // EM_ASM body must have NO top-level commas (the preprocessor
+                // splits macro args on them) -- commas live only inside ( ).
+                // clang-format off
                     EM_ASM({
                         var sid=$0;
                         var blobPtr=$1;
@@ -365,15 +370,17 @@ public:
                             for (var pi=0; pi<S.params.length; pi++) p[S.params[pi]] = pv[pi];
                         }
                         S.fn(lo, hi, c, p);
-                    }, sid, blobC, (int)b, (int)e, cnt, bptr, nb, vptr, np);
-                    // clang-format on
-                });
+                    }, sid, blobC, lo, hi, cnt, bptr, nb, vptr, np);
+                // clang-format on
             }
         };
-        return static_cast<int>(schedule_.add_dynamic(std::move(name),
-                                                      std::move(access),
-                                                      std::move(run))
-                                    .value);
+        return static_cast<int>(
+            schedule_
+                .add_dynamic_parallel(std::move(name),
+                                      std::move(access),
+                                      Signature(query),
+                                      std::move(run))
+                .value);
     }
 
     // Run the schedule once. First snapshot every parallel system's params object
