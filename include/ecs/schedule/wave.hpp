@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace ecs {
@@ -290,11 +291,11 @@ private:
                 };
                 auto units = std::vector {unit};
                 auto item  = WorkItem {id,
-                                      units,
+                                      std::move(units),
                                       static_cast<uint32_t>(b),
                                       static_cast<uint32_t>(e),
                                       ordinal++};
-                items.push_back(item);
+                items.push_back(std::move(item));
             }
         }
     }
@@ -316,11 +317,11 @@ private:
             units.push_back(unit);
         }
         auto item = WorkItem {id,
-                              units,
+                              std::move(units),
                               static_cast<uint32_t>(0),
                               static_cast<uint32_t>(total),
                               0};
-        items.push_back(item);
+        items.push_back(std::move(item));
     }
 
     using WorkItem = detail::WorkItem;
