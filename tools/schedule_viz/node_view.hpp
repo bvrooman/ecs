@@ -53,7 +53,7 @@ inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
     if (a.reads_all)
         v.lines.push_back({Line::Note, "reads everything", 0, false});
     if (a.exclusive)
-        v.lines.push_back({Line::Note, "World& — exclusive", 0, false});
+        v.lines.push_back({Line::Note, "exclusive — unanalyzable access", 0, false});
     if (a.commands)
         v.lines.push_back({Line::Commands, "Commands", 0, false});
     if (v.lines.empty())

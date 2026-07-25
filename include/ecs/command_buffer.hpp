@@ -30,13 +30,18 @@
 
 #pragma once
 
+#include "system_id.hpp" // SystemId (the recording-source tag)
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -50,7 +55,22 @@ namespace detail {
         thread_local int idx = counter.fetch_add(1, std::memory_order_relaxed);
         return idx;
     }
+
+    // The system whose commands the calling thread is currently recording --
+    // set by the executor around each work item and around each single-threaded
+    // barrier finish hook, read by CommandStore::record so each command carries
+    // its recording system. That lets apply() attribute the flush time per
+    // system (see Schedule's per-system flush reporting). A default SystemId{}
+    // (id 0) means "unattributed" (setup outside a run, etc.).
+    inline SystemId& recording_source() noexcept {
+        thread_local SystemId src {};
+        return src;
+    }
 } // namespace detail
+
+// Per-system command-apply time accumulated by a flush; keys are whatever
+// recording_source() held when each command was recorded.
+using FlushAttrib = std::unordered_map<SystemId, double>;
 
 class World; // defined in world.hpp
 
@@ -61,6 +81,14 @@ class World; // defined in world.hpp
 // CommandBuffer shard owns one and serializes access with its mutex.
 class CommandStore {
 public:
+    CommandStore() = default;
+    // A store may die holding never-applied commands (e.g. a kernel item's
+    // private store after an aborted run): destroy their captures rather
+    // than leak them.
+    ~CommandStore() { discard(); }
+    CommandStore(CommandStore const&)            = delete;
+    CommandStore& operator=(CommandStore const&) = delete;
+
     template <class F>
     void record(F&& f) {
         using Fn = std::decay_t<F>;
@@ -68,23 +96,75 @@ public:
         // bases (operator new[]) meet that, so aligning the offset suffices.
         static_assert(alignof(Fn) <= alignof(std::max_align_t),
                       "command capture is over-aligned for the arena");
+        // Ensure capacity before constructing the callable: if push_back had to
+        // grow afterwards and threw, the constructed capture would leak.
+        if (cmds_.size() == cmds_.capacity())
+            cmds_.reserve(cmds_.empty() ? 16 : cmds_.capacity() * 2);
         void* obj = allocate(sizeof(Fn), alignof(Fn));
         ::new (obj) Fn(std::forward<F>(f));
         cmds_.push_back(Cmd {
             obj,
             [](void* o, World& w) { (*static_cast<Fn*>(o))(w); },
             [](void* o) noexcept { static_cast<Fn*>(o)->~Fn(); },
+            detail::recording_source(), // the system recording this command
         });
     }
 
-    void apply(World& world) {
-        for (auto const& c : cmds_)
-            c.invoke(c.obj, world);
+    void apply(World& world, FlushAttrib* attrib = nullptr) {
+        // Invoke-and-destroy in ONE pass. If a command throws, the remaining
+        // (uninvoked) commands are destroyed and the store rewound on unwind --
+        // already-applied commands can never replay on the next flush (which
+        // would duplicate spawns of the same reserved handle, double-destroy,
+        // and replay adds).
+        std::size_t i = 0;
+        try {
+            if (attrib == nullptr) {
+                for (; i < cmds_.size(); ++i) {
+                    auto const& c = cmds_[i];
+                    c.invoke(c.obj, world);
+                    c.destroy(c.obj);
+                }
+            } else if (!cmds_.empty()) {
+                // Attribute apply time per recording source. Commands from one
+                // work item are contiguous (same source), so time each run
+                // rather than each command -- a handful of clock reads, not one
+                // per command.
+                using clock = std::chrono::steady_clock;
+                auto batch  = clock::now();
+                auto src    = cmds_[0].source;
+                for (; i < cmds_.size(); ++i) {
+                    auto const& c = cmds_[i];
+                    if (c.source != src) {
+                        auto const now = clock::now();
+                        (*attrib)[src] +=
+                            std::chrono::duration<double, std::micro>(now - batch)
+                                .count();
+                        batch = now;
+                        src   = c.source;
+                    }
+                    c.invoke(c.obj, world);
+                    c.destroy(c.obj);
+                }
+                (*attrib)[src] +=
+                    std::chrono::duration<double, std::micro>(clock::now() - batch)
+                        .count();
+            }
+        } catch (...) {
+            for (; i < cmds_.size(); ++i)
+                cmds_[i].destroy(cmds_[i].obj);
+            rewind();
+            throw;
+        }
+        rewind();
+    }
+
+    // Destroy every pending command WITHOUT invoking it and rewind. Used when a
+    // run aborts (a system threw): the aborted wave's edits must not leak into
+    // the next run's first flush.
+    void discard() noexcept {
         for (auto const& c : cmds_)
             c.destroy(c.obj);
-        cmds_.clear(); // keep capacity
-        cur_ = 0;      // rewind the block chain; blocks are retained for reuse
-        off_ = 0;
+        rewind();
     }
 
     [[nodiscard]]
@@ -98,12 +178,21 @@ private:
         void* obj;
         void (*invoke)(void*, World&);
         void (*destroy)(void*) noexcept;
+        SystemId source; // the system that recorded it (flush attribution)
     };
     struct Block {
         std::unique_ptr<std::byte[]> data;
         std::size_t cap;
     };
     static constexpr std::size_t kBlock = 64 * 1024;
+
+    // Forget the recorded commands and rewind the block chain; blocks and the
+    // cmds_ capacity are retained for reuse.
+    void rewind() noexcept {
+        cmds_.clear();
+        cur_ = 0;
+        off_ = 0;
+    }
 
     static std::size_t align_up(std::size_t n, std::size_t a) noexcept {
         return (n + a - 1) & ~(a - 1);
@@ -145,6 +234,11 @@ public:
     // calling thread's own (normally uncontended) shard mutex.
     template <class F>
     void record(F&& f) {
+        // Recording from inside a flushing command would invalidate the store
+        // being drained (and self-deadlock on the shard mutex) -- catch it in
+        // debug before the deadlock does.
+        assert(!applying_.load(std::memory_order_relaxed) &&
+               "CommandBuffer::record called during apply() (from a command?)");
         auto& shard = local_shard();
         std::lock_guard lock(shard.mutex);
         shard.store.record(std::forward<F>(f));
@@ -152,11 +246,37 @@ public:
 
     // Replay all recorded commands, then clear. Must be called when no systems
     // are executing. Drains shards in creation order; within a shard, in record
-    // order.
-    void apply(World& world) {
+    // order. Takes each shard's (uncontended) mutex so a stray recording thread
+    // is excluded rather than racing the drain.
+    void apply(World& world, FlushAttrib* attrib = nullptr) {
         auto lock = std::lock_guard(create_mutex_);
-        for (auto const& shard : shards_)
-            shard->store.apply(world);
+        applying_.store(true, std::memory_order_relaxed);
+        try {
+            for (auto const& shard : shards_) {
+                std::lock_guard shard_lock(shard->mutex);
+                shard->store.apply(world, attrib);
+            }
+        } catch (...) {
+            // The throwing shard already cleaned itself up; discard the
+            // not-yet-drained shards too so no command from this failed flush
+            // replays on a later apply.
+            for (auto const& shard : shards_) {
+                std::lock_guard shard_lock(shard->mutex);
+                shard->store.discard();
+            }
+            applying_.store(false, std::memory_order_relaxed);
+            throw;
+        }
+        applying_.store(false, std::memory_order_relaxed);
+    }
+
+    // Drop every pending command without applying it (see CommandStore::discard).
+    void discard() noexcept {
+        auto lock = std::lock_guard(create_mutex_);
+        for (auto const& shard : shards_) {
+            std::lock_guard shard_lock(shard->mutex);
+            shard->store.discard();
+        }
     }
 
     auto size() {
@@ -195,6 +315,7 @@ private:
     // lock-free shard lookup
     std::vector<std::unique_ptr<Shard>> shards_; // ownership + apply order
     std::mutex create_mutex_;                    // shard creation + apply
+    std::atomic<bool> applying_ {false};         // debug: no record during apply
 };
 
 } // namespace ecs

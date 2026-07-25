@@ -16,10 +16,10 @@ struct Doomed {}; // tag marking entities to delete
 
 // A run context (here a setup system run inline) records mutations and flushes
 // when it ends -- so entities are live afterwards, but not during the callback.
-// (Taking World& makes the system exclusive; fine for a single setup system.)
+// (WorldView gives the read-only mid-run observation; mutation is Commands.)
 static void setup_applies_after_it_ends() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](WorldView view, Commands& cmd) {
         e = cmd.spawn(Position {1, 1});
         CHECK(!view.alive(e)); // recorded, not yet materialized
@@ -42,7 +42,7 @@ static void destroy_during_iteration_is_safe() {
     });
 
     setup(w, [&](WorldView view, Commands& cmd) {
-        view.query<Position, Doomed>().for_each_serial([&](Entity e, auto&, auto&) {
+        view.for_each<Position, Doomed>([&](Entity e, auto&, auto&) {
             cmd.destroy(e);
         });
         CHECK(view.size() == 10); // nothing applied yet (still recording)
@@ -55,7 +55,7 @@ static void destroy_during_iteration_is_safe() {
 
 static void add_and_remove() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 2}); });
 
     setup(w, [&](WorldView view, Commands& cmd) {
@@ -72,7 +72,7 @@ static void add_and_remove() {
 
 static void spawn_returns_usable_handle() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](WorldView view, Commands& cmd) {
         e = cmd.spawn(Position {7, 8});        // handle valid immediately
         cmd.add<Velocity>(e, Velocity {1, 2}); // follow-up edit on it
@@ -88,7 +88,7 @@ static void spawn_returns_usable_handle() {
 // out of the flush). set() on a present component overwrites it.
 static void set_on_missing_component_is_noop() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 2}); });
 
     bool threw = false;
@@ -107,7 +107,7 @@ static void set_on_missing_component_is_noop() {
 
 static void reserved_handles_are_distinct() {
     World w;
-    Entity a, b, c;
+    Entity a = Entity::null(), b = Entity::null(), c = Entity::null();
     setup(w, [&](Commands& cmd) {
         a = cmd.spawn(Position {0, 0});
         b = cmd.spawn(Position {0, 0});
@@ -120,21 +120,21 @@ static void reserved_handles_are_distinct() {
 
 static void reserved_slot_reuse_bumps_generation() {
     World w;
-    Entity first;
+    Entity first = Entity::null();
     setup(w, [&](Commands& cmd) { first = cmd.spawn(Position {1, 1}); });
     setup(w, [&](Commands& cmd) { cmd.destroy(first); });
 
-    Entity reused;
+    Entity reused = Entity::null();
     setup(w, [&](Commands& cmd) { reused = cmd.spawn(Position {2, 2}); });
-    CHECK(reused.index == first.index);           // slot reused
-    CHECK(reused.generation != first.generation); // fresh generation
+    CHECK(reused.index() == first.index());           // slot reused
+    CHECK(reused.generation() != first.generation()); // fresh generation
     CHECK(!w.alive(first));                       // stale handle stays dead
     CHECK(w.alive(reused));
 }
 
 static void destroy_then_add_is_safe() {
     World w;
-    Entity e;
+    Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {0, 0}); });
     setup(w, [&](Commands& cmd) {
         cmd.destroy(e);
@@ -156,15 +156,15 @@ static void bulk_spawn_loop() {
             cmd.spawn(Position {float(i), -1});
     });
     CHECK(w.size() == 1050);
-    CHECK((query<Position, Velocity>(w).count() == 1000));
-    CHECK((query<Position>(w).count() == 1050));
+    CHECK((w.count<Position, Velocity>() == 1000));
+    CHECK((w.count<Position>() == 1050));
 
     CHECK(es.size() == 1000);
     CHECK(w.alive(es.front()) && w.alive(es.back()));
     CHECK(w.get<Position>(es[500]).x == 500.f);
 
     double sum_x = 0;
-    query<Position, Velocity>(w).for_each_serial([&](auto& p, auto&) { sum_x += p.x; });
+    w.for_each<Position, Velocity>([&](auto& p, auto&) { sum_x += p.x; });
     CHECK(sum_x == double(999) * 1000 / 2); // 0+1+...+999
 }
 
@@ -215,7 +215,7 @@ static void concurrent_reserve_and_followup_edits() {
     sched.run(w, pool);
     std::size_t const total = std::size_t(kSystems * kPerSystem);
     CHECK(w.size() == total);
-    CHECK((query<Position, Velocity>(w).count() == total)); // no lost edits
+    CHECK((w.count<Position, Velocity>() == total)); // no lost edits
 }
 
 static void add_once_runs_once_then_removed() {
@@ -281,6 +281,30 @@ static void remove_unschedules_system() {
     CHECK(runs.load() == 0); // removed system never ran
 }
 
+// Tombstone invariant: removing a system leaves every OTHER system's SystemId
+// (which IS its slot position) valid and still pointing at the same system. A
+// compacting erase would slide c into b's vacated slot and silently retarget
+// c's handle to the wrong system.
+static void remove_preserves_other_system_ids() {
+    World w;
+    Schedule sched;
+    std::atomic<int> a_runs {0}, c_runs {0};
+    SystemId a = sched.add("a", [&] { a_runs.fetch_add(1); });
+    SystemId b = sched.add("b", [] {});
+    SystemId c = sched.add("c", [&] { c_runs.fetch_add(1); });
+
+    CHECK(sched.remove(b));
+    CHECK(sched.size() == 2);
+    // a and c still index themselves -- their positions did not shift.
+    CHECK(sched.systems()[a].name == "a");
+    CHECK(sched.systems()[c].name == "c");
+
+    WorkerPool pool {2};
+    sched.run(w, pool);
+    CHECK(a_runs.load() == 1);
+    CHECK(c_runs.load() == 1); // c still ran: its handle never went stale
+}
+
 static void inline_run_executes_systems() {
     World w;
     Schedule sched;
@@ -310,6 +334,7 @@ int main() {
     RUN_SUITE(add_once_runs_once_then_removed);
     RUN_SUITE(phase_orders_startup_before_update);
     RUN_SUITE(remove_unschedules_system);
+    RUN_SUITE(remove_preserves_other_system_ids);
     RUN_SUITE(inline_run_executes_systems);
     return REPORT();
 }

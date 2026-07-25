@@ -99,7 +99,7 @@ void apply_inputs(App& a) {
     if (a.reset_req.exchange(false, std::memory_order_acq_rel)) {
         Schedule clear;
         clear.add_once("reset", [](Query<Position const> q, Commands& cmd) {
-            q.for_each_serial([&](Entity en, auto&) { cmd.destroy(en); });
+            q.for_each([&](Entity en, auto&) { cmd.destroy(en); });
         });
         clear.run(a.world);
     }
@@ -434,10 +434,10 @@ int main() {
 emscripten::val ecs_components() {
     using emscripten::val;
     val o = val::object();
-    o.set("Position", static_cast<int>(component_id<Position>));
-    o.set("Velocity", static_cast<int>(component_id<Velocity>));
-    o.set("Color", static_cast<int>(component_id<Color>));
-    o.set("Age", static_cast<int>(component_id<Age>));
+    o.set("Position", static_cast<int>(component_id<Position>.value));
+    o.set("Velocity", static_cast<int>(component_id<Velocity>.value));
+    o.set("Color", static_cast<int>(component_id<Color>.value));
+    o.set("Age", static_cast<int>(component_id<Age>.value));
     return o;
 }
 

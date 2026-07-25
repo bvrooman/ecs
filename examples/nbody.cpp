@@ -60,7 +60,7 @@ int main() {
     // Initial population: a one-shot setup system, run inline.
     {
         Schedule init;
-        init.add_once("populate", [&](World&, Commands& cmd) {
+        init.add_once("populate", [&](Commands& cmd) {
             for (int i = 0; i < kParticles; ++i) {
                 float f = float(i);
                 cmd.spawn(Position {f, -f, 0.5f * f},
@@ -80,9 +80,9 @@ int main() {
     // component or Res<T> is a read, a non-const component or ResMut<T> a write.
 
     // gravity: read Mass + the Gravity resource, write Velocity.
-    schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
+    schedule.add_kernel("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel, chunk<Mass const>) {
+        q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> vel, chunk<Mass const>) {
             for (auto& vy : vel.column<1>())
                 vy += a * kDt; // SoA fast path
         });
@@ -102,7 +102,7 @@ int main() {
 
     // reaper: age every Lifetime and destroy the expired ones (deferred).
     schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-        q.for_each_serial([&](Entity e, auto& l) {
+        q.for_each([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
         });
@@ -110,8 +110,8 @@ int main() {
 
     // integrate: read Velocity, write Position. Reads what gravity wrote, so the
     // scheduler places it on a later level automatically.
-    schedule.add("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity>,
+    schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
+        q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
             auto px = pos.column<0>();
@@ -135,7 +135,7 @@ int main() {
                     ResMut<SnapshotChannel<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.for_each_serial([&](auto& p, auto&) {
+                     q.for_each([&](auto& p, auto&) {
                          out.push_back({p.x, p.y, p.z});
                      });
                      ch->publish();
@@ -197,7 +197,7 @@ int main() {
                 audio_frames.load(),
                 audio_items.load());
 
-    Position p = world.get<Position>(Entity {0, 0});
+    Position p = world.get<Position>(Entity::from_raw(0, 0));
     std::printf("entity 0 final position = (%.3f, %.3f, %.3f)\n", p.x, p.y, p.z);
     return 0;
 }

@@ -1,0 +1,20 @@
+<svg viewBox="0 0 {{ w }} {{ h }}" class="chart" role="img" preserveAspectRatio="none">
+  {%- for g in grid %}
+  <line class="grid" x1="{{ padl }}" y1="{{ g.y }}" x2="{{ w - padr }}" y2="{{ g.y }}"/>
+  <text class="tick" x="{{ padl - 6 }}" y="{{ g.ty }}" text-anchor="end">{{ g.label }}</text>
+  {%- endfor %}
+  {%- for xt in xticks %}
+  <text class="tick" x="{{ xt.x }}" y="{{ h - 6 }}" text-anchor="middle">{{ xt.label }}</text>
+  {%- endfor %}
+  {%- if ideal %}
+  <polyline class="ideal" points="{{ ideal }}"/>
+  {%- endif %}
+  {%- for ln in lines %}
+  <polyline class="ml s{{ ln.slot }}" points="{{ ln.pts }}"/>
+  {%- endfor %}
+  {%- for d in dots %}
+  <circle class="mldot s{{ d.slot }}" data-ml data-label="{{ d.label }}"
+          data-lane="{{ d.lane }}" data-spd="{{ d.spd }}"
+          cx="{{ d.cx }}" cy="{{ d.cy }}" r="3.5"/>
+  {%- endfor %}
+</svg>

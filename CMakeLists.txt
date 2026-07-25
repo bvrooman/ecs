@@ -15,6 +15,17 @@ option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
 option(ECS_BUILD_TOOLS "Build the tools" ON)
 option(ECS_REFLECT_NAMES "Register component/resource type names via reflection (tooling/diagnostics)" OFF)
 option(ECS_DEV_TOOLING "Development profile" OFF)
+# Semicolon- or comma-separated sanitizer list applied to everything built in
+# this tree (tests are the intended target), e.g. "address;undefined" or
+# "thread". Empty = off. The library itself is header-only, so consumers are
+# unaffected either way.
+set(ECS_SANITIZE "" CACHE STRING "Sanitizers to build with (e.g. address;undefined or thread)")
+
+if (ECS_SANITIZE)
+    string(REPLACE ";" "," ECS_SANITIZE_FLAG "${ECS_SANITIZE}")
+    add_compile_options(-fsanitize=${ECS_SANITIZE_FLAG} -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=${ECS_SANITIZE_FLAG})
+endif ()
 
 # Emscripten's Clang has no P2996 static reflection (-freflection / <meta>), so
 # force the portable structured-bindings backend there regardless of the cached

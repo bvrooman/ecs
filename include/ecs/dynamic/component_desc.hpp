@@ -36,13 +36,23 @@ struct Field {
     FieldType type;
     std::size_t size;   // element size in bytes (== field_size(type))
     std::size_t offset; // byte offset within the packed AoS interchange blob
+
+    friend bool operator==(Field const&, Field const&) = default;
 };
 
+// How the described component is *stored*. A dynamic component lives in a
+// DynamicColumn; a native one is a reflected C++ struct in a Column<T> that was
+// merely described (register_native) so hosts can view its fields. The blob
+// mutation paths (WorldOps add/set/get/spawn) require dynamic storage -- they
+// downcast the column to DynamicColumn, which for a native column would be UB.
+enum class StorageKind : std::uint8_t { dynamic_column, native_column };
+
 struct ComponentDesc {
-    ComponentId id = 0;
+    ComponentId id = {};
     std::string name;
     std::vector<Field> fields;
     std::size_t stride = 0; // packed blob size == sum of field sizes
+    StorageKind kind   = StorageKind::dynamic_column;
 };
 
 } // namespace ecs::dynamic

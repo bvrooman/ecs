@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schedule report — {{ source }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<main>
+  <h1>Schedule report</h1>
+  <div class="meta">{{ source }} &middot; {{ "{:,}".format(n_ticks) }} ticks
+    &middot; {{ n_systems }} systems &middot; {{ n_waves }} waves</div>
+
+  <div class="tiles">
+    {% for label, value in tiles %}
+    <div class="tile"><div class="k">{{ label }}</div>
+      <div class="v">{{ value }}</div></div>
+    {% endfor %}
+  </div>
+
+  <h2>Tick wall time</h2>
+  <div class="card">
+    {% if tick_banded %}
+    <div class="sub">mean per bucket; the wash spans each bucket&rsquo;s
+      min&hellip;max</div>
+    {% endif %}
+    {{ tick_svg }}
+  </div>
+
+  <h2>Waves</h2>
+  <div class="card">
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent)"></span>work</span>
+      <span><span class="sw" style="background:var(--accent-soft)"></span>command flush</span>
+    </div>
+    <div class="sub">mean wall time over the ticks each wave ran{% if waves_partial %};
+      one-shot or per-N-tick phases (e.g. a re-sort every 64 ticks) run for only
+      some ticks, so hover a row for its run count{% endif %}</div>
+    {{ waves_svg }}
+  </div>
+
+  <h2>Wave composition</h2>
+  <div class="card">
+    <div class="legend">
+      {% for l in wavestack_legend %}
+      <span><span class="sw {% if l.over %}over{% else %}s{{ l.slot }}{% endif %}"></span>{{ l.label }}</span>
+      {% endfor %}
+    </div>
+    <div class="sub">each wave&rsquo;s wall time stacked over the run, so the top
+      edge traces the tick wall &mdash; waves run sequentially behind barriers,
+      so per tick their walls sum to it. A one-shot or per-N-tick phase (e.g. a
+      re-sort every 64 ticks) contributes a band only on the ticks it ran, so it
+      reads as a periodic spike; the top band is the residual tick time outside
+      any wave (barrier and dispatch overhead)</div>
+    {{ wavestack_svg }}
+  </div>
+
+  <h2>Systems by busy time per tick</h2>
+  <div class="card">
+    <div class="sub">amortized cost across the run / total ticks. busy = sum of
+      the system&rsquo;s work items across all lanes (CPU time; a fanned
+      wave&rsquo;s systems legitimately sum past the wave&rsquo;s wall time),
+      plus the command <b>flush</b> spent applying this system&rsquo;s own
+      commands at the barrier (e.g. a <code>Commands::sort</code>), measured
+      per system in the core</div>
+    {{ overview_svg }}
+  </div>
+
+  <h2>Systems</h2>
+  {% for c in cards %}
+  <div class="card">
+    <h3>{{ c.name }}</h3>
+    <div class="sub">wave {{ c.wave }} &middot;
+      {{ c.n_items }} work item{{ "s" if c.n_items != 1 }} &middot;
+      ran {{ "{:,}".format(c.n) }} of {{ "{:,}".format(n_ticks) }} ticks &middot;
+      <span class="hint" data-hint="amortized cost is the system's busy (CPU summed across lanes, so a well-parallelized system can exceed 100%) plus the command flush spent applying its own commands at the barrier (measured per system in the core), spread over every tick including any it sat out (the per-run spike shows in the series below)">amortized {{ c.amortized_pct }}% of tick ({{ c.amortized }} / tick{% if c.has_flush %} &mdash; busy {{ c.amort_busy }} + flush {{ c.amort_flush }}{% endif %})</span></div>
+    <div class="statrow">
+      {% for k, v in c.stats %}<span>{{ k }} <b>{{ v }}</b></span>{% endfor %}
+    </div>
+    <div class="sub">busy distribution</div>
+    {{ c.hist }}
+    <div class="sub">busy over the run</div>
+    {{ c.series }}
+    {%- if c.has_flush %}
+    <div class="sub">command flush over the run (applied at the barrier; the
+      per-run spike this system&rsquo;s amortized flush averages)</div>
+    {{ c.flush_series }}
+    {%- endif %}
+  </div>
+  {% endfor %}
+
+  <h2>All numbers</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>system</th><th>wave</th><th>items</th><th>n</th>
+        <th>mean</th><th>sd</th><th>p50</th><th>p99</th><th>max</th>
+        <th>prepare</th><th>finish</th><th>flush</th><th>amort % tick</th></tr></thead>
+      <tbody>
+        {% for row in table %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+<div id="tip"></div>
+<script type="application/json" id="data">{{ payload }}</script>
+<script>{{ js }}</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "schedule-report"
+version = "0.1.0"
+description = "Render an ecs ScheduleTrace CSV into a self-contained HTML report"
+requires-python = ">=3.10"
+dependencies = ["jinja2>=3.0"]
+
+[project.scripts]
+schedule-report = "schedule_report.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["schedule_report*"]
+
+[tool.setuptools.package-data]
+schedule_report = ["templates/**/*.j2", "static/*"]

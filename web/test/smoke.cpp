@@ -69,7 +69,7 @@ int main() {
     // Initial population: a one-shot setup system, deferred through Commands.
     {
         Schedule init;
-        init.add_once("populate", [&](World&, Commands& cmd) {
+        init.add_once("populate", [&](Commands& cmd) {
             for (int i = 0; i < kParticles; ++i) {
                 float f = float(i);
                 cmd.spawn(Position {f, -f, 0.5f * f},
@@ -86,7 +86,7 @@ int main() {
     // gravity: read Mass + the Gravity resource, write Velocity.
     schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_serial([a](auto& v, auto&) { v.y += a * kDt; });
+        q.for_each([a](auto& v, auto&) { v.y += a * kDt; });
     });
 
     // emitter: spawn short-lived tracer particles via the command buffer.
@@ -102,7 +102,7 @@ int main() {
 
     // reaper: age every Lifetime, destroy the expired ones (deferred).
     schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
-        q.for_each_serial([&](Entity e, auto& l) {
+        q.for_each([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
         });
@@ -110,7 +110,7 @@ int main() {
 
     // integrate: read Velocity (written by gravity -> later level), write Position.
     schedule.add("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_serial([](auto& p, auto& v) {
+        q.for_each([](auto& p, auto& v) {
             p.x += v.x * kDt;
             p.y += v.y * kDt;
             p.z += v.z * kDt;
@@ -123,7 +123,7 @@ int main() {
                     ResMut<SnapshotChannel<Snapshot>> ch) {
                      Snapshot& out = ch->back();
                      out.clear();
-                     q.for_each_serial([&](auto& p, auto&) {
+                     q.for_each([&](auto& p, auto&) {
                          out.push_back({p.x, p.y, p.z});
                      });
                      ch->publish();
@@ -140,7 +140,7 @@ int main() {
     auto reader = world.resource<SnapshotChannel<Snapshot>>().reader();
     long snap   = reader.poll() ? long(reader.get()->size()) : -1;
 
-    Position p0 = world.get<Position>(Entity {0, 0});
+    Position p0 = world.get<Position>(Entity::from_raw(0, 0));
     std::printf("after %d ticks: %zu entities alive, last snapshot = %ld tracers\n",
                 kTicks,
                 world.size(),

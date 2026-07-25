@@ -8,6 +8,7 @@
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
 using namespace ecs;
@@ -28,11 +29,11 @@ struct NPos {
 // binding does per chunk (minus the typed-array views handed to a JS function).
 template <class Kernel>
 static auto each_chunk(Signature query, Kernel kernel) {
-    std::ranges::sort(query);
+    // Signature normalizes (sorts + dedups) on construction.
     return [query  = std::move(query),
-            kernel = std::move(kernel)](World& w, Commands&, WorkerPool&) {
+            kernel = std::move(kernel)](World& w, Commands&, detail::WorkItem const&) {
         for (auto const ai : w.matching_archetypes(query)) {
-            auto& arch = *w.archetypes()[ai];
+            auto& arch = dynamic::WorldOps::archetype_at(w, ai);
             if (arch.size() > 0)
                 kernel(arch.size(), arch);
         }
@@ -41,7 +42,7 @@ static auto each_chunk(Signature query, Kernel kernel) {
 
 static float* base(Archetype& a, ComponentId id, std::size_t field) {
     return static_cast<float*>(
-        static_cast<DynamicColumn&>(*a.columns.at(id)).field_base(field));
+        static_cast<DynamicColumn&>(a.column_at(id)).field_base(field));
 }
 
 static ComponentId define2(char const* name) {
@@ -95,7 +96,8 @@ static void multi_entity_and_view() {
     auto const Pos = define2("PositionC");
     World w;
     constexpr int N = 6;
-    Entity es[N];
+    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
+                               Entity::null(), Entity::null(), Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), float(i * 2)};
@@ -125,7 +127,8 @@ static void destroy_keeps_storage_consistent() {
     auto const Pos = define2("PositionD");
     World w;
     constexpr int N = 4;
-    Entity es[N];
+    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
+                               Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), 0};
@@ -247,7 +250,7 @@ static void native_component_runtime_access() {
     // commands flush at the phase barrier) before the runtime system queries them.
     sched.add_once(
         "spawn",
-        [](World&, Commands& cmd) {
+        [](Commands& cmd) {
             for (int i = 0; i < 4; ++i)
                 cmd.spawn(NPos {float(i), 0.f});
         },
@@ -260,7 +263,7 @@ static void native_component_runtime_access() {
                           // Field 0 of a *native* column, reached through the runtime
                           // IColumn vtable.
                           auto* xs = static_cast<float*>(
-                              a.columns.at(component_id<NPos>)->field_base(0));
+                              a.column_at(component_id<NPos>).field_base(0));
                           for (std::size_t i = 0; i < n; ++i)
                               xs[i] *= 10.f;
                       }));
@@ -268,7 +271,7 @@ static void native_component_runtime_access() {
 
     CHECK(w.size() == 4);
     for (int i = 0; i < 4; ++i)
-        CHECK((w.get<NPos>(Entity {std::uint32_t(i), 0}).x == float(i) * 10.f));
+        CHECK((w.get<NPos>(Entity::from_raw(std::uint32_t(i), 0)).x == float(i) * 10.f));
 }
 
 int main() {

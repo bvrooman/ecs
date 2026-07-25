@@ -14,6 +14,18 @@ add_custom_target(web_public ALL
         COMMENT "Copying static web assets to the serve dir")
 set(WEB_SHADERS_EMBED "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/examples/shaders@/shaders")
 
+# Wasm SIMD for every target: the library's whole pitch is SoA laid out for
+# vectorizable iteration -- without -msimd128 the wasm build scalarizes it all.
+# Relaxed SIMD additionally unlocks FMA (fine for the visual demos; supported by
+# all current engines behind the same flag).
+add_compile_options(-msimd128 -mrelaxed-simd)
+
+# Native wasm exception handling for the embind/bindings targets: the JS-facing
+# API throws as its error surface (e.g. a bad field-type string). Without this,
+# Emscripten's default turns every throw into abort(), taking the whole runtime
+# down instead of surfacing a catchable JS error. Both compile AND link flags.
+set(WEB_EH_FLAGS -fwasm-exceptions)
+
 # Phase 0 smoke test: proves the ECS core compiles and runs under Emscripten with
 # the portable reflection backend, single-threaded. Emits a Node-runnable loader.
 #   run: node build-wasm/web/ecs_smoke.js
@@ -101,8 +113,10 @@ set_target_properties(particles_web_mt PROPERTIES OUTPUT_NAME particles-mt SUFFI
 add_executable(particles_js
         dynamic/bindings.cpp
         examples/particles_js/host.cpp)
+target_compile_options(particles_js PRIVATE ${WEB_EH_FLAGS})
 target_link_libraries(particles_js PRIVATE ecs::ecs ecs::diag)
 target_link_options(particles_js PRIVATE
+        ${WEB_EH_FLAGS}
         "-lembind"
         ${WEB_SHADERS_EMBED}
         "-sENVIRONMENT=web"
@@ -122,8 +136,9 @@ add_executable(particles_js_mt
         dynamic/bindings.cpp
         examples/particles_js/host.cpp)
 target_link_libraries(particles_js_mt PRIVATE ecs::ecs ecs::diag)
-target_compile_options(particles_js_mt PRIVATE -pthread)
+target_compile_options(particles_js_mt PRIVATE -pthread ${WEB_EH_FLAGS})
 target_link_options(particles_js_mt PRIVATE
+        ${WEB_EH_FLAGS}
         -pthread
         "-lembind"
         ${WEB_SHADERS_EMBED}
@@ -162,8 +177,10 @@ set_target_properties(ecs_parallel_smoke PROPERTIES OUTPUT_NAME ecs_parallel_smo
 #   node build-wasm/web/smoke_dynamic.mjs
 # ---------------------------------------------------------------------------
 add_executable(ecs_dynamic dynamic/bindings.cpp)
+target_compile_options(ecs_dynamic PRIVATE ${WEB_EH_FLAGS})
 target_link_libraries(ecs_dynamic PRIVATE ecs::ecs ecs::diag)
 target_link_options(ecs_dynamic PRIVATE
+        ${WEB_EH_FLAGS}
         "-lembind"
         "-sENVIRONMENT=node"
         "-sMODULARIZE=1"
@@ -184,8 +201,9 @@ add_custom_command(TARGET ecs_dynamic POST_BUILD
 # verified by smoke_parallel.mjs.  node build-wasm/web/smoke_parallel.mjs
 add_executable(ecs_dynamic_mt dynamic/bindings.cpp)
 target_link_libraries(ecs_dynamic_mt PRIVATE ecs::ecs ecs::diag)
-target_compile_options(ecs_dynamic_mt PRIVATE -pthread)
+target_compile_options(ecs_dynamic_mt PRIVATE -pthread ${WEB_EH_FLAGS})
 target_link_options(ecs_dynamic_mt PRIVATE
+        ${WEB_EH_FLAGS}
         -pthread
         "-lembind"
         "-sENVIRONMENT=node,worker"

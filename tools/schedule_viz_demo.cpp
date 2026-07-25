@@ -42,7 +42,14 @@ int main(int argc, char** argv) {
 
     // teardown (phase 1)
     sched.add("reap_dead", [](Commands&) {}, phase<1> {});
-    sched.add("debug_overlay", [](World&) {}, phase<1> {}); // exclusive -> runs alone
+    // A declared-exclusive system (raw World& is not a system parameter; a
+    // genuinely unanalyzable system says so explicitly via add_dynamic).
+    ecs::SystemAccess excl;
+    excl.exclusive = true;
+    sched.add_dynamic("debug_overlay",
+                      excl,
+                      [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},
+                      /*phase=*/1); // exclusive -> runs alone
 
     // Component/resource names come from reflection at build time (this target
     // is compiled with ECS_REFLECT_NAMES=1) -- no manual name table. Pass a

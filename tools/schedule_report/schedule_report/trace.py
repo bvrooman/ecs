@@ -1,0 +1,122 @@
+"""Load and summarize a ScheduleTrace CSV (see tools/schedule_trace.hpp).
+
+Columns:
+    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us,
+    cmd_us,build_us,sort_us
+(cmd_us/build_us/sort_us are read optionally; older traces without them read as
+0, so only the pre-cmd_us column set is required.)
+"""
+
+from __future__ import annotations
+
+import csv
+import math
+import sys
+from collections import Counter
+
+COLUMNS = {"tick", "wave", "system", "busy_us", "prepare_us",
+           "finish_us", "items", "wave_us", "flush_us", "tick_us"}
+
+
+def load(path, warmup=0):
+    """Parse the trace into per-system, per-tick, and per-wave series.
+
+    warmup: drop the first `warmup` ticks (by tick index) from everything --
+    the profiler convention of discarding cold-start iterations so the
+    distributions reflect steady state, not the first frame's cache/frequency
+    warm-up. A per-N-tick system (Schedule `every`) simply has rows on a subset
+    of ticks, like a one-shot phase."""
+    systems = {}   # name -> dict(busy=[], prep=[], fin=[], items, wave, ticks=[])
+    ticks = {}     # tick -> tick_us
+    waves = {}     # wave -> {tick: (wave_us, flush_us)}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        missing = COLUMNS - set(reader.fieldnames or [])
+        if missing:
+            sys.exit(f"error: {path} is missing columns {sorted(missing)} -- "
+                     "is this a tools/schedule_trace.hpp CSV?")
+        for row in reader:
+            tick = int(row["tick"])
+            if tick < warmup:
+                continue
+            wave = int(row["wave"])
+            name = row["system"]
+            s = systems.setdefault(name, {
+                "busy": [], "prep": [], "fin": [], "cmd": [], "ticks": [],
+                "items": 0, "waves": Counter(),
+            })
+            s["busy"].append(float(row["busy_us"]))
+            s["prep"].append(float(row["prepare_us"]))
+            s["fin"].append(float(row["finish_us"]))
+            # cmd_us (this system's share of the wave's command flush) is
+            # optional -- traces from before per-system flush attribution lack
+            # it and read as 0.
+            s["cmd"].append(float(row.get("cmd_us") or 0.0))
+            s["ticks"].append(tick)
+            s["items"] = max(s["items"], int(row["items"]))
+            s["waves"][wave] += 1  # one-shot / per-N-tick phases shift placements
+            ticks[tick] = float(row["tick_us"])
+            waves.setdefault(wave, {})[tick] = (float(row["wave_us"]),
+                                                float(row["flush_us"]))
+    if not ticks:
+        sys.exit(f"error: no rows in {path}"
+                 + (f" after dropping {warmup} warmup ticks" if warmup else ""))
+    return systems, ticks, waves
+
+
+def stats(xs):
+    """n / mean / sd / p50 / p99 / max of a sample list."""
+    n = len(xs)
+    if n == 0:
+        return dict(n=0, mean=0, sd=0, p50=0, p99=0, mx=0)
+    ordered = sorted(xs)
+    mean = sum(xs) / n
+    var = sum((x - mean) ** 2 for x in xs) / n
+
+    def pct(p):
+        return ordered[min(n - 1, int(p * n))]
+
+    return dict(n=n, mean=mean, sd=math.sqrt(var),
+                p50=pct(0.50), p99=pct(0.99), mx=ordered[-1])
+
+
+def fmt_us(v):
+    """Compact microsecond value: 12.3 µs / 4.56 ms / 1.20 s."""
+    if v >= 1e6:
+        return f"{v / 1e6:,.2f} s"
+    if v >= 1e3:
+        return f"{v / 1e3:,.2f} ms"
+    return f"{v:,.1f} µs"
+
+
+def nice_ticks(lo, hi, n=4):
+    """Clean axis tick values covering [lo, hi]."""
+    if hi <= lo:
+        hi = lo + 1
+    raw = (hi - lo) / n
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(s * mag for s in (1, 2, 2.5, 5, 10) if s * mag >= raw)
+    first = math.ceil(lo / step) * step
+    out = []
+    v = first
+    while v <= hi + 1e-9:
+        out.append(round(v, 10))
+        v += step
+    return out
+
+
+def downsample(xs, values, buckets=700):
+    """Per-bucket mean plus min..max band when the series outgrows the plot."""
+    n = len(values)
+    if n <= buckets:
+        return xs, values, None, None
+    bx, mean, lo, hi = [], [], [], []
+    for b in range(buckets):
+        i0 = b * n // buckets
+        i1 = max(i0 + 1, (b + 1) * n // buckets)
+        chunk = values[i0:i1]
+        bx.append(xs[(i0 + i1 - 1) // 2])
+        mean.append(sum(chunk) / len(chunk))
+        lo.append(min(chunk))
+        hi.append(max(chunk))
+    return bx, mean, lo, hi

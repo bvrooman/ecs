@@ -7,8 +7,9 @@
 
 #pragma once
 
-#include "../entity.hpp" // ComponentId, detail::next_component_id
+#include "../entity.hpp" // ComponentId
 #include "component_desc.hpp"
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -19,18 +20,26 @@ public:
     // Register a component schema under a fresh id (a JS-defined component).
     ComponentId define(std::string name,
                        std::vector<std::pair<std::string, FieldType>> const& fields) {
-        return define_with_id(ecs::detail::next_component_id(), std::move(name), fields);
+        return define_with_id(ComponentId::next(), std::move(name), fields);
     }
 
-    // Register (or replace) a schema under a *specific* id -- used to describe a
-    // native component type T under its component_id<T> (see native.hpp), so the
+    // Register a schema under a *specific* id -- used to describe a native
+    // component type T under its component_id<T> (see native.hpp), so the
     // runtime/JS layer can view native columns by name. Offsets/stride are
     // computed by packing the fields in declaration order.
+    //
+    // Redefinition: registering the SAME schema again is an idempotent no-op
+    // (setup code may run twice); registering a DIFFERENT schema under a live
+    // id throws -- every existing DynamicColumn holds a pointer to the current
+    // desc and sized its field buffers from it, so mutating it in place would
+    // corrupt them all.
     ComponentId define_with_id(ComponentId id, std::string name,
-                               std::vector<std::pair<std::string, FieldType>> const& fields) {
+                               std::vector<std::pair<std::string, FieldType>> const& fields,
+                               StorageKind kind = StorageKind::dynamic_column) {
         ComponentDesc d;
         d.id   = id;
         d.name = std::move(name);
+        d.kind = kind;
         std::size_t off = 0;
         for (auto const& [fname, ftype] : fields) {
             auto const sz = field_size(ftype);
@@ -38,12 +47,30 @@ public:
             off += sz;
         }
         d.stride = off;
-        descs_.insert_or_assign(id, std::move(d));
+        if (auto const it = descs_.find(id); it != descs_.end()) {
+            auto const& old = it->second;
+            if (old.name == d.name && old.fields == d.fields && old.kind == d.kind)
+                return id; // identical re-registration: no-op
+            throw std::logic_error("ecs::dynamic: component id already defined "
+                                   "with a different schema (\"" +
+                                   old.name + "\")");
+        }
+        descs_.emplace(id, std::move(d));
         return id;
     }
 
+    // True when `id` is described AND stored dynamically (a DynamicColumn). A
+    // register_native'd component is described but NOT dynamic -- the blob
+    // mutation paths must refuse it (see WorldOps).
     [[nodiscard]]
     bool is_dynamic(ComponentId id) const {
+        auto const it = descs_.find(id);
+        return it != descs_.end() && it->second.kind == StorageKind::dynamic_column;
+    }
+    // True when `id` has a schema at all (dynamic or described-native) -- what
+    // the view-building paths need.
+    [[nodiscard]]
+    bool is_described(ComponentId id) const {
         return descs_.contains(id);
     }
     [[nodiscard]]

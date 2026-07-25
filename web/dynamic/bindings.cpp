@@ -128,7 +128,7 @@ public:
             fs.emplace_back(f["name"].as<std::string>(),
                             parse_type(f["type"].as<std::string>()));
         }
-        return static_cast<int>(registry().define(std::move(name), fs));
+        return static_cast<int>(registry().define(std::move(name), fs).value);
     }
 
     val createEntity() { return to_val(WorldOps::create_entity(world_)); }
@@ -167,7 +167,7 @@ public:
         WorldOps::spawn_deferred(world_, std::move(packed));
     }
     void destroy(unsigned index, unsigned generation) {
-        WorldOps::destroy_deferred(world_, Entity {index, generation});
+        WorldOps::destroy_deferred(world_, Entity::from_raw(index, generation));
     }
 
     // -> JS array of field values, or null if the entity lacks the component.
@@ -208,7 +208,7 @@ public:
     // and spawns via this world's spawn(). Runs main-thread. See js_system.hpp.
     int defineSystem(std::string name, val spec, val kernel) {
         return static_cast<int>(
-            web::add_js_system(schedule_, std::move(name), spec, kernel));
+            web::add_js_system(schedule_, std::move(name), spec, kernel).value);
     }
 
     // Register a *parallel* JS system. Same access spec { write?, read? } as
@@ -220,7 +220,7 @@ public:
     int defineParallelSystem(std::string name, val spec, val kernel) {
         SystemAccess access;
         std::vector<ComponentId> query;
-        auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+        auto collect = [&](char const* key, std::vector<ComponentId>& into) {
             val arr = spec[key];
             if (arr.isUndefined() || arr.isNull())
                 return;
@@ -268,8 +268,20 @@ public:
             val comp      = val::object();
             comp.set("n", d.name);
             val f = val::array();
-            for (auto const& fld : d.fields)
-                f.call<void>("push", fld.name);
+            for (auto const& fld : d.fields) {
+                // Ship the field TYPE alongside its name: the worker picks the
+                // matching typed-array constructor (an f64/i32/u32 field viewed
+                // as Float32Array would silently reinterpret its bits).
+                val fo = val::object();
+                fo.set("n", fld.name);
+                switch (fld.type) {
+                case FieldType::f64: fo.set("t", std::string("f64")); break;
+                case FieldType::i32: fo.set("t", std::string("i32")); break;
+                case FieldType::u32: fo.set("t", std::string("u32")); break;
+                case FieldType::f32: fo.set("t", std::string("f32")); break;
+                }
+                f.call<void>("push", fo);
+            }
             comp.set("f", f);
             layout.call<void>("push", comp);
         }
@@ -281,17 +293,22 @@ public:
 
         auto run = [query, blobStr, values, sid, np](World& w,
                                                      Commands&,
-                                                     WorkerPool& pool) {
-            Signature const required(query.begin(), query.end());
-            for (auto const ai : w.matching_archetypes(required)) {
-                auto& arch       = *w.archetypes()[ai];
+                                                     detail::WorkItem const& item) {
+            // The scheduler hands this parallel system ONE row-range slice per
+            // call (see Schedule::add_dynamic_parallel); process exactly that
+            // slice. Field views span the whole archetype column (base = row 0)
+            // while the kernel runs over [lo, hi) only, so slices dispatched to
+            // different lanes touch disjoint rows -- no double work, and no
+            // parallel_for on the pool the scheduler is already fanning us across.
+            for (auto const& u : item.units) {
+                auto& arch       = WorldOps::archetype_at(w, u.archetype);
                 auto const count = arch.size();
                 if (count == 0)
                     continue;
                 std::vector<std::uint32_t> bases; // field bases, in query order
                 for (auto const cid : query) {
                     auto const& d = registry().desc(cid);
-                    auto& col     = *arch.columns.at(cid);
+                    auto& col     = arch.column_at(cid);
                     for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
                         bases.push_back(static_cast<std::uint32_t>(
                             reinterpret_cast<std::uintptr_t>(col.field_base(fi))));
@@ -303,11 +320,11 @@ public:
                 auto const vptr = static_cast<std::uint32_t>(
                     reinterpret_cast<std::uintptr_t>(values->data()));
                 auto const cnt = static_cast<std::uint32_t>(count);
-                // 1-lane pool -> serial on the caller; N-lane -> across worker lanes.
-                pool.parallel_for(count, [=](std::size_t b, std::size_t e) {
-                    // EM_ASM body must have NO top-level commas (the preprocessor
-                    // splits macro args on them) -- commas live only inside ( ).
-                    // clang-format off
+                auto const lo  = static_cast<int>(u.begin);
+                auto const hi  = static_cast<int>(u.end);
+                // EM_ASM body must have NO top-level commas (the preprocessor
+                // splits macro args on them) -- commas live only inside ( ).
+                // clang-format off
                     EM_ASM({
                         var sid=$0;
                         var blobPtr=$1;
@@ -335,8 +352,16 @@ public:
                         for (var ci=0; ci<S.layout.length; ci++) {
                             var comp = S.layout[ci];
                             var o = {};
-                            for (var fi=0; fi<comp.f.length; fi++)
-                                o[comp.f[fi]] = new Float32Array(HEAPF32.buffer, bases[k++], count);
+                            for (var fi=0; fi<comp.f.length; fi++) {
+                                var fld = comp.f[fi];
+                                var base = bases[k++];
+                                var view;
+                                if (fld.t === 'f64') view = new Float64Array(HEAPF64.buffer, base, count);
+                                else if (fld.t === 'i32') view = new Int32Array(HEAP32.buffer, base, count);
+                                else if (fld.t === 'u32') view = new Uint32Array(HEAPU32.buffer, base, count);
+                                else view = new Float32Array(HEAPF32.buffer, base, count);
+                                o[fld.n] = view;
+                            }
                             c[comp.n] = o;
                         }
                         var p = {};
@@ -345,14 +370,17 @@ public:
                             for (var pi=0; pi<S.params.length; pi++) p[S.params[pi]] = pv[pi];
                         }
                         S.fn(lo, hi, c, p);
-                    }, sid, blobC, (int)b, (int)e, cnt, bptr, nb, vptr, np);
-                    // clang-format on
-                });
+                    }, sid, blobC, lo, hi, cnt, bptr, nb, vptr, np);
+                // clang-format on
             }
         };
-        return static_cast<int>(schedule_.add_dynamic(std::move(name),
-                                                      std::move(access),
-                                                      std::move(run)));
+        return static_cast<int>(
+            schedule_
+                .add_dynamic_parallel(std::move(name),
+                                      std::move(access),
+                                      Signature(query),
+                                      std::move(run))
+                .value);
     }
 
     // Run the schedule once. First snapshot every parallel system's params object
@@ -415,12 +443,12 @@ private:
 
     static val to_val(Entity e) {
         val o = val::object();
-        o.set("index", static_cast<unsigned>(e.index));
-        o.set("generation", static_cast<unsigned>(e.generation));
+        o.set("index", static_cast<unsigned>(e.index()));
+        o.set("generation", static_cast<unsigned>(e.generation()));
         return o;
     }
     static Entity from_val(val e) {
-        return Entity {e["index"].as<unsigned>(), e["generation"].as<unsigned>()};
+        return Entity::from_raw(e["index"].as<unsigned>(), e["generation"].as<unsigned>());
     }
 
     // Per parallel system: the JS params object (read each tick), its key names,

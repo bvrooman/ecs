@@ -11,6 +11,7 @@
 #pragma once
 
 #include "ecs/dynamic/registry.hpp"
+#include "ecs/dynamic/world_ops.hpp"
 #include "ecs/schedule.hpp"
 #include "ecs/world.hpp"
 #include <algorithm>
@@ -49,7 +50,7 @@ inline SystemId add_js_system(Schedule& schedule,
     using emscripten::val;
     SystemAccess access;
     std::vector<ComponentId> query;
-    auto collect = [&](char const* key, std::vector<std::uint32_t>& into) {
+    auto collect = [&](char const* key, std::vector<ComponentId>& into) {
         val arr = spec[key];
         if (arr.isUndefined() || arr.isNull())
             return;
@@ -76,23 +77,25 @@ inline SystemId add_js_system(Schedule& schedule,
         access.commands = true;
         return schedule.add_dynamic(std::move(name),
                                     std::move(access),
-                                    [kernel](World&, Commands&, WorkerPool&) {
+                                    [kernel](World&, Commands&, detail::WorkItem const&) {
                                         kernel();
                                     });
     }
 
     // Query system: kernel(count, views, entities) once per matching archetype.
-    auto run = [kernel, query](World& w, Commands&, WorkerPool&) {
-        Signature const required(query.begin(), query.end());
+    // A serial dynamic system: it iterates every matching archetype itself, so
+    // it ignores the per-item WorkItem the schedule hands a sliced kernel.
+    auto run = [kernel, query](World& w, Commands&, detail::WorkItem const&) {
+        Signature const required(query);
         for (auto const ai : w.matching_archetypes(required)) {
-            auto& arch       = *w.archetypes()[ai];
+            auto& arch       = WorldOps::archetype_at(w, ai);
             auto const count = arch.size();
             if (count == 0)
                 continue;
             val views = val::object();
             for (auto const cid : query) {
                 auto const& d = registry().desc(cid);
-                auto& col     = *arch.columns.at(cid); // IColumn: native or dynamic
+                auto& col     = arch.column_at(cid); // IColumn: native or dynamic
                 val fields    = val::object();
                 for (std::size_t fi = 0; fi < d.fields.size(); ++fi)
                     fields.set(d.fields[fi].name,

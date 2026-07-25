@@ -2,6 +2,7 @@
 #include "check.hpp"
 #include "ecs/reflection/reflect.hpp"
 #include "ecs/soa.hpp"
+#include <stdexcept>
 
 using namespace ecs;
 
@@ -104,6 +105,59 @@ static void tag_component_has_no_columns() {
     CHECK(soa_storage<Tag>::field_count == 0);
 }
 
+// A field type whose copy constructor throws on demand -- used to prove
+// push_back is transactional (a mid-scatter throw must not leave the columns
+// at different lengths, which would silently corrupt every later row).
+struct Fickle {
+    static inline bool arm = false;
+    int v                  = 0;
+    Fickle()               = default;
+    explicit Fickle(int x)
+        : v(x) {}
+    Fickle(Fickle const& o)
+        : v(o.v) {
+        if (arm)
+            throw std::runtime_error("fickle copy");
+    }
+    Fickle& operator=(Fickle const&) = default;
+    Fickle(Fickle&&)                 = default;
+    Fickle& operator=(Fickle&&)      = default;
+};
+struct TwoField {
+    int a = 0; // scatters first, succeeds
+    Fickle b;  // scatters second, may throw
+};
+
+static void push_back_is_transactional_on_throw() {
+    soa_storage<TwoField> s;
+    s.push_back(TwoField {1, Fickle {10}});
+    CHECK(s.size() == 1);
+
+    Fickle::arm = true;
+    bool threw  = false;
+    TwoField const bomb {2, Fickle {20}};
+    try {
+        s.push_back(bomb); // copy of .b throws AFTER .a was appended
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    Fickle::arm = false;
+    CHECK(threw);
+
+    // The failed push must have rolled back completely: still exactly one row,
+    // both columns agreeing on it.
+    CHECK(s.size() == 1);
+    CHECK(s.column<0>().size() == 1);
+    CHECK(s.column<1>().size() == 1);
+    CHECK(s.gather(0).a == 1);
+    CHECK(s.gather(0).b.v == 10);
+
+    // And the storage remains fully usable afterwards.
+    s.push_back(TwoField {3, Fickle {30}});
+    CHECK(s.size() == 2);
+    CHECK(s.gather(1).a == 3);
+}
+
 int main() {
     RUN_SUITE(reflection_counts);
     RUN_SUITE(scatter_gather);
@@ -111,5 +165,6 @@ int main() {
     RUN_SUITE(column_is_contiguous_and_mutable);
     RUN_SUITE(swap_remove_keeps_columns_consistent);
     RUN_SUITE(tag_component_has_no_columns);
+    RUN_SUITE(push_back_is_transactional_on_throw);
     return REPORT();
 }

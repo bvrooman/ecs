@@ -28,6 +28,21 @@
 #include <atomic>
 #include <memory>
 #include <utility>
+#include <vector>
+
+// ThreadSanitizer does not model std::atomic_thread_fence synchronization, so
+// the (formally correct, see acquire_buffer) fence-based buffer reclaim below
+// reads as a false-positive race under TSAN. Skip pooling there.
+#if defined(__SANITIZE_THREAD__)
+#define ECS_SNAPSHOT_POOL 0
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define ECS_SNAPSHOT_POOL 0
+#endif
+#endif
+#ifndef ECS_SNAPSHOT_POOL
+#define ECS_SNAPSHOT_POOL 1
+#endif
 
 namespace ecs::sync {
 
@@ -48,9 +63,17 @@ public:
 
     // Publish the current back buffer as the latest snapshot and take a fresh
     // buffer to fill next. Readers keep any snapshot they still hold alive.
+    // Steady state allocates nothing: previously published buffers are retained
+    // in a producer-owned pool and recycled once every consumer has released
+    // them (use_count back to 1 -- only the pool's reference left).
     void publish() {
         latest_.store(std::shared_ptr<T const>(writing_), std::memory_order_release);
+#if ECS_SNAPSHOT_POOL
+        pool_.push_back(std::move(writing_));
+        writing_ = acquire_buffer();
+#else
         writing_ = std::make_shared<T>();
+#endif
     }
 
     // --- consumer side (any number of threads) ----------------------------
@@ -96,8 +119,30 @@ public:
     Reader reader() const { return Reader(*this); }
 
 private:
-    std::shared_ptr<T> writing_;                          // producer-owned, being filled
-    ecs::detail::atomic_shared_ptr<T const> latest_;      // last published (immutable)
+    // Reuse a pooled buffer nobody else references, or allocate a fresh one.
+    // use_count() == 1 means the pool's own reference is the only one left: the
+    // buffer is no longer the published latest and no consumer holds it, and
+    // since new references can only be minted from latest_, none can appear
+    // concurrently. Synchronization ([atomics.fences]p4): the last consumer's
+    // shared_ptr release is a release RMW on the control-block counter; our
+    // use_count() load reads the value it wrote and is sequenced before the
+    // acquire fence, so the consumer's final reads happen-before our overwrite.
+    std::shared_ptr<T> acquire_buffer() {
+        for (auto& slot : pool_) {
+            if (slot.use_count() == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                auto buf = std::move(slot);
+                slot     = std::move(pool_.back());
+                pool_.pop_back();
+                return buf;
+            }
+        }
+        return std::make_shared<T>();
+    }
+
+    std::shared_ptr<T> writing_;                     // producer-owned, being filled
+    std::vector<std::shared_ptr<T>> pool_;           // producer-owned recycle pool
+    ecs::detail::atomic_shared_ptr<T const> latest_; // last published (immutable)
 };
 
 } // namespace ecs::sync

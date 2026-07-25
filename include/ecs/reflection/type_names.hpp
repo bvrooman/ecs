@@ -19,6 +19,8 @@
 #define ECS_REFLECT_NAMES 0
 #endif
 
+#include "../component_id.hpp" // ComponentId
+#include "../resource_id.hpp"  // ResourceId
 #include <cstdint>
 #include <string_view>
 
@@ -31,12 +33,12 @@ namespace ecs {
 
 #if ECS_REFLECT_NAMES
 namespace detail {
-    inline std::unordered_map<std::uint32_t, std::string_view>& component_name_map() {
-        static std::unordered_map<std::uint32_t, std::string_view> m;
+    inline std::unordered_map<ComponentId, std::string_view>& component_name_map() {
+        static std::unordered_map<ComponentId, std::string_view> m;
         return m;
     }
-    inline std::unordered_map<std::uint32_t, std::string_view>& resource_name_map() {
-        static std::unordered_map<std::uint32_t, std::string_view> m;
+    inline std::unordered_map<ResourceId, std::string_view>& resource_name_map() {
+        static std::unordered_map<ResourceId, std::string_view> m;
         return m;
     }
 } // namespace detail
@@ -46,14 +48,14 @@ namespace detail {
     // Called from component_id<T> / resource_id<T> initialisation. Records the
     // reflected name when ECS_REFLECT_NAMES is on; a transparent no-op otherwise.
     template <class T>
-    inline std::uint32_t register_component_name(std::uint32_t id) {
+    inline ComponentId register_component_name(ComponentId id) {
 #if ECS_REFLECT_NAMES
         component_name_map().emplace(id, reflect::type_name<T>());
 #endif
         return id;
     }
     template <class T>
-    inline std::uint32_t register_resource_name(std::uint32_t id) {
+    inline ResourceId register_resource_name(ResourceId id) {
 #if ECS_REFLECT_NAMES
         resource_name_map().emplace(id, reflect::type_name<T>());
 #endif
@@ -63,7 +65,7 @@ namespace detail {
 
 // Readable name for a component / resource id, or "" if unknown (always "" when
 // ECS_REFLECT_NAMES is off). Component and resource ids are separate spaces.
-inline std::string_view component_name(std::uint32_t id) {
+inline std::string_view component_name(ComponentId id) {
 #if ECS_REFLECT_NAMES
     auto const& m = detail::component_name_map();
     auto it       = m.find(id);
@@ -73,7 +75,7 @@ inline std::string_view component_name(std::uint32_t id) {
     return {};
 #endif
 }
-inline std::string_view resource_name(std::uint32_t id) {
+inline std::string_view resource_name(ResourceId id) {
 #if ECS_REFLECT_NAMES
     auto const& m = detail::resource_name_map();
     auto it       = m.find(id);

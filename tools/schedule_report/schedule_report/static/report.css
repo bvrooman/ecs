@@ -1,0 +1,422 @@
+:root {
+    --surface: #fcfcfb;
+    --card: #ffffff;
+    --hairline: #e7e6e2;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #8a897f;
+    --accent: #2a78d6;
+    --accent-soft: #86b6ef;
+    --band: rgba(42, 120, 214, .10);
+    /* status pair for compare deltas; a sign or verdict word always
+       accompanies the color, so color is never the only channel */
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    /* categorical series (validated dataviz order); legend + direct hover
+       carry identity so color is never the only channel */
+    --s0: #2a78d6;
+    --s1: #1baf7a;
+    --s2: #eda100;
+    --s3: #008300;
+    --s4: #4a3aa7;
+    --s5: #e34948;
+    --s6: #e87ba4;
+    --s7: #eb6834;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --surface: #1a1a19;
+        --card: #222221;
+        --hairline: #383835;
+        --ink: #ffffff;
+        --ink-2: #c3c2b7;
+        --ink-3: #8a897f;
+        --accent: #3987e5;
+        --accent-soft: #1c5cab;
+        --band: rgba(57, 135, 229, .14);
+        --good: #0ca30c;
+        --bad: #d03b3b;
+        --s0: #3987e5;
+        --s1: #199e70;
+        --s2: #c98500;
+        --s3: #008300;
+        --s4: #9085e9;
+        --s5: #e66767;
+        --s6: #d55181;
+        --s7: #d95926;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 20px 64px;
+}
+
+h1 {
+    font-size: 20px;
+    margin: 0 0 2px;
+}
+
+h2 {
+    font-size: 15px;
+    margin: 28px 0 10px;
+}
+
+.meta {
+    color: var(--ink-2);
+    margin-bottom: 18px;
+}
+
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+}
+
+.tile {
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 10px 14px;
+}
+
+.tile .k {
+    color: var(--ink-2);
+    font-size: 12px;
+}
+
+.tile .v {
+    font-size: 26px;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 14px 16px 10px;
+    margin-bottom: 14px;
+}
+
+.card h3 {
+    margin: 0 0 2px;
+    font-size: 14px;
+}
+
+.card .sub {
+    color: var(--ink-2);
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+.statrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    color: var(--ink-2);
+    font-size: 12px;
+    margin: 6px 0 10px;
+}
+
+.statrow b {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.hint {
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    cursor: help;
+}
+
+svg.chart {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.grid {
+    stroke: var(--hairline);
+    stroke-width: 1;
+}
+
+.tick, .lab, .val {
+    font: 11px system-ui, sans-serif;
+    fill: var(--ink-2);
+}
+
+.val {
+    fill: var(--ink);
+    font-variant-numeric: tabular-nums;
+}
+
+.line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.line2 {
+    stroke: var(--accent-soft);
+}
+
+.band {
+    fill: var(--band);
+}
+
+.bar {
+    fill: var(--accent);
+}
+
+.bar2 {
+    fill: var(--accent-soft);
+}
+
+.bar:hover, .bar2:hover {
+    filter: brightness(1.12);
+}
+
+.xhair {
+    stroke: var(--ink-3);
+    stroke-width: 1;
+}
+
+.xdot {
+    fill: var(--accent);
+    stroke: var(--surface);
+    stroke-width: 2;
+}
+
+.legend {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--ink-2);
+    margin: 4px 0 8px;
+}
+
+.legend .sw {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    vertical-align: -2px;
+    margin-right: 5px;
+}
+
+#tip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+    display: none;
+    z-index: 9;
+    max-width: 260px;
+}
+
+#tip .tv {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+#tip .tk {
+    color: var(--ink-2);
+}
+
+/* --- compare view ------------------------------------------------------- */
+
+.delta {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.delta.up {
+    fill: var(--bad);
+    color: var(--bad);
+}
+
+.delta.down {
+    fill: var(--good);
+    color: var(--good);
+}
+
+.delta.flat {
+    fill: var(--ink-3);
+    color: var(--ink-3);
+    font-weight: 400;
+}
+
+.tile .d {
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.tile .d .from {
+    color: var(--ink-2);
+}
+
+.verdicts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 12px 0 4px;
+}
+
+.pill {
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--ink-2);
+}
+
+.pill.bad {
+    color: var(--bad);
+    border-color: var(--bad);
+}
+
+.pill.good {
+    color: var(--good);
+    border-color: var(--good);
+}
+
+.meta .sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    margin-right: 4px;
+}
+
+tr.dim td {
+    color: var(--ink-2);
+}
+
+/* --- bench scaling (multiline) ------------------------------------------- */
+
+.ml {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.ideal {
+    fill: none;
+    stroke: var(--ink-3);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+}
+
+.mldot {
+    stroke: var(--surface);
+    stroke-width: 1.5;
+    cursor: pointer;
+}
+
+.s0 { stroke: var(--s0); }
+.s1 { stroke: var(--s1); }
+.s2 { stroke: var(--s2); }
+.s3 { stroke: var(--s3); }
+.s4 { stroke: var(--s4); }
+.s5 { stroke: var(--s5); }
+.s6 { stroke: var(--s6); }
+.s7 { stroke: var(--s7); }
+
+.mldot.s0 { fill: var(--s0); }
+.mldot.s1 { fill: var(--s1); }
+.mldot.s2 { fill: var(--s2); }
+.mldot.s3 { fill: var(--s3); }
+.mldot.s4 { fill: var(--s4); }
+.mldot.s5 { fill: var(--s5); }
+.mldot.s6 { fill: var(--s6); }
+.mldot.s7 { fill: var(--s7); }
+
+.legend .sw.s0 { background: var(--s0); }
+.legend .sw.s1 { background: var(--s1); }
+.legend .sw.s2 { background: var(--s2); }
+.legend .sw.s3 { background: var(--s3); }
+.legend .sw.s4 { background: var(--s4); }
+.legend .sw.s5 { background: var(--s5); }
+.legend .sw.s6 { background: var(--s6); }
+.legend .sw.s7 { background: var(--s7); }
+.legend .sw.over { background: var(--ink-3); }
+
+/* --- wave composition (stacked area) ------------------------------------ */
+
+/* Bands tile the plot edge-to-edge: each ribbon's lower edge is the band
+   below's upper edge, so any stroke would paint over the neighbour. No
+   stroke -- the fill-colour change is the boundary. */
+.area {
+    stroke: none;
+}
+
+.area.wv0 { fill: var(--s0); }
+.area.wv1 { fill: var(--s1); }
+.area.wv2 { fill: var(--s2); }
+.area.wv3 { fill: var(--s3); }
+.area.wv4 { fill: var(--s4); }
+.area.wv5 { fill: var(--s5); }
+.area.wv6 { fill: var(--s6); }
+.area.wv7 { fill: var(--s7); }
+/* residual tick time outside any wave: muted, reads as background */
+.area.over { fill: var(--ink-3); opacity: .3; }
+
+.legend .sw.ideal-sw {
+    background: repeating-linear-gradient(90deg,
+        var(--ink-3) 0 4px, transparent 4px 7px);
+}
+
+td.peak {
+    font-weight: 600;
+    color: var(--good);
+}
+
+td .spd {
+    color: var(--ink-2);
+    font-size: 11px;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12.5px;
+}
+
+th, td {
+    text-align: right;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--hairline);
+    font-variant-numeric: tabular-nums;
+}
+
+th {
+    color: var(--ink-2);
+    font-weight: 500;
+}
+
+th:first-child, td:first-child {
+    text-align: left;
+}

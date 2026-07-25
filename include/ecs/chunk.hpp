@@ -20,6 +20,7 @@
 
 #include "detail/chunk_fields.hpp"
 #include "soa.hpp"
+#include <cassert>
 #include <cstddef>
 #include <type_traits>
 
@@ -36,7 +37,9 @@ public:
         : detail::chunk_fields<C>(detail::make_chunk_fields<C>(store, begin, end))
         , store_(store)
         , begin_(begin)
-        , end_(end) {}
+        , end_(end) {
+        assert(begin <= end && end <= store.size() && "chunk: row range out of bounds");
+    }
 
     // This lane's contiguous slice of field I (span<const F> if C is const). Same
     // span the named accessor denotes; the portable, always-available form.
