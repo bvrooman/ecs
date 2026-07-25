@@ -42,7 +42,7 @@ static void multi_lane_chunk_split_covers_every_row() {
     WorkerPool pool {4};
     Schedule s;
     s.add_kernel("bump", [](Query<Position, const Velocity> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<Position> p,
+        q.for_each_chunk([](std::span<Entity const>, chunk<Position> p,
                             chunk<const Velocity> v) {
             auto px = p.column<0>();
             auto vx = v.column<0>();
@@ -97,7 +97,7 @@ static void commands_recorded_from_parallel_kernel() {
     WorkerPool pool {4};
     Schedule s;
     s.add("reap_and_seed", [](Query<const Health> q, Commands& cmd) {
-        q.for_each_chunk([&](std::span<Entity> ents, chunk<const Health> h) {
+        q.for_each_chunk([&](std::span<Entity const> ents, chunk<const Health> h) {
             auto hp = h.column<0>();
             for (std::size_t i = 0; i < hp.size(); ++i) {
                 if (hp[i] % 2 == 0)
@@ -132,7 +132,7 @@ static void kernel_system_covers_every_row() {
     // Same signature rules as add(): the one Query parameter is what the
     // executor slices; the body iterates just its item's rows.
     s.add_kernel("integrate", [](Query<Position, const Velocity> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<Position> p,
+        q.for_each_chunk([](std::span<Entity const>, chunk<Position> p,
                             chunk<const Velocity> v) {
             auto px = p.column<0>();
             auto vx = v.column<0>();
@@ -183,7 +183,7 @@ static void mixed_wave_flattened_dispatch_is_exact() {
         });
         s.add("b", [](Query<B> q) { q.for_each([](auto& b) { b.v += 2; }); });
         s.add_kernel("c", [](Query<C> q) {
-            q.for_each_chunk([](std::span<Entity>, chunk<C> c) {
+            q.for_each_chunk([](std::span<Entity const>, chunk<C> c) {
                 for (auto& v : c.column<0>())
                     v += 3;
             });
@@ -229,7 +229,7 @@ static void kernel_with_resource_and_commands_extras() {
     s.add_kernel("steer",
                  [](Query<Position, const Velocity> q, Res<Clock> clk,
                     Res<Goal> goal, Commands& cmd) {
-                     q.for_each_chunk([&](std::span<Entity> ents, chunk<Position> p,
+                     q.for_each_chunk([&](std::span<Entity const> ents, chunk<Position> p,
                                           chunk<const Velocity> v) {
                          auto px = p.column<0>();
                          auto vx = v.column<0>();
@@ -408,7 +408,7 @@ static void extract_matches_serial_gather_order() {
     Schedule s;
     s.add_kernel("extract",
                  [](Query<const Position> q, Extract<std::vector<float>> out) {
-                     q.for_each_chunk([&](std::span<Entity>, chunk<const Position> p) {
+                     q.for_each_chunk([&](std::span<Entity const>, chunk<const Position> p) {
                          auto x = p.column<0>();
                          for (std::size_t i = 0; i < x.size(); ++i)
                              out[i] = x[i];
@@ -669,7 +669,7 @@ static void kernel_commands_replay_in_canonical_order() {
         populate_mixed(w, 12'000);
         Schedule s;
         s.add_kernel("edit", [](Query<const Health> q, Commands& cmd) {
-            q.for_each_chunk([&](std::span<Entity> es, chunk<const Health> h) {
+            q.for_each_chunk([&](std::span<Entity const> es, chunk<const Health> h) {
                 auto hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i) {
                     if (hp[i] % 9 == 0)

@@ -492,7 +492,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // across the wave, with no intermediate copy.
     schedule.add_kernel("extract",
                         [](Query<Position const> q, Extract<SnapshotTarget> out) {
-                            q.for_each_chunk([&](std::span<Entity>,
+                            q.for_each_chunk([&](std::span<Entity const>,
                                                  chunk<Position const> p) {
                                 auto const x = p.column<0>();
                                 auto const y = p.column<1>();

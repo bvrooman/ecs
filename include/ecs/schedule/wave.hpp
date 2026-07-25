@@ -126,10 +126,9 @@ public:
         state_ = State::Prepared;
     }
 
-    // Execute the item list. A lone item runs inline on the caller with the full
-    // pool; several are claimed from an atomic cursor across the pool's lanes,
-    // imperative items bound to the shared 1-lane pool. Each item's busy time is
-    // rolled up per system into result_.
+    // Execute the item list. A lone item runs inline on the caller; several are
+    // claimed from an atomic cursor across the pool's lanes. Each item's busy
+    // time is rolled up per system into result_.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
@@ -260,8 +259,18 @@ public:
                 build_serial(world, s, items);
             }
         }
-        // Longest first; deterministic tie-break so a 1-lane run replays.
-        std::ranges::sort(items, [](WorkItem const& a, WorkItem const& b) {
+        // Greedy LPT: opaque (imperative) items first, then longest-first, with a
+        // deterministic tie-break so a 1-lane run replays. An imperative system's
+        // item has unknown cost -- and a Commands-only / WorldView one has a zero
+        // row range, so a pure longest-first order would sort it LAST, where an
+        // expensive one becomes the join straggler. Claiming it before the kernel
+        // slices (whose cost is proportional to their known row count) keeps the
+        // biggest unknown off the tail.
+        std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
+            bool const ia = !systems[a.system].is_parallel;
+            bool const ib = !systems[b.system].is_parallel;
+            if (ia != ib)
+                return ia; // opaque/imperative items first
             auto const ra = a.end - a.begin;
             auto const rb = b.end - b.begin;
             if (ra != rb)

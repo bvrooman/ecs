@@ -44,7 +44,7 @@ void run_setup(World& w, auto fn) {
 std::vector<Entity> live_entities(World& w) {
     std::vector<Entity> es;
     es.reserve(w.size());
-    w.for_each_chunk<P const>([&](std::span<Entity> ids, chunk<P const>) {
+    w.for_each_chunk<P const>([&](std::span<Entity const> ids, chunk<P const>) {
         es.insert(es.end(), ids.begin(), ids.end());
     });
     return es;
@@ -119,7 +119,7 @@ int main() {
         float s1 = 0;
         double const one = bench::min_ns_per(N, R, [&] {
             w.for_each_chunk<P const>(
-                [&](std::span<Entity>, chunk<P const> p) {
+                [&](std::span<Entity const>, chunk<P const> p) {
                     for (float x : p.column<0>())
                         s1 += x;
                 });
@@ -135,7 +135,7 @@ int main() {
         float s64 = 0;
         double const many = bench::min_ns_per(N, R, [&] {
             frag.for_each_chunk<P const>(
-                [&](std::span<Entity>, chunk<P const> p) {
+                [&](std::span<Entity const>, chunk<P const> p) {
                     for (float x : p.column<0>())
                         s64 += x;
                 });

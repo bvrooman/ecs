@@ -86,7 +86,7 @@ static void soa_fast_path() {
             cmd.spawn(Position {float(i), 0});
     });
     run_system(w, [](Query<Position> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<Position> pos) {
+        q.for_each_chunk([](std::span<Entity const>, chunk<Position> pos) {
             for (auto& x : pos.column<0>())
                 x += 100.f;
         });
@@ -157,7 +157,7 @@ static void const_query_marks_read_only() {
     // the incremental spawn, so accumulate across chunks.)
     float sum_x      = 0;
     std::size_t seen = 0;
-    w.for_each_chunk<Position const>([&](std::span<Entity>,
+    w.for_each_chunk<Position const>([&](std::span<Entity const>,
                                                 chunk<Position const> pos) {
         for (float x : pos.column<0>()) { // span<const float>
             sum_x += x;
@@ -181,7 +181,7 @@ static void query_chunk_skips_empty_archetype() {
     // Query<Position> matches BOTH the emptied {Position} and {Position,Velocity}.
     std::size_t invocations = 0, rows = 0;
     run_system(w, [&](Query<Position const> q) {
-        q.for_each_chunk([&](std::span<Entity> ents, chunk<Position const> pos) {
+        q.for_each_chunk([&](std::span<Entity const> ents, chunk<Position const> pos) {
             ++invocations;
             rows += pos.column<0>().size();
             CHECK(pos.column<0>().size() > 0); // never an empty chunk

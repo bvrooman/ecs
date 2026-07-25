@@ -20,7 +20,7 @@
 //
 // Conflicting systems (one writes what another reads or writes) are assigned
 // wavefront *levels*; each wave is conflict-free and executed by the work-item
-// executor (executor.hpp) with a single pool dispatch. Recorded edits flush at
+// executor (wave.hpp) with a single pool dispatch. Recorded edits flush at
 // each wave barrier. A `phase<N>` tag gives coarse ordering across barriers
 // independent of conflicts.
 
@@ -208,16 +208,16 @@ public:
     // setup: add_once a setup system, then run(world).
     void run(World& world) { run(world, parallel::serial_pool()); }
 
-    // The WORK-ITEM executor (see executor.hpp for the mechanism). Each wave
+    // The WORK-ITEM executor (see wave.hpp for the mechanism). Each wave
     // is flattened into one item list -- kernel systems sliced into row
     // ranges, imperative systems one opaque item each -- and executed with a
     // single pool dispatch, lanes claiming items dynamically. A heavy kernel
     // system's slices overlap both with each other AND with the wave's other
     // systems: data parallelism within and across systems from one fork-join.
     //
-    // The single-system wave short-circuits to run that system inline on the
-    // caller with the full pool (a fanned wave's items interleave across the
-    // lanes, so there is no per-system wall interval to observe). Either way,
+    // The single-item wave short-circuits to run that item inline on the
+    // caller (a fanned wave's items interleave across the lanes, so there is no
+    // per-system wall interval to observe). Either way,
     // every system reports MEASURED work via a SystemWork event: busy time
     // summed over its items (recorded by the claiming lanes) plus its barrier
     // prepare/finish hook durations.

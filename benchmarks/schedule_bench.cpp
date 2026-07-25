@@ -100,7 +100,7 @@ inline float heavy_step(float v) {
 template <int I>
 void add_small(ecs::Schedule& s, bool kernel) {
     auto body = [](ecs::Query<Small<I>> q) {
-        q.for_each_chunk([](std::span<ecs::Entity>, ecs::chunk<Small<I>> c) {
+        q.for_each_chunk([](std::span<ecs::Entity const>, ecs::chunk<Small<I>> c) {
             for (auto& v : c.template column<0>())
                 v = v * 1.0001f + 0.5f;
         });
@@ -116,7 +116,7 @@ inline void build(ecs::Schedule& s, bool kernel) {
         (add_small<I>(s, kernel), ...);
     }(std::make_integer_sequence<int, 8> {});
     auto body = [](ecs::Query<Heavy> q) {
-        q.for_each_chunk([](std::span<ecs::Entity>, ecs::chunk<Heavy> c) {
+        q.for_each_chunk([](std::span<ecs::Entity const>, ecs::chunk<Heavy> c) {
             for (auto& v : c.column<0>())
                 v = heavy_step(v);
         });

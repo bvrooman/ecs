@@ -5,11 +5,10 @@
 //
 //   * the system-parameter protocol (detail::system_param<P>): how a system's
 //     parameter types declare access and are bound when it runs, and
-//   * the kernel plumbing (query_param_traits / bind_kernel_param): how a
-//     kernel system's single Query parameter binds restricted to one work
-//     item's row range.
+//   * the kernel plumbing (system_param<Query<Cs...>>): how a kernel system's
+//     single Query parameter binds restricted to one work item's row range.
 //
-// The Schedule (schedule.hpp) consumes these; the executor (executor.hpp)
+// The Schedule (schedule.hpp) consumes these; the Wave executor (wave.hpp)
 // consumes SystemRecord.
 
 #pragma once
@@ -28,7 +27,6 @@
 #include <vector>
 
 namespace ecs::detail {
-struct WorkItem;
 
 // --- extract a callable's parameter types ----------------------------------
 // fn_traits covers the member-call-operator forms (cv/ref/noexcept variants);
