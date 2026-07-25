@@ -99,13 +99,13 @@ static void trace_writes_one_row_per_system_per_tick() {
 
     CHECK(!rows.empty());
     CHECK(rows.front() == "tick,wave,system,busy_us,prepare_us,finish_us,items,"
-                          "wave_us,flush_us,tick_us,cmd_us"); // header on ctor
+                          "wave_us,flush_us,tick_us,cmd_us,build_us,sort_us");
     CHECK(rows.size() == 1 + std::size_t(kTicks) * 2);
     CHECK((rows[1].find(",integrate,") != std::string::npos ||
            rows[1].find(",render,") != std::string::npos));
-    // Every measurement column is numeric: the row parses into 11 fields with
+    // Every measurement column is numeric: the row parses into 13 fields with
     // no gaps (CSV sinks feed tools/schedule_report directly).
-    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 10);
+    CHECK(std::count(rows[1].begin(), rows[1].end(), ',') == 12);
     // Lone-wave systems: busy time is the item's real duration, so the wave's
     // wall time (wave_us) must be >= its one system's busy time. Field 3 is
     // busy_us, field 7 is wave_us.
@@ -118,12 +118,15 @@ static void trace_writes_one_row_per_system_per_tick() {
             if (c == std::string::npos)
                 break;
         }
-        CHECK(f.size() == 11);
-        CHECK(std::stod(f[3]) > 0.0);              // busy was measured
-        CHECK(std::stod(f[7]) >= std::stod(f[3])); // wave wall >= lone busy
-        CHECK(std::stod(f[9]) >= std::stod(f[7])); // tick >= wave
-        CHECK(std::stod(f[6]) >= 1.0);             // items
-        CHECK(std::stod(f[10]) == 0.0);            // no commands -> no cmd flush
+        CHECK(f.size() == 13);
+        CHECK(std::stod(f[3]) > 0.0);               // busy was measured
+        CHECK(std::stod(f[7]) >= std::stod(f[3]));  // wave wall >= lone busy
+        CHECK(std::stod(f[9]) >= std::stod(f[7]));  // tick >= wave
+        CHECK(std::stod(f[6]) >= 1.0);              // items
+        CHECK(std::stod(f[10]) == 0.0);             // no commands -> no cmd flush
+        // build_us (flatten) and sort_us are DISJOINT build phases, both inside
+        // the wave, so the wave wall covers their sum.
+        CHECK(std::stod(f[7]) >= std::stod(f[11]) + std::stod(f[12]));
     }
 }
 

@@ -248,8 +248,7 @@ public:
             auto sz = plan.prepare(systems_, tick_);
             if (sz > 0) {
                 events_.emit(WaveBegin {lvl, sz});
-                double const flush_us = run_wave(plan, world, cmds, pool, lvl);
-                events_.emit(WaveEnd {lvl, flush_us});
+                run_wave(plan, world, cmds, pool, lvl);
             }
             ++lvl;
         }
@@ -522,7 +521,7 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    double run_wave(
+    void run_wave(
         WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool, std::size_t lvl) {
         using namespace sched_event;
         flush_attrib_.clear();
@@ -540,19 +539,20 @@ private:
             events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
-        auto const& result = wave.result();
+        auto const& plan_result = plan.result();
+        auto const& wave_result = wave.result();
         for (auto id : plan) {
             auto const fit  = flush_attrib_.find(id);
             auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {id,
                                      systems_[id].name,
-                                     result.busy_us[id],
-                                     result.prepare_us[id],
-                                     result.finish_us[id],
-                                     result.item_counts[id],
+                                     wave_result.busy_us[id],
+                                     wave_result.prepare_us[id],
+                                     wave_result.finish_us[id],
+                                     wave_result.item_counts[id],
                                      flsh});
         }
-        return flush_us;
+        events_.emit(WaveEnd {lvl, flush_us, plan_result.build_us, plan_result.sort_us});
     }
 
     // Tombstone spent one-shot systems (see remove()): they keep their slot so

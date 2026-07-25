@@ -1,7 +1,10 @@
 """Load and summarize a ScheduleTrace CSV (see tools/schedule_trace.hpp).
 
 Columns:
-    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us
+    tick,wave,system,busy_us,prepare_us,finish_us,items,wave_us,flush_us,tick_us,
+    cmd_us,build_us,sort_us
+(cmd_us/build_us/sort_us are read optionally; older traces without them read as
+0, so only the pre-cmd_us column set is required.)
 """
 
 from __future__ import annotations

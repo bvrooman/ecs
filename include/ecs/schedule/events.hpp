@@ -33,6 +33,9 @@ namespace sched_event {
         // The command-flush portion of the wave (the flush runs at the
         // barrier, inside the WaveBegin/WaveEnd interval).
         double flush_us = 0;
+        // The wave's single-threaded build.
+        double build_us = 0;
+        double sort_us  = 0;
     };
     // Measured work for one system in one wave -- emitted for EVERY system,
     // lone or fanned, after the wave's barrier hooks and its flush. This is the

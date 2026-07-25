@@ -32,6 +32,8 @@
 //               system's commands (spawns/despawns/sort...) -- so a system
 //               whose real cost is a barrier command, not busy work, carries
 //               it here. Sums to flush_us across the wave's systems.
+//   build_us    wall duration of the wave build's flatten phase. Repeated per row.
+//   sort_us     wall duration of the LPT sort. Repeated per row.
 //
 // A per-N-tick system (Schedule `every`) simply has rows only on the ticks it
 // ran -- like a one-shot phase, its wave exists for a subset of ticks.
@@ -75,7 +77,7 @@ public:
               std::chrono::duration<double>(flush_every_s)))
         , last_flush_(clock::now()) {
         sink_("tick,wave,system,busy_us,prepare_us,finish_us,items,"
-              "wave_us,flush_us,tick_us,cmd_us");
+              "wave_us,flush_us,tick_us,cmd_us,build_us,sort_us");
     }
 
     void operator()(ScheduleEvent const& e) {
@@ -105,13 +107,17 @@ public:
                                          0.0,
                                          0.0,
                                          0.0,
-                                         ev.flush_us});
+                                         ev.flush_us,
+                                         0.0,
+                                         0.0});
                 },
                 [this](WaveEnd const& ev) {
                     double const us = elapsed_us(t_wave_);
                     for (auto i = wave_first_row_; i < rows_.size(); ++i) {
                         rows_[i].wave_us  = us;
                         rows_[i].flush_us = ev.flush_us;
+                        rows_[i].build_us = ev.build_us;
+                        rows_[i].sort_us  = ev.sort_us;
                     }
                 },
                 [this](TickEnd const&) {
@@ -139,20 +145,23 @@ public:
         for (Row const& r : rows_) {
             auto const it  = names_.find(r.id);
             char const* nm = it != names_.end() ? it->second.c_str() : "?";
-            int const k    = std::snprintf(buf,
-                                        sizeof(buf),
-                                        "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f",
-                                        static_cast<unsigned long long>(r.tick),
-                                        r.wave,
-                                        nm,
-                                        r.busy_us,
-                                        r.prepare_us,
-                                        r.finish_us,
-                                        r.items,
-                                        r.wave_us,
-                                        r.flush_us,
-                                        r.tick_us,
-                                        r.cmd_us);
+            int const k = std::snprintf(
+                buf,
+                sizeof(buf),
+                "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f,%.2f,%.2f",
+                static_cast<unsigned long long>(r.tick),
+                r.wave,
+                nm,
+                r.busy_us,
+                r.prepare_us,
+                r.finish_us,
+                r.items,
+                r.wave_us,
+                r.flush_us,
+                r.tick_us,
+                r.cmd_us,
+                r.build_us,
+                r.sort_us);
             sink_(std::string_view(buf, k > 0 ? static_cast<std::size_t>(k) : 0));
         }
         rows_.clear();
@@ -179,6 +188,8 @@ private:
         double flush_us; // the whole wave's command flush (repeated per row)
         double tick_us;
         double cmd_us;   // THIS system's share of the wave's command flush
+        double build_us; // the wave's flatten, per row
+        double sort_us;  // the LPT sort, per row
     };
 
     Sink sink_;
