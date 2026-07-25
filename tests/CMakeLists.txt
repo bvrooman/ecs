@@ -11,6 +11,7 @@ endfunction()
 
 ecs_add_test(test_strong_id)
 ecs_add_test(test_signature)
+ecs_add_test(test_small_vector)
 ecs_add_test(test_index_recycler)
 ecs_add_test(test_handle_vector)
 ecs_add_test(test_sparse_handle_vector)

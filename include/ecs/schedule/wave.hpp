@@ -293,13 +293,13 @@ private:
             auto const n = world.archetypes()[ai]->size();
             for (auto b = 0uz; b < n; b += grain) {
                 auto const e    = std::min(n, b + grain);
-                auto const unit = detail::Unit {
+                auto units = detail::SmallVector<detail::Unit, 1> {};
+                units.push_back(detail::Unit {
                     ai,
                     static_cast<std::uint32_t>(b),
                     static_cast<std::uint32_t>(e),
-                };
-                auto units = std::vector {unit};
-                auto item  = WorkItem {id,
+                });
+                auto item = WorkItem {id,
                                       std::move(units),
                                       static_cast<uint32_t>(b),
                                       static_cast<uint32_t>(e),
@@ -315,7 +315,7 @@ private:
         auto total          = 0uz;
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
-        auto units = std::vector<detail::Unit> {};
+        auto units = detail::SmallVector<detail::Unit, 1> {};
         for (auto const ai : matches) {
             auto const n    = world.archetypes()[ai]->size();
             auto const unit = detail::Unit {
