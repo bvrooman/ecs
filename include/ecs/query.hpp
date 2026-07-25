@@ -33,6 +33,7 @@
 
 #include "chunk.hpp"
 #include "detail/for_each_row.hpp"
+#include "schedule/work_item.hpp"
 #include "world.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -44,7 +45,7 @@ namespace ecs {
 
 namespace detail {
     template <class P>
-    struct query_param_traits; // schedule/system.hpp; befriended for slicing
+    struct system_param; // schedule/system.hpp; befriended for slicing
 }
 
 template <class... Cs>
@@ -53,7 +54,7 @@ class Query {
     using bare = std::remove_const_t<C>; // component type minus the read-only mark
 
     template <class P>
-    friend struct detail::query_param_traits;
+    friend struct detail::system_param;
 
     // Duplicate component types (Query<A, A> or Query<A, const A>) would hand a
     // kernel two chunks aliasing the same column -- one possibly mutable --
@@ -69,50 +70,22 @@ class Query {
         return s;
     }
 
-    // The matching archetype list, memoized per (query type, thread) against
-    // the world's archetype generation: the steady state is two relaxed-ish
-    // loads and two compares -- no mutex, no signature hash -- while a new
-    // matching archetype (created at flush; the generation only changes there)
-    // or a different World forces one locked re-lookup. The world instance id
-    // guards against a destroyed World's address being reused.
-    [[nodiscard]]
-    std::vector<ArchetypeId> const& matches() const {
-        struct Cache {
-            WorldId world                        = WorldId::none();
-            std::uint64_t gen                    = ~std::uint64_t {0};
-            std::vector<ArchetypeId> const* list = nullptr;
-        };
-        thread_local Cache cache;
-        auto const gen = world_.archetype_generation();
-        if (cache.world == world_.instance_id() && cache.gen == gen)
-            return *cache.list;
-        auto const& list = world_.matching_archetypes(required());
-        cache            = {world_.instance_id(), gen, &list};
-        return list;
-    }
-
-    // A Query restricted to rows [b, e) of ONE matching archetype -- how a
-    // kernel system's work item binds its Query parameter (the executor owns
-    // the slicing; see schedule/executor.hpp). Every iteration method then
-    // walks just that slice. Constructed only by detail::query_param_traits
-    // (befriended above).
-    Query(World& world,
-          ArchetypeId slice_archetype,
-          std::size_t slice_begin,
-          std::size_t slice_end)
+    // A Query bound to one work item -- the row ranges (units) the scheduler
+    // sliced for this system; every iteration method walks just those. For a
+    // kernel that is one grain-sized slice of one archetype; for a serial
+    // system, one item covering every matched archetype. Constructed only by
+    // detail::system_param (befriended above), which owns the slicing.
+    Query(World& world, detail::WorkItem const& item)
         : world_(world)
-        , slice_arch_(slice_archetype)
-        , slice_b_(slice_begin)
-        , slice_e_(slice_end) {}
-
-    static constexpr ArchetypeId kNoSlice {0xFFFF'FFFFu};
+        , item_(item) {}
 
 public:
-    // A Query is a pure iterator: it never dispatches. Parallelism is the
-    // executor's job -- an add_kernel system's rows are sliced into work items
-    // that each bind a restricted Query -- so a Query holds no WorkerPool.
-    explicit Query(World& world)
-        : world_(world) {}
+    // Bound to ONE work item, held by reference -- it must not outlive its run
+    // (Wave::items_ is rebuilt every tick). Movable so the binder can return it
+    // by value; not copyable, so a copy cannot be stashed past the tick and dangle.
+    Query(Query const&)            = delete;
+    Query& operator=(Query const&) = delete;
+    Query(Query&&)                 = default;
 
     // for_each: per-element iteration. Hands the kernel each entity's
     // components (a write-through proxy per component under P2996, a gathered
@@ -123,19 +96,10 @@ public:
     //   q.for_each([&](auto& p){ out.push_back({p.x, p.y}); });
     template <class F>
     void for_each(F&& fn) {
-        if (slice_arch_ != kNoSlice) {
-            auto& arch = *world_.archetypes()[slice_arch_];
-            detail::for_each_row(
-                fn,
-                std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
-                chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
-            return;
-        }
-        auto const& archs = world_.archetypes();
-        for (auto const ai : matches()) {
-            auto& arch      = *archs[ai];
-            auto const ents = std::span(arch.entities);
-            detail::for_each_row(fn, ents, chunk_arg<Cs>(arch, 0, arch.size())...);
+        for (auto const& [archetype, begin, end] : item_.units) {
+            auto& arch    = *world_.archetypes()[archetype];
+            auto entities = std::span(arch.entities).subspan(begin, end - begin);
+            detail::for_each_row(fn, entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }
 
@@ -156,30 +120,24 @@ public:
     //   });
     template <class F>
     void for_each_chunk(F&& fn) {
-        if (slice_arch_ != kNoSlice) {
-            auto& arch = *world_.archetypes()[slice_arch_]; // kernel-item slice
-            fn(std::span(arch.entities).subspan(slice_b_, slice_e_ - slice_b_),
-               chunk_arg<Cs>(arch, slice_b_, slice_e_)...);
-            return;
-        }
-        auto const& archs = world_.archetypes();
-        for (auto const ai : matches()) {
-            auto& arch          = *archs[ai];
-            std::size_t const n = arch.size();
-            if (n == 0)
-                continue; // never invoke the kernel with an empty chunk
-            fn(std::span(arch.entities), chunk_arg<Cs>(arch, 0, n)...);
+        for (auto const& [archetype, begin, end] : item_.units) {
+            if (begin == end)
+                continue; // never invoke the kernel with an empty chunk (a serial
+                          // system's item spans every matched archetype, including
+                          // ones emptied by migration; matches World::for_each_chunk)
+            auto& arch = *world_.archetypes()[archetype];
+            // Entity handles are the world's row->entity bookkeeping; a kernel may
+            // read them (e.g. to hand a row to Commands::destroy) but never write
+            // them, so the span is const even when a component chunk is mutable.
+            std::span<Entity const> entities =
+                std::span(arch.entities).subspan(begin, end - begin);
+            fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }
 
     [[nodiscard]]
     std::size_t count() const {
-        if (slice_arch_ != kNoSlice)
-            return slice_e_ - slice_b_;
-        std::size_t n = 0;
-        for (auto const ai : matches())
-            n += world_.archetypes()[ai]->size();
-        return n;
+        return item_.end - item_.begin;
     }
 
 private:
@@ -191,17 +149,8 @@ private:
     }
 
     World& world_;
-    // Slice restriction for kernel-item queries (kNoSlice = iterate all
-    // matching archetypes, the normal mode).
-    ArchetypeId slice_arch_ = kNoSlice;
-    std::size_t slice_b_    = 0;
-    std::size_t slice_e_    = 0;
+    detail::WorkItem const& item_;
 };
-
-template <class... Cs>
-Query<Cs...> query(World& world) {
-    return Query<Cs...>(world);
-}
 
 // A read-only view of the world for systems that need ad-hoc reads (size, get,
 // has, alive, queries) beyond what Query/Res express. Everything it exposes is
@@ -231,10 +180,20 @@ public:
     auto get(Entity const e) const {
         return world_->get<C>(e);
     }
-    // Read-only query: every component is iterated by const reference.
+    // Read-only iteration: delegates to World's ad-hoc read-only iteration
+    // (which forces every component const, so nothing can be written through it).
     template <class... Cs>
-    auto query() const {
-        return Query<std::remove_const_t<Cs> const...>(*world_);
+    [[nodiscard]]
+    std::size_t count() const {
+        return world_->count<std::remove_const_t<Cs>...>();
+    }
+    template <class... Cs, class F>
+    void for_each(F&& fn) const {
+        world_->for_each<std::remove_const_t<Cs>...>(fn);
+    }
+    template <class... Cs, class F>
+    void for_each_chunk(F&& fn) const {
+        world_->for_each_chunk<std::remove_const_t<Cs>...>(fn);
     }
 
 private:

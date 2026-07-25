@@ -13,6 +13,10 @@
 #include "entity.hpp"
 #include "resource.hpp"
 #include "world_id.hpp"
+// chunk / for_each_row power World's ad-hoc read-only iteration (count /
+// for_each / for_each_chunk), defined at the end of this header.
+#include "chunk.hpp"
+#include "detail/for_each_row.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -23,6 +27,7 @@
 #include <mutex>
 #include <numeric>
 #include <ranges>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -119,7 +124,7 @@ public:
             auto& arch = *arch_ptr;
             if (!arch.has(component_id<C>) || arch.size() < 2)
                 continue;
-            auto const& store = arch.template column<C>().store;
+            auto const& store = arch.column<C>().store;
             auto const n      = arch.size();
             using Key         = decltype(key(store.gather(0)));
 
@@ -186,6 +191,24 @@ public:
         auto const& rec = entities_[e];
         return archetypes_[rec.archetype]->column<C>().store.gather(rec.row);
     }
+
+    // --- ad-hoc READ-ONLY iteration ---------------------------------------
+    // Walk every archetype matching {Cs...} on the CALLING THREAD, read-only --
+    // the verification counterpart to a system's work-item-bound Query, for
+    // setup, tests, and diagnostics. Every component is observed by const
+    // reference: ad-hoc iteration cannot write (an undeclared write the scheduler
+    // never ordered is a data-race footgun). To MUTATE, run a Query in a system
+    // -- it declares its writes and the scheduler serializes against them.
+    // WorldView re-exposes these to systems. Defined out-of-class at the end of
+    // this header (they need the chunk / for_each_row machinery, and count() must
+    // see matching_archetypes()' deduced return type).
+    template <class... Cs>
+    [[nodiscard]]
+    std::size_t count() const;
+    template <class... Cs, class F>
+    void for_each(F&& fn) const;
+    template <class... Cs, class F>
+    void for_each_chunk(F&& fn) const;
 
     // --- resources (singletons not owned by any entity) -------------------
     // Set up resources before running a schedule; like structural edits, do not
@@ -664,5 +687,46 @@ public:
 private:
     T* ptr_;
 };
+
+// --- ad-hoc read-only iteration: definitions (declared on World above) -------
+// Out-of-class so count() sees matching_archetypes()' deduced return type; the
+// chunk / for_each_row machinery is included at the top of this header. Every
+// component is forced const (chunk<... const>): ad-hoc iteration is READ-ONLY --
+// to mutate, run a Query in a system.
+template <class... Cs>
+std::size_t World::count() const {
+    std::size_t n = 0;
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...}))
+        n += archetypes_[ai]->size();
+    return n;
+}
+template <class... Cs, class F>
+void World::for_each(F&& fn) const {
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+        auto& arch    = *archetypes_[ai];
+        auto entities = std::span(arch.entities);
+        detail::for_each_row(fn,
+                             entities,
+                             chunk<std::remove_const_t<Cs> const>(
+                                 arch.column<std::remove_const_t<Cs>>().store,
+                                 0,
+                                 arch.size())...);
+    }
+}
+template <class... Cs, class F>
+void World::for_each_chunk(F&& fn) const {
+    for (auto const ai :
+         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+        auto& arch = *archetypes_[ai];
+        if (arch.size() == 0)
+            continue;
+        std::span<Entity const> entities = std::span(arch.entities);
+        fn(entities,
+           chunk<std::remove_const_t<Cs> const>(
+               arch.column<std::remove_const_t<Cs>>().store, 0, arch.size())...);
+    }
+}
 
 } // namespace ecs

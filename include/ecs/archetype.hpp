@@ -106,6 +106,7 @@ struct Column final : IColumn {
 // here: find(id) yields the column slot. Kept as a flat sorted vector, not a
 // hash set -- lookup is a binary search over a contiguous array, membership
 // tests are linear merges, and there are no per-node allocations.
+
 class Signature {
 public:
     Signature() = default;
@@ -113,13 +114,21 @@ public:
         : ids_(ids) {
         normalize();
     }
+
+    // The unmatchable sentinel: a signature holding a private Dummy component id
+    // that no real query carries, so it includes() no archetype (an *empty*
+    // signature would match every archetype instead).
+    static Signature null() noexcept {
+        return Signature {{component_id<Dummy>}};
+    }
+
     // Construct from any range of ComponentId (a std::vector, a views::keys of
     // a component bundle, ...). Constrained off Signature itself so it can't
     // shadow the copy/move constructors.
     template <class R>
-        requires std::ranges::input_range<R> &&
-                 std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
-                 (!std::same_as<std::remove_cvref_t<R>, Signature>)
+    requires std::ranges::input_range<R> &&
+             std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
+             (!std::same_as<std::remove_cvref_t<R>, Signature>)
     explicit Signature(R&& ids) {
         if constexpr (std::ranges::sized_range<R>)
             ids_.reserve(std::ranges::size(ids));
@@ -171,17 +180,34 @@ public:
 
     // The component id occupying column slot `c`.
     [[nodiscard]]
-    ComponentId operator[](ColumnId const c) const noexcept { return ids_[c.value]; }
+    ComponentId operator[](ColumnId const c) const noexcept {
+        return ids_[c.value];
+    }
 
-    [[nodiscard]] std::size_t size() const noexcept { return ids_.size(); }
-    [[nodiscard]] bool empty() const noexcept { return ids_.empty(); }
-    [[nodiscard]] auto begin() const noexcept { return ids_.begin(); }
-    [[nodiscard]] auto end() const noexcept { return ids_.end(); }
+    [[nodiscard]]
+    std::size_t size() const noexcept {
+        return ids_.size();
+    }
+    [[nodiscard]]
+    bool empty() const noexcept {
+        return ids_.empty();
+    }
+    [[nodiscard]]
+    auto begin() const noexcept {
+        return ids_.begin();
+    }
+    [[nodiscard]]
+    auto end() const noexcept {
+        return ids_.end();
+    }
 
     // The set's hash, computed once at construction and cached (a signature is
     // immutable after construction; with()/without() build a fresh one). Feeds
     // std::hash<Signature> so a Signature is a drop-in unordered_map key.
-    [[nodiscard]] std::size_t hash() const noexcept { return hash_; }
+    [[nodiscard]]
+    std::size_t hash() const noexcept {
+        return hash_;
+    }
 
     // Equality is element-wise. The cached hash is only a fast reject (unequal
     // hashes => unequal signatures); it is NOT the equality itself -- FNV-1a can
@@ -193,6 +219,9 @@ public:
     }
 
 private:
+    // Dummy component to initialize null (unmatchable) Signature.
+    struct Dummy {};
+
     // FNV-1a over the ids. Accumulate in an explicit 64-bit type: the offset
     // basis and prime are 64-bit, which would truncate into a 32-bit std::size_t
     // on ILP32 targets (e.g. wasm32); narrow to size_t only at the end.
@@ -210,7 +239,7 @@ private:
         ids_.erase(std::ranges::unique(ids_).begin(), ids_.end());
         rehash();
     }
-    std::vector<ComponentId> ids_;                          // sorted, unique
+    std::vector<ComponentId> ids_;                           // sorted, unique
     std::size_t hash_ = static_cast<std::size_t>(kFnvBasis); // empty-set hash
 };
 
@@ -295,7 +324,5 @@ struct Archetype {
 // no bespoke hasher is needed at the use site.
 template <>
 struct std::hash<ecs::Signature> {
-    std::size_t operator()(ecs::Signature const& s) const noexcept {
-        return s.hash();
-    }
+    std::size_t operator()(ecs::Signature const& s) const noexcept { return s.hash(); }
 };

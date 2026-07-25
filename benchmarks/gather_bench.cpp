@@ -19,8 +19,7 @@
 // Single lane throughout: this isolates the per-element gather/scatter cost, not
 // the pool. All kernels write component state, so the work is not elided.
 
-#include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include "bench_ecs.hpp"
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -79,18 +78,16 @@ static void sparse(char const* label, std::size_t N, int R) {
             cmd.spawn(ww, Vel {0.1f, 0.2f, 0.3f});
         }
     });
-    double const ch  = min_ns_per(N, R, [&] {
-        query<W, Vel const>(w).for_each_chunk([](std::span<Entity>,
-                                                 chunk<W> p,
-                                                 chunk<Vel const> v) {
+    double const ch  = ns_per_system(N, R, w, [](Query<W, Vel const> q) {
+        q.for_each_chunk([](std::span<Entity const>, chunk<W> p, chunk<Vel const> v) {
             auto a  = p.template column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < a.size(); ++i)
                 a[i] += vx[i];
         });
     });
-    double const par = min_ns_per(N, R, [&] {
-        Query<W, Vel const>(w).for_each([](auto& p, auto& v) {
+    double const par = ns_per_system(N, R, w, [](Query<W, Vel const> q) {
+        q.for_each([](auto& p, auto& v) {
             p.a += v.x;
         });
     });
@@ -121,10 +118,8 @@ int main() {
             for (std::size_t i = 0; i < N; ++i)
                 cmd.spawn(W16 {}, Vel {0.1f, 0.2f, 0.3f});
         });
-        double const ch  = min_ns_per(N, R, [&] {
-            query<W16, Vel const>(w).for_each_chunk([](std::span<Entity>,
-                                                       chunk<W16> p,
-                                                       chunk<Vel const> v) {
+        double const ch  = ns_per_system(N, R, w, [](Query<W16, Vel const> q) {
+            q.for_each_chunk([](std::span<Entity const>, chunk<W16> p, chunk<Vel const> v) {
                 [&]<std::size_t... I>(std::index_sequence<I...>) {
                     auto cols = std::tuple {p.template column<I>()...};
                     auto vx   = v.column<0>();
@@ -133,8 +128,8 @@ int main() {
                 }(std::make_index_sequence<16> {});
             });
         });
-        double const par = min_ns_per(N, R, [&] {
-            Query<W16, Vel const>(w).for_each([](auto& p, auto& v) {
+        double const par = ns_per_system(N, R, w, [](Query<W16, Vel const> q) {
+            q.for_each([](auto& p, auto& v) {
                 p.a += v.x;
                 p.b += v.x;
                 p.c += v.x;
@@ -164,10 +159,8 @@ int main() {
             for (std::size_t i = 0; i < N; ++i)
                 cmd.spawn(Named {big, float(i)}, Vel {0.1f, 0.2f, 0.3f});
         });
-        double const ch  = min_ns_per(N, R, [&] {
-            query<Named, Vel const>(w).for_each_chunk([](std::span<Entity>,
-                                                         chunk<Named> p,
-                                                         chunk<Vel const> v) {
+        double const ch  = ns_per_system(N, R, w, [](Query<Named, Vel const> q) {
+            q.for_each_chunk([](std::span<Entity const>, chunk<Named> p, chunk<Vel const> v) {
                 auto x =
                     p.template column<1>(); // the float; the string column is untouched
                 auto vx = v.column<0>();
@@ -175,8 +168,8 @@ int main() {
                     x[i] += vx[i];
             });
         });
-        double const par = min_ns_per(N, R, [&] {
-            Query<Named, Vel const>(w).for_each([](auto& p, auto& v) {
+        double const par = ns_per_system(N, R, w, [](Query<Named, Vel const> q) {
+            q.for_each([](auto& p, auto& v) {
                 p.v += v.x;
             });
         });

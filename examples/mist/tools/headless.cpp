@@ -119,7 +119,7 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
     r.levels = s.level_count();
     r.ms_per_tick =
         std::chrono::duration<double, std::milli>(t1 - t0).count() / ticks;
-    query<Position const, Velocity const>(w).for_each([&](auto& p, auto& v) {
+    w.for_each<Position const, Velocity const>([&](auto& p, auto& v) {
         r.state.insert(r.state.end(), {p.x, p.y, p.z, v.x, v.y, v.z});
     });
     channel.consume();

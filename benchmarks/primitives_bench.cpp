@@ -122,7 +122,7 @@ int main() {
         auto imperative = [](Schedule& s) {
             s.add("sum", [](Query<P const> q, ResMut<Sum> out) {
                 out->v = 0;
-                q.for_each_chunk([&](std::span<Entity>, chunk<P const> p) {
+                q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     double acc = 0;
                     for (float x : p.column<0>())
                         acc += x;
@@ -132,7 +132,7 @@ int main() {
         };
         auto kernel = [](Schedule& s) {
             s.add_kernel("sum", [](Query<P const> q, Reduce<Sum, AddSum> r) {
-                q.for_each_chunk([&](std::span<Entity>, chunk<P const> p) {
+                q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     double acc = 0;
                     for (float x : p.column<0>())
                         acc += x;
@@ -149,7 +149,7 @@ int main() {
         auto imperative = [](Schedule& s) {
             s.add("snap", [](Query<P const> q, ResMut<Snapshot> out) {
                 out->clear();
-                q.for_each_chunk([&](std::span<Entity>, chunk<P const> p) {
+                q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     auto x = p.column<0>();
                     out->insert(out->end(), x.begin(), x.end());
                 });
@@ -157,7 +157,7 @@ int main() {
         };
         auto kernel = [](Schedule& s) {
             s.add_kernel("snap", [](Query<P const> q, Extract<Snapshot> out) {
-                q.for_each_chunk([&](std::span<Entity>, chunk<P const> p) {
+                q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     auto x = p.column<0>();
                     for (std::size_t i = 0; i < x.size(); ++i)
                         out[i] = x[i];

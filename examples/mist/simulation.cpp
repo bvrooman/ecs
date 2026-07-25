@@ -140,7 +140,8 @@ struct CellAccum {
     // tick's item execution was that tick's dominant cost (~3 ms). Constructing
     // it here means Schedule::prewarm -- which sizes the Reduce slot array
     // before the timed loop -- pre-pays it, so the first real tick is steady.
-    CellAccum() : idx(std::size_t(FlockGrid::cells), 0) {}
+    CellAccum()
+        : idx(std::size_t(FlockGrid::cells), 0) {}
 
     Cell& at(int const c) {
         int& slot = idx[std::size_t(c)];
@@ -321,24 +322,23 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // scatter-add is MADE to compress. The registration is a bet on lanes:
     // at 1 lane the indirection still costs ~10% of the tick vs the serial
     // rebuild; at 4 lanes the whole tick is ~7% faster and scales further.
-    schedule.add_kernel(
-        "grid",
-        [](Query<Position const, Velocity const> q,
-           Reduce<FlockGrid, MergeCells, CellAccum> g) {
-            q.for_each([&](auto& p, auto& v) {
-                int const c = FlockGrid::index(FlockGrid::axis(p.x),
-                                               FlockGrid::axis(p.y),
-                                               FlockGrid::axis(p.z));
-                auto& [count, sx, sy, sz, vx, vy, vz] = g->at(c);
-                count += 1;
-                sx += p.x;
-                sy += p.y;
-                sz += p.z;
-                vx += v.x;
-                vy += v.y;
-                vz += v.z;
-            });
-        });
+    schedule.add_kernel("grid",
+                        [](Query<Position const, Velocity const> q,
+                           Reduce<FlockGrid, MergeCells, CellAccum> g) {
+                            q.for_each([&](auto& p, auto& v) {
+                                int const c = FlockGrid::index(FlockGrid::axis(p.x),
+                                                               FlockGrid::axis(p.y),
+                                                               FlockGrid::axis(p.z));
+                                auto& [count, sx, sy, sz, vx, vy, vz] = g->at(c);
+                                count += 1;
+                                sx += p.x;
+                                sy += p.y;
+                                sz += p.z;
+                                vx += v.x;
+                                vy += v.y;
+                                vz += v.z;
+                            });
+                        });
 
     // steer: turn each bird. Accumulate the boids rules + goal into a steering
     // acceleration, apply it, then pull speed back to the cruise. (The cursor
@@ -490,16 +490,17 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // the executor pre-sizes it once at the barrier and each item writes its
     // disjoint span of GPU vertices in place -- the old serial gather, spread
     // across the wave, with no intermediate copy.
-    schedule.add_kernel(
-        "extract", [](Query<Position const> q, Extract<SnapshotTarget> out) {
-            q.for_each_chunk([&](std::span<Entity>, chunk<Position const> p) {
-                auto const x = p.column<0>();
-                auto const y = p.column<1>();
-                auto const z = p.column<2>();
-                for (std::size_t i = 0; i < x.size(); ++i)
-                    out[i] = GpuParticle {x[i], y[i], z[i]};
-            });
-        });
+    schedule.add_kernel("extract",
+                        [](Query<Position const> q, Extract<SnapshotTarget> out) {
+                            q.for_each_chunk([&](std::span<Entity const>,
+                                                 chunk<Position const> p) {
+                                auto const x = p.column<0>();
+                                auto const y = p.column<1>();
+                                auto const z = p.column<2>();
+                                for (std::size_t i = 0; i < x.size(); ++i)
+                                    out[i] = GpuParticle {x[i], y[i], z[i]};
+                            });
+                        });
 
     // publish: flip the finished back buffer to the renderer. Ordered small
     // work -- an imperative system. Reading SnapshotTarget places it after
@@ -545,39 +546,39 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
 
         auto out = std::make_shared<std::ofstream>(mpath);
         *out << "t,com_sx,com_sy,com_z,goal_sx,goal_sy,follow_err,spread,coherence\n";
-        schedule.add(
-            "metrics-write",
-            [out](Res<FlockStats> st, Res<Goal> goal, Res<Clock> clk) {
-                if (st->n == 0)
-                    return;
-                double const inv = 1.0 / double(st->n);
-                double const mcx = st->x * inv, mcy = st->y * inv, mcz = st->z * inv;
-                double const mspd = st->speed * inv;
-                // RMS radius about the mean in one pass: E[|p|^2] - |mean|^2
-                // (clamped: the difference of two large sums can go a hair
-                // negative in floating point when the flock is very tight).
-                double const svar =
-                    st->r2 * inv - (mcx * mcx + mcy * mcy + mcz * mcz);
-                float const spread = float(std::sqrt(std::max(0.0, svar)));
-                // CoM/goal -> screen. Floor the depth at the cull plane:
-                // a deep fly-over can carry the CoM past the camera
-                // (kCamZ - z <= 0), which would divide by ~0 and flip.
-                float const ci =
-                    cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - float(mcz));
-                float const gi =
-                    cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - goal->z);
-                float const csx = float(mcx) * ci, csy = float(mcy) * ci;
-                float const gsx = goal->x * gi, gsy = goal->y * gi;
-                float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +
-                                             (csy - gsy) * (csy - gsy));
-                double const mv =
-                    std::sqrt(st->vx * st->vx + st->vy * st->vy + st->vz * st->vz);
-                float const coh = mspd > 1e-5 ? float(mv * inv / mspd) : 0.0f;
-                *out << clk->t << ',' << csx << ',' << csy << ',' << float(mcz) << ','
-                     << gsx << ',' << gsy << ',' << ferr << ',' << spread << ','
-                     << coh << '\n';
-                out->flush(); // headless runs are killed by timeout; don't lose
-                              // buffered rows
-            });
+        schedule.add("metrics-write",
+                     [out](Res<FlockStats> st, Res<Goal> goal, Res<Clock> clk) {
+                         if (st->n == 0)
+                             return;
+                         double const inv = 1.0 / double(st->n);
+                         double const mcx = st->x * inv, mcy = st->y * inv,
+                                      mcz  = st->z * inv;
+                         double const mspd = st->speed * inv;
+                         // RMS radius about the mean in one pass: E[|p|^2] - |mean|^2
+                         // (clamped: the difference of two large sums can go a hair
+                         // negative in floating point when the flock is very tight).
+                         double const svar =
+                             st->r2 * inv - (mcx * mcx + mcy * mcy + mcz * mcz);
+                         float const spread = float(std::sqrt(std::max(0.0, svar)));
+                         // CoM/goal -> screen. Floor the depth at the cull plane:
+                         // a deep fly-over can carry the CoM past the camera
+                         // (kCamZ - z <= 0), which would divide by ~0 and flip.
+                         float const ci = cfg::kFocal / std::max(cfg::kNearClip,
+                                                                 cfg::kCamZ - float(mcz));
+                         float const gi =
+                             cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - goal->z);
+                         float const csx = float(mcx) * ci, csy = float(mcy) * ci;
+                         float const gsx = goal->x * gi, gsy = goal->y * gi;
+                         float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +
+                                                      (csy - gsy) * (csy - gsy));
+                         double const mv  = std::sqrt(st->vx * st->vx + st->vy * st->vy +
+                                                     st->vz * st->vz);
+                         float const coh  = mspd > 1e-5 ? float(mv * inv / mspd) : 0.0f;
+                         *out << clk->t << ',' << csx << ',' << csy << ',' << float(mcz)
+                              << ',' << gsx << ',' << gsy << ',' << ferr << ',' << spread
+                              << ',' << coh << '\n';
+                         out->flush(); // headless runs are killed by timeout; don't lose
+                                       // buffered rows
+                     });
     }
 }

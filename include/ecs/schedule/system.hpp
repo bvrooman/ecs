@@ -5,19 +5,18 @@
 //
 //   * the system-parameter protocol (detail::system_param<P>): how a system's
 //     parameter types declare access and are bound when it runs, and
-//   * the kernel plumbing (query_param_traits / bind_kernel_param): how a
-//     kernel system's single Query parameter binds restricted to one work
-//     item's row range.
+//   * the kernel plumbing (system_param<Query<Cs...>>): how a kernel system's
+//     single Query parameter binds restricted to one work item's row range.
 //
-// The Schedule (schedule.hpp) consumes these; the executor (executor.hpp)
+// The Schedule (schedule.hpp) consumes these; the Wave executor (wave.hpp)
 // consumes SystemRecord.
 
 #pragma once
 
 #include "../detail/move_only_function.hpp"
-#include "../query.hpp"
 #include "../world.hpp"
 #include "access.hpp"
+#include "work_item.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -109,32 +108,30 @@ void declare_component(SystemAccess& a) {
         a.writes.push_back(component_id<C>);
 }
 
-// bind() still receives the active WorkerPool (the uniform param protocol), but a
-// Query no longer uses it: a Query never dispatches -- parallelism is the
-// executor's job, not the query's -- so the pool is ignored here.
 template <class... Cs>
 struct system_param<Query<Cs...>> {
     static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-    static Query<Cs...> bind(World& w, Commands&, WorkerPool&) {
-        return Query<Cs...>(w); // a Query never dispatches; parallelism is the executor's
+    static Query<Cs...> bind(World& w, Commands&, WorkItem const& item) {
+        return Query<Cs...>(w, item);
     }
+    static Signature const& signature() { return Query<Cs...>::required(); }
 };
 template <class T>
 struct system_param<Res<T>> {
     static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-    static Res<T> bind(World& w, Commands&, WorkerPool&) { return Res<T>(w); }
+    static Res<T> bind(World& w, Commands&, WorkItem const&) { return Res<T>(w); }
 };
 template <class T>
 struct system_param<ResMut<T>> {
     static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-    static ResMut<T> bind(World& w, Commands&, WorkerPool&) { return ResMut<T>(w); }
+    static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
 };
 template <>
 struct system_param<Commands&> {
     // A side channel: no tracked component/resource access. We still flag it
     // so tooling can surface that the system records commands.
     static void declare(SystemAccess& a) { a.commands = true; }
-    static Commands& bind(World&, Commands& c, WorkerPool&) { return c; }
+    static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
 };
 // Read-only ad-hoc access: WorldView reads everything but writes nothing,
 // so it runs in parallel with other readers and is serialized only against
@@ -142,7 +139,7 @@ struct system_param<Commands&> {
 template <>
 struct system_param<WorldView> {
     static void declare(SystemAccess& a) { a.reads_all = true; }
-    static WorldView bind(World& w, Commands&, WorkerPool&) { return WorldView(w); }
+    static WorldView bind(World& w, Commands&, WorkItem const&) { return WorldView(w); }
 };
 // Note there is deliberately NO system_param<World&>: raw world access cannot
 // be analyzed and is dangerous under any concurrent executor, so it is not a
@@ -156,10 +153,11 @@ struct system_param<WorldView> {
 // unsupported type (Query<..> const&, T*, int, ...) fails this concept instead
 // of erroring inside an instantiation.
 template <class P>
-concept SystemParam = requires(SystemAccess& a, World& w, Commands& c, WorkerPool& p) {
-    system_param<P>::declare(a);
-    system_param<P>::bind(w, c, p);
-};
+concept SystemParam =
+    requires(SystemAccess& a, World& w, Commands& c, WorkItem const& item) {
+        system_param<P>::declare(a);
+        system_param<P>::bind(w, c, item);
+    };
 
 template <class P>
 inline constexpr bool is_query_param_v = false;
@@ -175,6 +173,9 @@ template <class Args>
 inline constexpr bool any_res_mut_v = false;
 template <class... A>
 inline constexpr bool any_res_mut_v<std::tuple<A...>> = (is_res_mut_v<A> || ...);
+
+template <class P>
+concept KernelParam = SystemParam<P> && !is_res_mut_v<P>;
 
 // How many parameters of Args are Query<Cs...>, and where the first one sits.
 // A kernel system must have exactly one: it is the iteration the executor
@@ -192,22 +193,7 @@ struct query_info<std::tuple<A...>> {
                 return i;
         return ~std::size_t {0};
     }();
-};
-
-// The slicing half of a kernel system's Query parameter: its required
-// signature (for match building) and the restricted bind the executor hands
-// each work item. Befriended by Query for the private pieces.
-template <class P>
-struct query_param_traits;
-template <class... Cs>
-struct query_param_traits<Query<Cs...>> {
-    static Signature const& signature() { return Query<Cs...>::required(); }
-    static Query<Cs...> bind_slice(World& w,
-                                   ArchetypeId archetype,
-                                   std::size_t b,
-                                   std::size_t e) {
-        return Query<Cs...>(w, archetype, b, e);
-    }
+    static constexpr bool has_query = index != ~std::size_t {0};
 };
 
 // The whole-parameter-list declare/invoke drivers live with the parameter
@@ -237,7 +223,7 @@ struct MatchCache {
     WorldId world                        = WorldId::none();
     std::uint64_t gen                    = ~std::uint64_t {0};
 
-    std::vector<ArchetypeId> const& resolve(World const& w, Signature const& sig) {
+    auto const& resolve(World const& w, Signature const& sig) {
         if (world != w.instance_id() || gen != w.archetype_generation()) {
             list  = &w.matching_archetypes(sig);
             world = w.instance_id();
@@ -247,9 +233,7 @@ struct MatchCache {
     }
 };
 
-using RunFn      = move_only_function<void(World&, Commands&, WorkerPool&)>;
-using RunRangeFn = move_only_function<
-    void(World&, Commands&, ArchetypeId, std::size_t, std::size_t, std::uint32_t)>;
+using RunFn          = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn = move_only_function<
     void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
@@ -263,27 +247,11 @@ struct SystemRecord {
     SystemId id = {};
     std::string name;
     SystemAccess access;
-    // Imperative body (add/add_once/add_dynamic): opaque to the scheduler,
-    // so the whole system is ONE work item. Null for kernel systems.
-    // move_only_function (not function) so a system may capture a move-only
-    // value (e.g. a unique_ptr or a move_only_function of its own).
     RunFn run;
-    // Kernel body (add_kernel): the executor slices the matched rows into
-    // work items and invokes this once per (archetype, row-range) item. The
-    // Commands& lets the kernel's other parameters bind; the trailing ordinal
-    // is the item's index in generation (serial-walk) order, which indexes the
-    // per-item slots of stateful parameters (Reduce/Extract -- see
-    // kernel_params.hpp). Null for imperative systems.
-    RunRangeFn run_range;
-    // Barrier hooks for stateful kernel parameters (null when the system has
-    // none): prepare runs single-threaded before the wave's dispatch with the
-    // system's per-item row counts in ordinal order plus the wave context;
-    // finish runs single-threaded after the join, before the command flush
-    // (skipped on abort).
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
-    Signature query_sig; // kernel systems: sorted required-component ids
-    MatchCache match;    // kernel systems: memoized query_sig match list
+    Signature query_sig = Signature::null();
+    MatchCache match; // kernel systems: memoized query_sig match list
     Phase phase = 0;
     Level level = 0;
     bool once   = false;
@@ -295,11 +263,7 @@ struct SystemRecord {
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.
     std::uint64_t every = 1;
-
-    [[nodiscard]]
-    bool is_kernel() const noexcept {
-        return static_cast<bool>(run_range);
-    }
+    bool is_parallel    = false;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {

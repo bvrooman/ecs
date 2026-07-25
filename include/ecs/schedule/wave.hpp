@@ -2,14 +2,16 @@
 
 #include "../detail/id_vector.hpp"
 #include "../detail/strong_id.hpp"
-#include "executor.hpp"
+#include "../parallel/worker_pool.hpp"
 #include "system.hpp"
+#include "work_item.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace ecs {
@@ -35,7 +37,7 @@ public:
             return false;
         rows.clear();
         for (auto const& it : items) {
-            if (it.system != system || it.archetype == detail::kImperative)
+            if (it.system != system)
                 continue;
             if (rows.size() <= it.ordinal)
                 rows.resize(it.ordinal + 1);
@@ -124,28 +126,28 @@ public:
         state_ = State::Prepared;
     }
 
-    // Execute the item list. A lone item runs inline on the caller with the full
-    // pool; several are claimed from an atomic cursor across the pool's lanes,
-    // imperative items bound to the shared 1-lane pool. Each item's busy time is
-    // rolled up per system into result_.
+    // Execute the item list. A lone item runs inline on the caller; several are
+    // claimed from an atomic cursor across the pool's lanes. Each item's busy
+    // time is rolled up per system into result_.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
-        auto run_one = [&](WorkItem& item, WorkerPool& p) {
-            auto const t0 = clock::now();
-            run_work_item(item, systems, world, cmds, p);
+        auto run_one = [&](WorkItem& item) {
+            auto& system               = systems[item.system];
+            detail::recording_source() = system.id;
+            auto const t0              = clock::now();
+            system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);
         };
         if (items_.size() == 1) {
-            run_one(items_[0], pool);
+            run_one(items_[0]);
         } else if (items_.size() > 1) {
-            auto next   = std::atomic {0uz};
-            auto& inner = parallel::serial_pool(); // 1-lane: dispatch-free
+            auto next = std::atomic {0uz};
             pool.parallel_for(items_.size(), 2, [&](std::size_t, std::size_t) {
                 for (auto i = next.fetch_add(1, std::memory_order_relaxed);
                      i < items_.size();
                      i = next.fetch_add(1, std::memory_order_relaxed))
-                    run_one(items_[i], inner);
+                    run_one(items_[i]);
             });
         }
         for (auto const& item : items_) {
@@ -249,56 +251,89 @@ public:
         auto& finish  = wave_.finish_;
         for (auto const id : due_) {
             auto& s = systems[id];
-            // Every due system gets a prepare/finish context (even without a
-            // hook: the context is a no-op), so every due system has a result
-            // slot regardless of how many work items it contributes.
             prepare.push_back({s.prepare_items, id, tick});
             finish.push_back({s.finish_items, id});
-            if (!s.is_kernel()) {
-                items.push_back({id, detail::kImperative, 0, 0, 0});
-                continue;
-            }
-            auto const& matches = s.match.resolve(world, s.query_sig);
-            auto total          = 0uz;
-            for (auto const ai : matches)
-                total += world.archetypes()[ai]->size();
-            if (total == 0)
-                continue;
-            std::size_t const grain =
-                std::max<std::size_t>(kMinItemRows, total / kTargetItemsPerKernel);
-            std::uint32_t ordinal = 0; // generation order == serial-walk order
-            for (auto const ai : matches) {
-                auto const n = world.archetypes()[ai]->size();
-                for (std::size_t b = 0; b < n; b += grain) {
-                    auto const e = std::min(n, b + grain);
-                    items.push_back({id,
-                                     ai,
-                                     static_cast<std::uint32_t>(b),
-                                     static_cast<std::uint32_t>(e),
-                                     ordinal++});
-                }
+            if (s.is_parallel) {
+                build_parallel(world, s, items);
+            } else {
+                build_serial(world, s, items);
             }
         }
-        // Longest first (imperative items -- unknown cost -- ahead of
-        // everything); deterministic tie-break so a 1-lane run replays.
-        std::ranges::sort(items, [](WorkItem const& a, WorkItem const& b) {
-            bool const ia = a.archetype == detail::kImperative;
-            bool const ib = b.archetype == detail::kImperative;
+        // Greedy LPT: opaque (imperative) items first, then longest-first, with a
+        // deterministic tie-break so a 1-lane run replays. An imperative system's
+        // item has unknown cost -- and a Commands-only / WorldView one has a zero
+        // row range, so a pure longest-first order would sort it LAST, where an
+        // expensive one becomes the join straggler. Claiming it before the kernel
+        // slices (whose cost is proportional to their known row count) keeps the
+        // biggest unknown off the tail.
+        std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
+            bool const ia = !systems[a.system].is_parallel;
+            bool const ib = !systems[b.system].is_parallel;
             if (ia != ib)
-                return ia;
+                return ia; // opaque/imperative items first
             auto const ra = a.end - a.begin;
             auto const rb = b.end - b.begin;
             if (ra != rb)
                 return ra > rb;
-            return std::tie(a.system, a.archetype, a.begin) <
-                   std::tie(b.system, b.archetype, b.begin);
+            return std::tie(a.system, a.begin) < std::tie(b.system, b.begin);
         });
         return wave_;
     }
 
 private:
-    using WorkItem = detail::WorkItem;
+    void build_parallel(auto& world, auto& system, auto& items) {
+        auto id             = system.id;
+        auto const& matches = system.match.resolve(world, system.query_sig);
+        auto total          = 0uz;
+        for (auto const ai : matches)
+            total += world.archetypes()[ai]->size();
+        auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerKernel);
+        std::uint32_t ordinal = 0;
+        for (auto const ai : matches) {
+            auto const n = world.archetypes()[ai]->size();
+            for (auto b = 0uz; b < n; b += grain) {
+                auto const e    = std::min(n, b + grain);
+                auto units = detail::SmallVector<detail::Unit, 1> {};
+                units.push_back(detail::Unit {
+                    ai,
+                    static_cast<std::uint32_t>(b),
+                    static_cast<std::uint32_t>(e),
+                });
+                auto item = WorkItem {id,
+                                      std::move(units),
+                                      static_cast<uint32_t>(b),
+                                      static_cast<uint32_t>(e),
+                                      ordinal++};
+                items.push_back(std::move(item));
+            }
+        }
+    }
 
+    void build_serial(auto& world, auto& system, auto& items) {
+        auto id             = system.id;
+        auto const& matches = system.match.resolve(world, system.query_sig);
+        auto total          = 0uz;
+        for (auto const ai : matches)
+            total += world.archetypes()[ai]->size();
+        auto units = detail::SmallVector<detail::Unit, 1> {};
+        for (auto const ai : matches) {
+            auto const n    = world.archetypes()[ai]->size();
+            auto const unit = detail::Unit {
+                ai,
+                static_cast<std::uint32_t>(0),
+                static_cast<std::uint32_t>(n),
+            };
+            units.push_back(unit);
+        }
+        auto item = WorkItem {id,
+                              std::move(units),
+                              static_cast<uint32_t>(0),
+                              static_cast<uint32_t>(total),
+                              0};
+        items.push_back(std::move(item));
+    }
+
+    using WorkItem = detail::WorkItem;
     std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
     std::vector<SystemId> due_;     // due this tick (reused scratch)
     Wave wave_;                     // this tick's compiled wave (reused buffers)

@@ -77,13 +77,15 @@ inline SystemId add_js_system(Schedule& schedule,
         access.commands = true;
         return schedule.add_dynamic(std::move(name),
                                     std::move(access),
-                                    [kernel](World&, Commands&, WorkerPool&) {
+                                    [kernel](World&, Commands&, detail::WorkItem const&) {
                                         kernel();
                                     });
     }
 
     // Query system: kernel(count, views, entities) once per matching archetype.
-    auto run = [kernel, query](World& w, Commands&, WorkerPool&) {
+    // A serial dynamic system: it iterates every matching archetype itself, so
+    // it ignores the per-item WorkItem the schedule hands a sliced kernel.
+    auto run = [kernel, query](World& w, Commands&, detail::WorkItem const&) {
         Signature const required(query);
         for (auto const ai : w.matching_archetypes(required)) {
             auto& arch       = WorldOps::archetype_at(w, ai);

@@ -64,18 +64,21 @@ static void sort_orders_rows_and_preserves_handles() {
 
     // Ascending within each archetype: walk the two Position archetypes via
     // their distinguishing signatures.
-    auto ascending = [](auto q) {
+    auto ascending = [](World& w) {
         float prev = -1.0f;
         bool ok    = true;
-        q.for_each([&](Position const& p, auto const&...) {
-            if (p.x < prev)
-                ok = false;
-            prev = p.x;
-        });
+        // Three fixed params (not `auto const&...`): with a variadic tail the
+        // row/Entity arity check in for_each_row would bind p to the Entity.
+        w.for_each<Position const, Health const, Frozen const>(
+            [&](auto const& p, auto const&, auto const&) {
+                if (p.x < prev)
+                    ok = false;
+                prev = p.x;
+            });
         return ok;
     };
-    CHECK(ascending(query<Position const, Health const, Frozen const>(w)));
-    CHECK((query<Position const, Health const>(w).count() == 1'000));
+    CHECK(ascending(w));
+    CHECK((w.count<Position const, Health const>() == 1'000));
 }
 
 // Stability: equal keys keep their original (spawn) relative order, so the
@@ -92,8 +95,8 @@ static void sort_is_stable() {
     float prev_key = -1.0f;
     int prev_hp    = -1;
     bool ok        = true;
-    query<Position const, Health const>(w).for_each(
-        [&](Position const& p, Health const& h) {
+    w.for_each<Position const, Health const>(
+        [&](auto const& p, auto const& h) {
             if (p.x < prev_key)
                 ok = false; // keys ascend
             if (p.x == prev_key && h.hp <= prev_hp)
@@ -128,8 +131,8 @@ static void sort_after_churn() {
     float prev = -1.0f;
     bool ok    = true;
     int seen   = 0;
-    query<Position const, Health const>(w).for_each(
-        [&](Position const& p, Health const& h) {
+    w.for_each<Position const, Health const>(
+        [&](auto const& p, auto const& h) {
             if (p.x < prev)
                 ok = false;
             prev = p.x;
@@ -160,8 +163,8 @@ static void integral_keys_sort_correctly_on_both_paths() {
         int prev_hp   = -1;
         bool first    = true;
         bool ok       = true;
-        query<Position const, Health const>(w).for_each(
-            [&](Position const& p, Health const& h) {
+        w.for_each<Position const, Health const>(
+            [&](auto const& p, auto const& h) {
                 auto const k = key(p);
                 if (!first) {
                     if (k < prev_key)
@@ -176,9 +179,9 @@ static void integral_keys_sort_correctly_on_both_paths() {
         CHECK(ok);
     };
     // Compact range incl. negatives (range 41 << 4n): counting path.
-    check_sorted_stable([](Position const& p) { return int(p.x) % 21 - 10; });
+    check_sorted_stable([](auto const& p) { return int(p.x) % 21 - 10; });
     // Spread range (steps of 1e6 >> 4n): stable_sort fallback.
-    check_sorted_stable([](Position const& p) { return int(p.x) * 1'000'000; });
+    check_sorted_stable([](auto const& p) { return int(p.x) * 1'000'000; });
 }
 
 // min_disorder: small drift is left alone (a re-sort would not pay for
@@ -201,7 +204,7 @@ static void min_disorder_skips_small_drift() {
     });
     auto descents = [&] {
         int prev = -1, d = 0;
-        query<Position const>(w).for_each([&](Position const& p) {
+        w.for_each<Position const>([&](auto const& p) {
             if (int(p.x) < prev)
                 ++d;
             prev = int(p.x);
@@ -255,7 +258,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
             /*every=*/4);
         // Churn: cull a band each tick (swap-and-pop disorders the tail)...
         s.add_kernel("cull", [](Query<Health const> q, Commands& cmd) {
-            q.for_each_chunk([&](std::span<Entity> es, chunk<Health const> h) {
+            q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {
                 auto const hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i)
                     if (hp[i] % 97 == 3)
@@ -265,7 +268,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         // ...and gather the walk order every tick.
         s.add_kernel("gather",
                      [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity>,
+                         q.for_each_chunk([&](std::span<Entity const>,
                                               chunk<Position const> p) {
                              auto const x = p.column<0>();
                              for (std::size_t i = 0; i < x.size(); ++i)
@@ -302,7 +305,7 @@ static void sorted_layout_stays_lane_count_invariant() {
         Schedule s;
         s.add_kernel("gather",
                      [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity>,
+                         q.for_each_chunk([&](std::span<Entity const>,
                                               chunk<Position const> p) {
                              auto const x = p.column<0>();
                              for (std::size_t i = 0; i < x.size(); ++i)
@@ -367,7 +370,7 @@ static void sort_command_applies_at_barrier() {
     });
     auto descents = [&] {
         int prev = -1, d = 0;
-        query<Position const>(w).for_each([&](Position const& p) {
+        w.for_each<Position const>([&](auto const& p) {
             if (int(p.x) < prev)
                 ++d;
             prev = int(p.x);

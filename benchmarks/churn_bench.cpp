@@ -47,8 +47,8 @@ void run_setup(World& w, auto fn) {
 std::vector<Entity> live_entities(World& w) {
     std::vector<Entity> es;
     es.reserve(w.size());
-    query<P const>(w).for_each_chunk(
-        [&](std::span<Entity> ids, chunk<P const>) {
+    w.for_each_chunk<P const>(
+        [&](std::span<Entity const> ids, chunk<P const>) {
             es.insert(es.end(), ids.begin(), ids.end());
         });
     return es;
@@ -179,7 +179,7 @@ int main() {
             }
         });
         s.add("integrate", [](Query<P, V const> q) {
-            q.for_each_chunk([](std::span<Entity>, chunk<P> p, chunk<V const> v) {
+            q.for_each_chunk([](std::span<Entity const>, chunk<P> p, chunk<V const> v) {
                 auto px = p.column<0>();
                 auto vx = v.column<0>();
                 for (std::size_t i = 0; i < px.size(); ++i)

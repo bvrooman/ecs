@@ -1,6 +1,6 @@
 // Minimal test harness: CHECK(expr) records a failure but keeps going; main
 // returns non-zero if anything failed. Wrap comma-containing expressions in
-// extra parens, e.g. CHECK((query<A, B>(w).count() == 2)).
+// extra parens, e.g. CHECK((w.count<A, B>() == 2)).
 #pragma once
 #include <cstdio>
 

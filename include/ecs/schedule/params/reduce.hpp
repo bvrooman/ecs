@@ -81,10 +81,8 @@ namespace detail {
         static Reduce<T, Op, Partial> bind(state& s,
                                            World&,
                                            Commands&,
-                                           std::uint32_t,
-                                           std::size_t,
-                                           std::size_t,
-                                           std::uint32_t ordinal) {
+                                           WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return Reduce<T, Op, Partial>(s.parts[ordinal]);
         }
     };

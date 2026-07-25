@@ -60,7 +60,7 @@ template <class Force>
 auto field_system(float seed) {
     return [seed](Query<Position const, Force> q, Res<Clock> clk) {
         float const t = clk->t;
-        q.for_each_chunk([t, seed](std::span<Entity>,
+        q.for_each_chunk([t, seed](std::span<Entity const>,
                                    chunk<Position const> pos,
                                    chunk<Force> f) {
             auto px = pos.column<0>();
@@ -103,7 +103,7 @@ void build_particle_schedule(Schedule& schedule) {
     // gravity: read the Gravity resource, write Velocity (data-parallel). wave 0.
     schedule.add_kernel("gravity", [](Query<Velocity> q, Res<Gravity> grav) {
         float const a = grav->accel;
-        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel) {
+        q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> vel) {
             for (auto& vy : vel.column<1>())
                 vy += a * cfg::kDt;
         });
@@ -111,7 +111,7 @@ void build_particle_schedule(Schedule& schedule) {
 
     // age: advance each particle's clock (data-parallel). wave 0.
     schedule.add_kernel("age", [](Query<Age> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<Age> age) {
+        q.for_each_chunk([](std::span<Entity const>, chunk<Age> age) {
             for (auto& t : age.column<0>())
                 t += cfg::kDt;
         });
@@ -135,7 +135,7 @@ void build_particle_schedule(Schedule& schedule) {
     // accumulate: sum the three fields into Velocity (data-parallel). wave 2.
     schedule.add_kernel("accumulate",
                  [](Query<Velocity, Swirl const, Drift const, Gust const> q) {
-                     q.for_each_chunk([](std::span<Entity>,
+                     q.for_each_chunk([](std::span<Entity const>,
                                          chunk<Velocity> vel,
                                          chunk<Swirl const> sw,
                                          chunk<Drift const> dr,
@@ -158,7 +158,7 @@ void build_particle_schedule(Schedule& schedule) {
 
     // integrate: read the final Velocity, write Position (data-parallel). wave 3.
     schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity>,
+        q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
             auto px       = pos.column<0>();

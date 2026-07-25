@@ -56,13 +56,8 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static Scratch<T> bind(state& s,
-                               World&,
-                               Commands&,
-                               std::uint32_t,
-                               std::size_t,
-                               std::size_t,
-                               std::uint32_t ordinal) {
+        static Scratch<T> bind(state& s, World&, Commands&, WorkItem const& item) {
+            auto ordinal = item.ordinal;
             return Scratch<T>(s.parts[ordinal]);
         }
     };

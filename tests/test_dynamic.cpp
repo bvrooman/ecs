@@ -31,7 +31,7 @@ template <class Kernel>
 static auto each_chunk(Signature query, Kernel kernel) {
     // Signature normalizes (sorts + dedups) on construction.
     return [query  = std::move(query),
-            kernel = std::move(kernel)](World& w, Commands&, WorkerPool&) {
+            kernel = std::move(kernel)](World& w, Commands&, detail::WorkItem const&) {
         for (auto const ai : w.matching_archetypes(query)) {
             auto& arch = dynamic::WorldOps::archetype_at(w, ai);
             if (arch.size() > 0)

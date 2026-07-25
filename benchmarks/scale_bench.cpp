@@ -36,19 +36,19 @@ using namespace ecs;
 static void build_steady(Schedule& s) {
     s.add_kernel("gravity", [](Query<Velocity> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> v) {
+        q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> v) {
             for (auto& vy : v.column<1>())
                 vy += a * cfg::kDt;
         });
     });
     s.add_kernel("age", [](Query<Age> q) {
-        q.for_each_chunk([](std::span<Entity>, chunk<Age> a) {
+        q.for_each_chunk([](std::span<Entity const>, chunk<Age> a) {
             for (auto& t : a.column<0>())
                 t += cfg::kDt;
         });
     });
     s.add_kernel("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity>,
+        q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> p,
                             chunk<Velocity const> v) {
             auto px = p.column<0>();
@@ -68,7 +68,7 @@ static void build_steady(Schedule& s) {
     s.add_kernel("extract",
                  [](Query<Position const, Color const, Age const> q,
                     Extract<RenderSnapshot> out) {
-                     q.for_each_chunk([&](std::span<Entity>,
+                     q.for_each_chunk([&](std::span<Entity const>,
                                           chunk<Position const> p,
                                           chunk<Color const> c,
                                           chunk<Age const>) {
