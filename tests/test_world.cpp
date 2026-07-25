@@ -168,6 +168,30 @@ static void const_query_marks_read_only() {
     CHECK(sum_x == 3.f);
 }
 
+// A serial system's Query spans every matching archetype -- including ones left
+// empty by migration -- so Query::for_each_chunk must skip empty chunks (never
+// hand the kernel a zero-length column span).
+static void query_chunk_skips_empty_archetype() {
+    World w;
+    Entity e = Entity::null();
+    setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}); }); // -> {Position}
+    setup(w, [&](Commands& cmd) {
+        cmd.add<Velocity>(e, Velocity {2, 2}); // migrate -> {Position,Velocity}, {Position} now empty
+    });
+    // Query<Position> matches BOTH the emptied {Position} and {Position,Velocity}.
+    std::size_t invocations = 0, rows = 0;
+    run_system(w, [&](Query<Position const> q) {
+        q.for_each_chunk([&](std::span<Entity> ents, chunk<Position const> pos) {
+            ++invocations;
+            rows += pos.column<0>().size();
+            CHECK(pos.column<0>().size() > 0); // never an empty chunk
+            CHECK(ents.size() > 0);
+        });
+    });
+    CHECK(invocations == 1); // only the non-empty archetype
+    CHECK(rows == 1);
+}
+
 static void spawn_goes_directly_to_final_archetype() {
     World w;
     setup(w, [&](Commands& cmd) {
@@ -265,6 +289,7 @@ int main() {
     RUN_SUITE(for_each_rows);
 #endif
     RUN_SUITE(const_query_marks_read_only);
+    RUN_SUITE(query_chunk_skips_empty_archetype);
     RUN_SUITE(spawn_goes_directly_to_final_archetype);
     RUN_SUITE(query_cache_sees_archetypes_created_after_first_query);
     RUN_SUITE(add_remove_churn_preserves_data);

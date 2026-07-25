@@ -114,6 +114,10 @@ public:
     template <class F>
     void for_each_chunk(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
+            if (begin == end)
+                continue; // never invoke the kernel with an empty chunk (a serial
+                          // system's item spans every matched archetype, including
+                          // ones emptied by migration; matches World::for_each_chunk)
             auto& arch    = *world_.archetypes()[archetype];
             auto entities = std::span(arch.entities).subspan(begin, end - begin);
             fn(entities, chunk_arg<Cs>(arch, begin, end)...);
