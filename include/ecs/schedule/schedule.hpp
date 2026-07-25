@@ -20,7 +20,7 @@
 //
 // Conflicting systems (one writes what another reads or writes) are assigned
 // wavefront *levels*; each wave is conflict-free and executed by the work-item
-// executor (executor.hpp) with a single pool dispatch. Recorded edits flush at
+// executor (wave.hpp) with a single pool dispatch. Recorded edits flush at
 // each wave barrier. A `phase<N>` tag gives coarse ordering across barriers
 // independent of conflicts.
 
@@ -208,16 +208,16 @@ public:
     // setup: add_once a setup system, then run(world).
     void run(World& world) { run(world, parallel::serial_pool()); }
 
-    // The WORK-ITEM executor (see executor.hpp for the mechanism). Each wave
+    // The WORK-ITEM executor (see wave.hpp for the mechanism). Each wave
     // is flattened into one item list -- kernel systems sliced into row
     // ranges, imperative systems one opaque item each -- and executed with a
     // single pool dispatch, lanes claiming items dynamically. A heavy kernel
     // system's slices overlap both with each other AND with the wave's other
     // systems: data parallelism within and across systems from one fork-join.
     //
-    // The single-system wave short-circuits to run that system inline on the
-    // caller with the full pool (a fanned wave's items interleave across the
-    // lanes, so there is no per-system wall interval to observe). Either way,
+    // The single-item wave short-circuits to run that item inline on the
+    // caller (a fanned wave's items interleave across the lanes, so there is no
+    // per-system wall interval to observe). Either way,
     // every system reports MEASURED work via a SystemWork event: busy time
     // summed over its items (recorded by the claiming lanes) plus its barrier
     // prepare/finish hook durations.
@@ -422,6 +422,13 @@ private:
         else
             return false;
     }
+    template <class Fn>
+    static consteval bool has_query() {
+        if constexpr (detail::IntrospectableSystem<Fn>)
+            return detail::query_info<detail::system_args_t<Fn>>::has_query;
+        else
+            return true; // defer: let the IntrospectableSystem assert be the lone one
+    }
 
     template <class Fn>
     SystemId emplace(std::string name,
@@ -478,6 +485,14 @@ private:
                       "pairwise/neighbor work, build a spatial structure with "
                       "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
                       "several component sets, use WorldView");
+        static_assert(has_query<Fn>(),
+                      "add_kernel: a kernel system must take exactly one Query<Cs...> "
+                      "-- it is the row iteration the scheduler slices into parallel "
+                      "work items, so a query-less kernel has no rows to parallelize "
+                      "and would never run. The per-item primitives (Reduce/Extract/"
+                      "Collect/EventWriter/...) are per-row too, so they need the query "
+                      "as well. For resource-only or effect-only work use add(), whose "
+                      "one work item still runs concurrently with the wave's others");
         static_assert(!has_res_mut<Fn>(),
                       "add_kernel: ResMut<T> is not allowed in a kernel system -- "
                       "its work items run concurrently, so writes through ResMut "
@@ -494,7 +509,8 @@ private:
                       "Random (Local<T> is imperative-only: per-system state has "
                       "no race-free meaning across a kernel's concurrent items)");
         if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
-                      !has_res_mut<Fn>() && params_allowed<ParamK, Fn>())
+                      has_query<Fn>() && !has_res_mut<Fn>() &&
+                      params_allowed<ParamK, Fn>())
             return build_system<ParamK>(std::move(name),
                                         std::forward<Fn>(fn),
                                         /*once=*/false,

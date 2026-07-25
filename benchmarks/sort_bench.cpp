@@ -64,7 +64,7 @@ void spawn_random(World& w, std::size_t n, unsigned seed) {
 void drift(World& w, std::size_t n, double frac, unsigned seed) {
     std::vector<Entity> es;
     es.reserve(n);
-    w.for_each_chunk<P const>([&](std::span<Entity> ids, chunk<P const>) {
+    w.for_each_chunk<P const>([&](std::span<Entity const> ids, chunk<P const>) {
         es.insert(es.end(), ids.begin(), ids.end());
     });
     std::mt19937 rng {seed};

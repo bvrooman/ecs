@@ -82,7 +82,7 @@ int main() {
     // gravity: read Mass + the Gravity resource, write Velocity.
     schedule.add_kernel("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity>, chunk<Velocity> vel, chunk<Mass const>) {
+        q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> vel, chunk<Mass const>) {
             for (auto& vy : vel.column<1>())
                 vy += a * kDt; // SoA fast path
         });
@@ -111,7 +111,7 @@ int main() {
     // integrate: read Velocity, write Position. Reads what gravity wrote, so the
     // scheduler places it on a later level automatically.
     schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity>,
+        q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> pos,
                             chunk<Velocity const> vel) {
             auto px = pos.column<0>();

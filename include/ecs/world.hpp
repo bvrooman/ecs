@@ -722,7 +722,7 @@ void World::for_each_chunk(F&& fn) const {
         auto& arch = *archetypes_[ai];
         if (arch.size() == 0)
             continue;
-        auto entities = std::span(arch.entities);
+        std::span<Entity const> entities = std::span(arch.entities);
         fn(entities,
            chunk<std::remove_const_t<Cs> const>(
                arch.column<std::remove_const_t<Cs>>().store, 0, arch.size())...);

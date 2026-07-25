@@ -42,11 +42,11 @@ struct slot_array {
     }
 };
 
-// The primary template covers every ordinary system parameter (stateless;
-// binds through system_param against the shared 1-lane pool). The kernel's
-// single Query parameter is NOT routed through here -- the executor binds
-// it sliced via query_param_traits (see Schedule::add_kernel). Each
-// primitive specializes this template in its own header.
+// The primary template covers every ordinary system parameter (stateless; binds
+// through system_param). The kernel's single Query parameter is NOT routed
+// through here -- system_param<Query<Cs...>> binds it sliced to the work item
+// (see Schedule::add_kernel and query.hpp). Each primitive specializes this
+// template in its own header.
 template <class P>
 struct kernel_param {
     static constexpr bool allowed = KernelParam<P>;

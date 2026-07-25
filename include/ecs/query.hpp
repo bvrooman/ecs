@@ -70,16 +70,23 @@ class Query {
         return s;
     }
 
-    // A Query restricted to rows [b, e) of ONE matching archetype -- how a
-    // kernel system's work item binds its Query parameter (the executor owns
-    // the slicing; see schedule/executor.hpp). Every iteration method then
-    // walks just that slice. Constructed only by detail::query_param_traits
-    // (befriended above).
+    // A Query bound to one work item -- the row ranges (units) the scheduler
+    // sliced for this system; every iteration method walks just those. For a
+    // kernel that is one grain-sized slice of one archetype; for a serial
+    // system, one item covering every matched archetype. Constructed only by
+    // detail::system_param (befriended above), which owns the slicing.
     Query(World& world, detail::WorkItem const& item)
         : world_(world)
         , item_(item) {}
 
 public:
+    // Bound to ONE work item, held by reference -- it must not outlive its run
+    // (Wave::items_ is rebuilt every tick). Movable so the binder can return it
+    // by value; not copyable, so a copy cannot be stashed past the tick and dangle.
+    Query(Query const&)            = delete;
+    Query& operator=(Query const&) = delete;
+    Query(Query&&)                 = default;
+
     // for_each: per-element iteration. Hands the kernel each entity's
     // components (a write-through proxy per component under P2996, a gathered
     // value on the portable backend, accessed as p.x), plus an optional leading
@@ -114,8 +121,16 @@ public:
     template <class F>
     void for_each_chunk(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
-            auto& arch    = *world_.archetypes()[archetype];
-            auto entities = std::span(arch.entities).subspan(begin, end - begin);
+            if (begin == end)
+                continue; // never invoke the kernel with an empty chunk (a serial
+                          // system's item spans every matched archetype, including
+                          // ones emptied by migration; matches World::for_each_chunk)
+            auto& arch = *world_.archetypes()[archetype];
+            // Entity handles are the world's row->entity bookkeeping; a kernel may
+            // read them (e.g. to hand a row to Commands::destroy) but never write
+            // them, so the span is const even when a component chunk is mutable.
+            std::span<Entity const> entities =
+                std::span(arch.entities).subspan(begin, end - begin);
             fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }

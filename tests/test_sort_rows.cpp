@@ -258,7 +258,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
             /*every=*/4);
         // Churn: cull a band each tick (swap-and-pop disorders the tail)...
         s.add_kernel("cull", [](Query<Health const> q, Commands& cmd) {
-            q.for_each_chunk([&](std::span<Entity> es, chunk<Health const> h) {
+            q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {
                 auto const hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i)
                     if (hp[i] % 97 == 3)
@@ -268,7 +268,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         // ...and gather the walk order every tick.
         s.add_kernel("gather",
                      [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity>,
+                         q.for_each_chunk([&](std::span<Entity const>,
                                               chunk<Position const> p) {
                              auto const x = p.column<0>();
                              for (std::size_t i = 0; i < x.size(); ++i)
@@ -305,7 +305,7 @@ static void sorted_layout_stays_lane_count_invariant() {
         Schedule s;
         s.add_kernel("gather",
                      [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity>,
+                         q.for_each_chunk([&](std::span<Entity const>,
                                               chunk<Position const> p) {
                              auto const x = p.column<0>();
                              for (std::size_t i = 0; i < x.size(); ++i)
