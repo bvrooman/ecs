@@ -266,7 +266,17 @@ public:
         // expensive one becomes the join straggler. Claiming it before the kernel
         // slices (whose cost is proportional to their known row count) keeps the
         // biggest unknown off the tail.
-        std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
+        //
+        // Sort an index permutation, not the items: a WorkItem owns its units (a
+        // SmallVector), so moving one is far heavier than moving a uint32, and the
+        // sort does O(n log n) moves. We sort cheap indices, then apply the
+        // permutation once (n moves) into a scratch buffer that ping-pongs with
+        // items_ -- so steady state still allocates nothing. The comparator is a
+        // strict TOTAL order (the (system, begin) tie-break is unique across
+        // items, since a system is either parallel or serial, never both), so the
+        // resulting order is identical to an in-place sort -- the 1-lane == N-lane
+        // bitwise replay is preserved by construction.
+        auto const cmp = [&systems](WorkItem const& a, WorkItem const& b) {
             bool const ia = !systems[a.system].is_parallel;
             bool const ib = !systems[b.system].is_parallel;
             if (ia != ib)
@@ -276,7 +286,18 @@ public:
             if (ra != rb)
                 return ra > rb;
             return std::tie(a.system, a.begin) < std::tie(b.system, b.begin);
+        };
+        order_.resize(items.size());
+        for (std::uint32_t i = 0; i < items.size(); ++i)
+            order_[i] = i;
+        std::ranges::sort(order_, [&](std::uint32_t const x, std::uint32_t const y) {
+            return cmp(items[x], items[y]);
         });
+        sorted_.clear();
+        sorted_.reserve(items.size());
+        for (auto const idx : order_)
+            sorted_.push_back(std::move(items[idx]));
+        items.swap(sorted_);
         return wave_;
     }
 
@@ -334,8 +355,10 @@ private:
     }
 
     using WorkItem = detail::WorkItem;
-    std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
-    std::vector<SystemId> due_;     // due this tick (reused scratch)
-    Wave wave_;                     // this tick's compiled wave (reused buffers)
+    std::vector<SystemId> systems_;    // wave membership (fixed at rebuild)
+    std::vector<SystemId> due_;        // due this tick (reused scratch)
+    std::vector<std::uint32_t> order_; // LPT sort permutation (reused scratch)
+    std::vector<WorkItem> sorted_;     // permute target; ping-pongs with items_
+    Wave wave_;                        // this tick's compiled wave (reused buffers)
 };
 } // namespace ecs
