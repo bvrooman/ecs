@@ -422,6 +422,13 @@ private:
         else
             return false;
     }
+    template <class Fn>
+    static consteval bool has_query() {
+        if constexpr (detail::IntrospectableSystem<Fn>)
+            return detail::query_info<detail::system_args_t<Fn>>::has_query;
+        else
+            return true; // defer: let the IntrospectableSystem assert be the lone one
+    }
 
     template <class Fn>
     SystemId emplace(std::string name,
@@ -478,6 +485,14 @@ private:
                       "pairwise/neighbor work, build a spatial structure with "
                       "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
                       "several component sets, use WorldView");
+        static_assert(has_query<Fn>(),
+                      "add_kernel: a kernel system must take exactly one Query<Cs...> "
+                      "-- it is the row iteration the scheduler slices into parallel "
+                      "work items, so a query-less kernel has no rows to parallelize "
+                      "and would never run. The per-item primitives (Reduce/Extract/"
+                      "Collect/EventWriter/...) are per-row too, so they need the query "
+                      "as well. For resource-only or effect-only work use add(), whose "
+                      "one work item still runs concurrently with the wave's others");
         static_assert(!has_res_mut<Fn>(),
                       "add_kernel: ResMut<T> is not allowed in a kernel system -- "
                       "its work items run concurrently, so writes through ResMut "
@@ -494,7 +509,8 @@ private:
                       "Random (Local<T> is imperative-only: per-system state has "
                       "no race-free meaning across a kernel's concurrent items)");
         if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
-                      !has_res_mut<Fn>() && params_allowed<ParamK, Fn>())
+                      has_query<Fn>() && !has_res_mut<Fn>() &&
+                      params_allowed<ParamK, Fn>())
             return build_system<ParamK>(std::move(name),
                                         std::forward<Fn>(fn),
                                         /*once=*/false,
