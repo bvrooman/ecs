@@ -43,9 +43,12 @@ static void multi_lane_chunk_split_covers_every_row() {
     WorkerPool pool {4};
     Schedule s;
     s.add_kernel("bump", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity const>,
-                            chunk<Position> p,
-                            chunk<Velocity const> v) {
+        // Deduced, not spelled: fails to compile if the entity span ever stops
+        // being const. Entity handles are the world's row->entity bookkeeping --
+        // a kernel reads them, never writes them.
+        q.for_each_chunk([](auto ents, chunk<Position> p, chunk<Velocity const> v) {
+            static_assert(std::is_const_v<typename decltype(ents)::element_type>,
+                          "for_each_chunk must hand kernels a read-only entity span");
             auto px = p.column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < px.size(); ++i)

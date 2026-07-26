@@ -16,7 +16,7 @@
 //       proxy under P2996, a gathered local on the portable backend), accessed as
 //       p.x, plus an optional leading Entity.
 //
-//   q.for_each_chunk([](std::span<Entity> ents,
+//   q.for_each_chunk([](std::span<Entity const> ents,
 //                       chunk<Position> pos, chunk<Velocity const> vel){ ... });
 //       COLUMN-shaped (SoA) iteration: a `chunk` per component whose column<I>()
 //       is that field's contiguous std::span (span<const F> for a read-only
@@ -116,7 +116,7 @@ public:
     // for_each it never dispatches: parallelism comes only from an
     // add_kernel system's row slicing.
     //
-    //   q.for_each_chunk([](std::span<Entity>,
+    //   q.for_each_chunk([](std::span<Entity const>,
     //                       chunk<Position> pos, chunk<Velocity const> vel) {
     //       auto px = pos.column<0>(); auto vx = vel.column<0>();
     //       for (std::size_t i = 0; i < px.size(); ++i) px[i] += vx[i]; // vectorizable
@@ -126,8 +126,9 @@ public:
         for (auto const& [archetype, begin, end] : item_.units) {
             if (begin == end)
                 continue;
-            auto& arch    = *world_.archetypes()[archetype];
-            auto entities = std::span(arch.entities).subspan(begin, end - begin);
+            auto& arch = *world_.archetypes()[archetype];
+            auto entities =
+                std::span<Entity const>(arch.entities).subspan(begin, end - begin);
             fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }
