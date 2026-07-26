@@ -1,4 +1,9 @@
 // ecs/ecs.hpp -- single include for the whole library.
+//
+// This is the statically-typed surface: components are C++ structs and their
+// ids are minted at compile time. The runtime-described component module is
+// opt-in and not included here -- see ecs/dynamic.hpp.
+
 #pragma once
 
 #include <ecs/archetype.hpp>

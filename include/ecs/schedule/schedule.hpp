@@ -33,9 +33,11 @@
 #include <ecs/world.hpp>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/events.hpp>
+#include <ecs/schedule/graph.hpp>
 #include <ecs/schedule/kernel_params.hpp>
 #include <ecs/schedule/params/imperative.hpp>
 #include <ecs/schedule/system.hpp>
+#include <ecs/schedule/validate.hpp>
 #include <ecs/schedule/wave.hpp>
 #include <algorithm>
 #include <cstddef>
@@ -253,7 +255,7 @@ public:
             ++lvl;
         }
         events_.emit(TickEnd {});
-        prune_once();
+        detail::prune_once(systems_, dirty_);
     }
 
     [[nodiscard]]
@@ -395,39 +397,6 @@ private:
         return register_system(std::move(sys));
     }
 
-    // Self-gating checks used by the static_asserts and build guards below. Each
-    // returns its DEFERRING value when Fn is not introspectable (params /
-    // at_most_one_query -> true, has_res_mut -> false), so that case yields the
-    // IntrospectableSystem assert alone; otherwise it reports the real check over
-    // the argument list.
-    template <template <class> class Param, class Fn>
-    static consteval bool params_allowed() {
-        if constexpr (detail::IntrospectableSystem<Fn>)
-            return detail::params_info<Param, detail::system_args_t<Fn>>::all_allowed;
-        else
-            return true;
-    }
-    template <class Fn>
-    static consteval bool at_most_one_query() {
-        if constexpr (detail::IntrospectableSystem<Fn>)
-            return detail::query_info<detail::system_args_t<Fn>>::count <= 1;
-        else
-            return true;
-    }
-    template <class Fn>
-    static consteval bool has_res_mut() {
-        if constexpr (detail::IntrospectableSystem<Fn>)
-            return detail::any_res_mut_v<detail::system_args_t<Fn>>;
-        else
-            return false;
-    }
-    template <class Fn>
-    static consteval bool has_query() {
-        if constexpr (detail::IntrospectableSystem<Fn>)
-            return detail::query_info<detail::system_args_t<Fn>>::has_query;
-        else
-            return true; // defer: let the IntrospectableSystem assert be the lone one
-    }
 
     template <class Fn>
     SystemId emplace(std::string name,
@@ -440,14 +409,14 @@ private:
                       "one non-template call operator -- a generic (auto-parameter) "
                       "lambda cannot work here, because the parameter TYPES are what "
                       "declare the system's access");
-        static_assert(at_most_one_query<Fn>(),
+        static_assert(detail::at_most_one_query<Fn>(),
                       "a system may take AT MOST ONE Query<Cs...> parameter -- the "
                       "work-item model binds a system's one query to its one work "
                       "item, and kernels already require exactly one. For "
                       "pairwise/neighbor work, build a spatial structure with "
                       "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
                       "several component sets, use WorldView");
-        static_assert(params_allowed<ParamI, Fn>(),
+        static_assert(detail::params_allowed<ParamI, Fn>(),
                       "unsupported system parameter type: a system may take "
                       "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
                       "and Local<T> (spelled exactly so -- e.g. Query by "
@@ -456,8 +425,8 @@ private:
                       "primitives (Reduce/Extract/Collect/EventWriter/"
                       "EventReader/Scratch/Random) are kernel-only (register "
                       "with add_kernel)");
-        if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
-                      params_allowed<ParamI, Fn>())
+        if constexpr (detail::IntrospectableSystem<Fn> && detail::at_most_one_query<Fn>() &&
+                      detail::params_allowed<ParamI, Fn>())
             return build_system<ParamI>(std::move(name),
                                         std::forward<Fn>(fn),
                                         once,
@@ -477,14 +446,14 @@ private:
                       "one non-template call operator -- a generic (auto-parameter) "
                       "lambda cannot work here, because the parameter TYPES are what "
                       "declare the system's access");
-        static_assert(at_most_one_query<Fn>(),
+        static_assert(detail::at_most_one_query<Fn>(),
                       "a system may take AT MOST ONE Query<Cs...> parameter -- the "
                       "work-item model binds a system's one query to its one work "
                       "item, and kernels already require exactly one. For "
                       "pairwise/neighbor work, build a spatial structure with "
                       "Reduce<T, Op> and read it via Res<T>; for ad-hoc reads across "
                       "several component sets, use WorldView");
-        static_assert(has_query<Fn>(),
+        static_assert(detail::has_query<Fn>(),
                       "add_kernel: a kernel system must take exactly one Query<Cs...> "
                       "-- it is the row iteration the scheduler slices into parallel "
                       "work items, so a query-less kernel has no rows to parallelize "
@@ -492,7 +461,7 @@ private:
                       "Collect/EventWriter/...) are per-row too, so they need the query "
                       "as well. For resource-only or effect-only work use add(), whose "
                       "one work item still runs concurrently with the wave's others");
-        static_assert(!has_res_mut<Fn>(),
+        static_assert(!detail::has_res_mut<Fn>(),
                       "add_kernel: ResMut<T> is not allowed in a kernel system -- "
                       "its work items run concurrently, so writes through ResMut "
                       "would race. Read resources via Res<T>; fold shared state "
@@ -500,16 +469,16 @@ private:
                       "Extract<T> (see schedule/params/)");
         // `|| has_res_mut` so a ResMut (which also fails params_allowed) fires
         // only its own, more specific assert above.
-        static_assert(params_allowed<ParamK, Fn>() || has_res_mut<Fn>(),
+        static_assert(detail::params_allowed<ParamK, Fn>() || detail::has_res_mut<Fn>(),
                       "add_kernel: unsupported kernel parameter type -- a kernel "
                       "system may take one Query<Cs...>, plus Res<T>, Commands&, "
                       "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
                       "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
                       "Random (Local<T> is imperative-only: per-system state has "
                       "no race-free meaning across a kernel's concurrent items)");
-        if constexpr (detail::IntrospectableSystem<Fn> && at_most_one_query<Fn>() &&
-                      has_query<Fn>() && !has_res_mut<Fn>() &&
-                      params_allowed<ParamK, Fn>())
+        if constexpr (detail::IntrospectableSystem<Fn> && detail::at_most_one_query<Fn>() &&
+                      detail::has_query<Fn>() && !detail::has_res_mut<Fn>() &&
+                      detail::params_allowed<ParamK, Fn>())
             return build_system<ParamK>(std::move(name),
                                         std::forward<Fn>(fn),
                                         /*once=*/false,
@@ -555,69 +524,17 @@ private:
         events_.emit(WaveEnd {lvl, flush_us, plan_result.build_us, plan_result.sort_us});
     }
 
-    // Tombstone spent one-shot systems (see remove()): they keep their slot so
-    // no other system's position -- and so no SystemId -- shifts.
-    void prune_once() {
-        for (auto& s : systems_)
-            if (s.once && !s.dead) {
-                s.dead = true;
-                dirty_ = true;
-            }
-    }
-
-    // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
-    // conflicting systems in the same phase (cross-phase ordering is handled by
-    // the phase barrier). Tombstoned systems are skipped -- they take no slot in
-    // any wave -- but their positions still count, so a live system keeps the
-    // same level whether or not an earlier system was removed.
-    void assign_levels() {
-        for (auto& system : systems_)
-            system.level = 0;
-        for (auto&& [id, s1] : systems_.enumerate()) {
-            if (s1.dead)
-                continue;
-            auto level = System::Level {0};
-            for (auto const& s2 : systems_ | std::views::take(id.value)) {
-                if (!s2.dead && s1.phase == s2.phase && conflicts(s1.access, s2.access))
-                    level = std::max(level, s2.level + 1);
-            }
-            s1.level = level;
-        }
-    }
-
-    void build_wave_plans() {
-        using WaveGroup  = std::pair<System::WaveKey, WavePlan>;
-        auto search      = [](auto const& g) { return g.first; };
-        auto wave_groups = std::vector<WaveGroup> {};
-        for (auto&& [id, system] : systems_.enumerate()) {
-            if (system.dead)
-                continue;
-            auto key = system.wave_key();
-            auto it  = std::ranges::find(wave_groups, key, search);
-            if (it == wave_groups.end()) {
-                wave_groups.emplace_back(key, WavePlan {});
-                it = std::prev(wave_groups.end());
-            }
-            auto& wave = it->second;
-            wave.push_back(id);
-        }
-        std::ranges::sort(wave_groups, {}, search);
-        wave_plans_.clear();
-        wave_plans_.reserve(wave_groups.size());
-        std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
-                          std::back_inserter(wave_plans_));
-    }
 
     void rebuild() {
         if (!dirty_)
             return;
-        assign_levels();
-        build_wave_plans();
+        detail::assign_levels(systems_);
+        detail::build_wave_plans(systems_, wave_plans_);
         dirty_ = false;
     }
 
     event::Emitter<ScheduleEvent> events_;
-    using SystemVector = detail::IdVector<SystemId, System>;
+    using SystemVector = detail::SystemVector;
     SystemVector systems_;
     std::vector<WavePlan> wave_plans_;
     FlushAttrib flush_attrib_; // per-system flush time, per wave
