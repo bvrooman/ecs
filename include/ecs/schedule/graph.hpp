@@ -72,7 +72,8 @@ inline void build_wave_plans(SystemVector const& systems,
         auto key = system.wave_key();
         auto it  = std::ranges::find(wave_groups, key, search);
         if (it == wave_groups.end()) {
-            wave_groups.emplace_back(key, WavePlan {});
+            auto const level = system.level;
+            wave_groups.emplace_back(key, WavePlan {level});
             it = std::prev(wave_groups.end());
         }
         auto& wave = it->second;

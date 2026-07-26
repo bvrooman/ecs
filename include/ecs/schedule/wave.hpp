@@ -224,6 +224,13 @@ public:
 
     WaveId wave_id = {};
 
+    explicit WavePlan(System::Level const level)
+        : level_(level) {}
+    WavePlan(WavePlan const&)                = delete;
+    WavePlan& operator=(WavePlan const&)     = delete;
+    WavePlan(WavePlan&&) noexcept            = default;
+    WavePlan& operator=(WavePlan&&) noexcept = default;
+
     void push_back(SystemId const id) { systems_.push_back(id); }
 
     // size()/empty() and iteration refer to the systems DUE this tick, as
@@ -236,6 +243,10 @@ public:
     [[nodiscard]]
     auto empty() const {
         return due_.empty();
+    }
+    [[nodiscard]]
+    auto level() const {
+        return level_;
     }
     auto begin() const { return due_.begin(); }
     auto end() const { return due_.end(); }
@@ -350,6 +361,7 @@ private:
         items.push_back(std::move(item));
     }
 
+    System::Level level_;
     using WorkItem = detail::WorkItem;
     std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
     std::vector<SystemId> due_;     // due this tick (reused scratch)
