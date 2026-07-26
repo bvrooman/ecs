@@ -48,11 +48,11 @@ namespace detail {
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 
-    // The kernel-parameter policy (schedule/params/kernel.hpp), forward-
+    // The kernel-parameter policy (schedule/params/parallel.hpp), forward-
     // declared so Commands can befriend its Commands& specialization (per-item
-    // command recording for kernel systems).
+    // command recording for parallel systems).
     template <class P>
-    struct kernel_param;
+    struct parallel_param;
 } // namespace detail
 
 // Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
@@ -95,7 +95,7 @@ public:
     // contiguous ROW ranges, so making row order correlate with the key a
     // kernel scatters by (e.g. a spatial cell index) is what lets per-item
     // partials compress (see docs/IMPROVEMENTS.md, parallel-primitives
-    // section); neighborhood-reading kernels gain cache locality as a bonus.
+    // section); neighborhood-reading parallel systems gain cache locality as a bonus.
     //
     // Entity handles remain valid (their records are patched); what changes
     // is iteration/serial-walk order -- deterministically: a stable sort by a
@@ -249,7 +249,7 @@ public:
     // Bumped whenever an archetype is created (only at flush) -- lets a query
     // memoize its matching_archetypes() list and skip the locked cache lookup
     // while the set of archetypes is unchanged (Query does this per type, the
-    // schedule executor per kernel system).
+    // schedule executor per parallel system).
     std::uint64_t archetype_generation() const noexcept {
         return archetype_gen_.load(std::memory_order_acquire);
     }

@@ -17,7 +17,7 @@ from collections import defaultdict
 # The one lower-is-better time metric that represents a benchmark's throughput,
 # most-specific first. A suite emits several per-lane metrics (mean/p50/p99);
 # we plot one line per benchmark, not one per metric.
-_PREF = ["us_per_tick", "kernel_us_per_tick", "mean_us_per_tick",
+_PREF = ["us_per_tick", "parallel_us_per_tick", "mean_us_per_tick",
          "ns_per_op", "ns_per_row", "ns_per_entity"]
 
 
@@ -68,7 +68,7 @@ def load_bench(path):
         benches = suites[suite]
         # Align on the RICHEST lane set in the suite (its full sweep). A
         # benchmark measured at only a couple of lanes -- e.g. an
-        # imperative-vs-kernel spot check at {serial, hw} -- is not a scaling
+        # serial-vs-parallel spot check at {serial, hw} -- is not a scaling
         # curve; keep only series that cover the full sweep so a short one
         # can't truncate the real curves.
         target = max((frozenset(lv) for _, _, lv in benches), key=len)

@@ -79,9 +79,9 @@ static void hashable_key() {
 // SystemId in practice: the scheduler hands out monotonic ids.
 static void system_ids_are_monotonic_and_nonzero() {
     Schedule s;
-    SystemId const a = s.add("a", [] {});
-    SystemId const b = s.add("b", [] {});
-    SystemId const c = s.add("c", [] {});
+    SystemId const a = s.add_serial("a", [] {});
+    SystemId const b = s.add_serial("b", [] {});
+    SystemId const c = s.add_serial("c", [] {});
     CHECK(a != SystemId::none()); // never the 0 sentinel
     CHECK(b != SystemId::none());
     CHECK(a != b && b != c && a != c);

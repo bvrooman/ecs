@@ -12,7 +12,7 @@
 //   schedule/wave.hpp      the work-item executor (build + dispatch)
 //   schedule/graph.hpp     systems -> wavefront levels -> wave plans
 //   schedule/params.hpp    umbrella over params/ -- the system parameters and
-//                          the two policies (kernel_param, imperative_param)
+//                          the two policies (parallel_param, serial_param)
 //   schedule/schedule.hpp  the Schedule class (registration, waves, run loop)
 //
 // Include this header; the split is an implementation layout, not an API.

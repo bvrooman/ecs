@@ -132,13 +132,13 @@ static void world_extraction_fans_out_to_two_consumers() {
     std::thread audio(consume, 1);
 
     Schedule sched;
-    sched.add("extract",
-              [](Query<Position const> q, ResMut<SnapshotChannel<Snapshot>> ch) {
-                  Snapshot& out = ch->back();
-                  out.clear();
-                  q.for_each([&](auto& p) { out.push_back({p.x, p.y}); });
-                  ch->publish();
-              });
+    sched.add_serial("extract",
+                     [](Query<Position const> q, ResMut<SnapshotChannel<Snapshot>> ch) {
+                         Snapshot& out = ch->back();
+                         out.clear();
+                         q.for_each([&](auto& p) { out.push_back({p.x, p.y}); });
+                         ch->publish();
+                     });
 
     WorkerPool pool {4};
     for (int frame = 0; frame < 50; ++frame)

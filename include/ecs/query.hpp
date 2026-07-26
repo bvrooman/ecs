@@ -26,7 +26,7 @@
 //       portable backend, where for_each reassembles the whole struct.
 //
 // A Query never dispatches: both forms iterate on the calling thread. Parallelism
-// is the executor's job -- an add_kernel system slices its rows into work items
+// is the executor's job -- an add_parallel system slices its rows into work items
 // across the pool's lanes, each binding a Query restricted to its slice.
 
 #pragma once
@@ -114,7 +114,7 @@ public:
     // for_each for a wide or sparsely-touched component on the portable
     // backend (where for_each reassembles the whole struct per row). Like
     // for_each it never dispatches: parallelism comes only from an
-    // add_kernel system's row slicing.
+    // add_parallel system's row slicing.
     //
     //   q.for_each_chunk([](std::span<Entity const>,
     //                       chunk<Position> pos, chunk<Velocity const> vel) {

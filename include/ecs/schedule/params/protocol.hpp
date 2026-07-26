@@ -6,11 +6,11 @@
 //
 // Everything here is generic over the parameter policy `Param`, so one set of
 // drivers serves both system kinds -- Schedule instantiates them with
-// imperative_param for add()/add_once() and with kernel_param for
-// add_kernel(). The policies themselves live in params/imperative.hpp and
-// params/kernel.hpp.
+// serial_param for add_serial() and with parallel_param for
+// add_parallel(). The policies themselves live in params/serial.hpp and
+// params/parallel.hpp.
 //
-// A kernel system's work items run concurrently, so any cross-item state must
+// A parallel system's work items run concurrently, so any cross-item state must
 // be either read-only or privately owned per item. The substrate: for each
 // stateful parameter the system owns an array of per-item SLOTS (indexed by
 // the item's ordinal -- its position in generation order: archetypes
@@ -31,13 +31,13 @@
 // The primitives themselves live in the sibling headers (reduce.hpp,
 // extract.hpp, collect.hpp, events.hpp, scratch.hpp, random.hpp); this header
 // holds the protocol, the primary template covering ordinary stateless
-// parameters, and the whole-parameter-list drivers Schedule::add_kernel
+// parameters, and the whole-parameter-list drivers Schedule::add_parallel
 // compiles against.
 
 #pragma once
 
 #include <ecs/schedule/params/state.hpp>
-#include <ecs/schedule/system.hpp> // system_param, SystemParam, is_res_mut_v, KernelWaveContext
+#include <ecs/schedule/system.hpp> // system_param, SystemParam, is_res_mut_v, WaveContext
 #include <ecs/world.hpp>           // World, Commands, Res/ResMut, resource_id
 
 #include <cstddef>
@@ -50,7 +50,7 @@
 namespace ecs::detail {
 
 // Pack-level facts about a system's whole parameter list, computed under a
-// given parameter policy `Param` (imperative_param or kernel_param).
+// given parameter policy `Param` (serial_param or parallel_param).
 template <template <class> class Param, class Args>
 struct params_info;
 template <template <class> class Param, class... A>
@@ -70,7 +70,7 @@ template <template <class> class Param, class Args, class States, std::size_t...
 void prepare_all(States& st,
                  World& w,
                  std::span<std::uint32_t const> rows,
-                 KernelWaveContext const& ctx,
+                 WaveContext const& ctx,
                  std::index_sequence<I...>) {
     (Param<std::tuple_element_t<I, Args>>::prepare(std::get<I>(st), w, rows, ctx), ...);
 }

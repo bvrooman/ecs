@@ -178,11 +178,11 @@ static void schedule_flushes_between_levels() {
 
     std::atomic<int> seen_by_consumer {0};
     Schedule sched;
-    sched.add("producer", [](Commands& cmd) {
+    sched.add_serial("producer", [](Commands& cmd) {
         for (int i = 0; i < 3; ++i)
             cmd.spawn(Position {9, 9});
     });
-    sched.add(
+    sched.add_serial(
         "consumer",
         [&](Query<Position const> q) { seen_by_consumer.store(int(q.count())); },
         phase<1> {});
@@ -201,7 +201,7 @@ static void concurrent_reserve_and_followup_edits() {
     constexpr int kSystems   = 8;
     constexpr int kPerSystem = 250;
     for (int s = 0; s < kSystems; ++s)
-        sched.add("spawner", [](Commands& cmd) {
+        sched.add_serial("spawner", [](Commands& cmd) {
             for (int i = 0; i < kPerSystem; ++i) {
                 Entity e = cmd.spawn(Position {1, 1});
                 cmd.add<Velocity>(e, Velocity {2, 2});
@@ -216,15 +216,20 @@ static void concurrent_reserve_and_followup_edits() {
     CHECK((w.count<Position, Velocity>() == total)); // no lost edits
 }
 
-static void add_once_runs_once_then_removed() {
+static void times_one_runs_once_then_removed() {
     World w;
     Schedule sched;
     std::atomic<int> runs {0};
-    sched.add_once("setup", [&](Commands& cmd) {
-        runs.fetch_add(1, std::memory_order_relaxed);
-        cmd.spawn(Position {1, 1});
-        cmd.spawn(Position {2, 2});
-    });
+    sched.add_serial(
+        "setup",
+        [&](Commands& cmd) {
+            runs.fetch_add(1, std::memory_order_relaxed);
+            cmd.spawn(Position {1, 1});
+            cmd.spawn(Position {2, 2});
+        },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     CHECK(sched.size() == 1);
 
     WorkerPool pool {2};
@@ -238,15 +243,68 @@ static void add_once_runs_once_then_removed() {
     CHECK(w.size() == 2);
 }
 
+// times > 1 retires after that many DUE ticks, and times == 0 never retires.
+// prewarm() walks the wave plans too, so it must not spend anyone's budget.
+static void times_budget_counts_due_ticks_only() {
+    WorkerPool pool {2};
+    {
+        World w;
+        Schedule sched;
+        std::atomic<int> runs {0};
+        sched.add_serial(
+            "thrice",
+            [&](Commands&) { runs.fetch_add(1, std::memory_order_relaxed); },
+            {},
+            /*every=*/1,
+            /*times=*/3);
+        sched.prewarm(w); // must not count as a run
+        for (int i = 0; i < 10; ++i)
+            sched.run(w, pool);
+        CHECK(runs.load() == 3);
+        CHECK(sched.size() == 0);
+    }
+    {
+        World w;
+        Schedule sched;
+        std::atomic<int> runs {0};
+        sched.add_serial("always", [&](Commands&) {
+            runs.fetch_add(1, std::memory_order_relaxed);
+        });
+        for (int i = 0; i < 6; ++i)
+            sched.run(w, pool);
+        CHECK(runs.load() == 6); // times == 0 is unlimited
+        CHECK(sched.size() == 1);
+    }
+    {
+        // Budget is charged per DUE tick, not per run(): every==3 fires on
+        // ticks 3, 6, 9..., so a budget of 2 is spent after tick 6.
+        World w;
+        Schedule sched;
+        std::atomic<int> runs {0};
+        sched.add_serial(
+            "cadence",
+            [&](Commands&) { runs.fetch_add(1, std::memory_order_relaxed); },
+            {},
+            /*every=*/3,
+            /*times=*/2);
+        for (int i = 0; i < 12; ++i)
+            sched.run(w, pool);
+        CHECK(runs.load() == 2);
+        CHECK(sched.size() == 0);
+    }
+}
+
 static void phase_orders_startup_before_update() {
     World w;
     Schedule sched;
     std::atomic<int> seen {-1};
-    sched.add_once(
+    sched.add_serial(
         "startup",
         [](Commands& cmd) { cmd.spawn(Position {0, 0}); },
-        phase<-1> {});
-    sched.add(
+        phase<-1> {},
+        /*every=*/1,
+        /*times=*/1);
+    sched.add_serial(
         "update",
         [&](Query<Position const> q) {
             seen.store(int(q.count()), std::memory_order_relaxed);
@@ -266,8 +324,8 @@ static void remove_unschedules_system() {
     World w;
     Schedule sched;
     std::atomic<int> runs {0};
-    SystemId id = sched.add("counter", [&] { runs.fetch_add(1); });
-    sched.add("keep", [] {});
+    SystemId id = sched.add_serial("counter", [&] { runs.fetch_add(1); });
+    sched.add_serial("keep", [] {});
     CHECK(sched.size() == 2);
 
     CHECK(sched.remove(id));
@@ -287,9 +345,9 @@ static void remove_preserves_other_system_ids() {
     World w;
     Schedule sched;
     std::atomic<int> a_runs {0}, c_runs {0};
-    SystemId a = sched.add("a", [&] { a_runs.fetch_add(1); });
-    SystemId b = sched.add("b", [] {});
-    SystemId c = sched.add("c", [&] { c_runs.fetch_add(1); });
+    SystemId a = sched.add_serial("a", [&] { a_runs.fetch_add(1); });
+    SystemId b = sched.add_serial("b", [] {});
+    SystemId c = sched.add_serial("c", [&] { c_runs.fetch_add(1); });
 
     CHECK(sched.remove(b));
     CHECK(sched.size() == 2);
@@ -307,7 +365,7 @@ static void inline_run_executes_systems() {
     World w;
     Schedule sched;
     std::atomic<int> ran {0};
-    sched.add("spawn3", [&](Commands& cmd) {
+    sched.add_serial("spawn3", [&](Commands& cmd) {
         ran.fetch_add(1);
         for (int i = 0; i < 3; ++i)
             cmd.spawn(Position {0, 0});
@@ -329,7 +387,8 @@ int main() {
     RUN_SUITE(bulk_spawn_loop);
     RUN_SUITE(schedule_flushes_between_levels);
     RUN_SUITE(concurrent_reserve_and_followup_edits);
-    RUN_SUITE(add_once_runs_once_then_removed);
+    RUN_SUITE(times_one_runs_once_then_removed);
+    RUN_SUITE(times_budget_counts_due_ticks_only);
     RUN_SUITE(phase_orders_startup_before_update);
     RUN_SUITE(remove_unschedules_system);
     RUN_SUITE(remove_preserves_other_system_ids);

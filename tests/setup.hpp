@@ -1,5 +1,5 @@
 // Test helpers: run one system once, inline. This is the production idiom
-// (add_once + an inline schedule run) wrapped for brevity in tests -- there is
+// (a times=1 system + an inline schedule run) wrapped for brevity in tests -- there is
 // no World::run_once anymore.
 //
 //   setup(w, fn)        structural setup: spawn/add/remove via Commands
@@ -13,7 +13,7 @@
 template <class Fn>
 void run_system(ecs::World& world, Fn fn) {
     ecs::Schedule s;
-    s.add_once("system", std::move(fn));
+    s.add_serial("system", std::move(fn), {}, /*every=*/1, /*times=*/1);
     s.run(world); // inline: no thread pool needed
 }
 

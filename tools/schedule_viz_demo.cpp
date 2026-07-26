@@ -32,22 +32,27 @@ int main(int argc, char** argv) {
     Schedule sched;
 
     // startup: spawn the world (Commands = untracked side channel) -- phase<-1>
-    sched.add_once("spawn_world", [](Commands&) {}, phase<-1> {});
+    sched.add_serial(
+        "spawn_world",
+        [](Commands&) {},
+        phase<-1> {},
+        /*every=*/1,
+        /*times=*/1);
 
     // gameplay (phase 0)
-    sched.add("apply_gravity", [](Query<Velocity, Mass const>, Res<Gravity>) {});
-    sched.add("integrate", [](Query<Position, Velocity const>) {});
-    sched.add("collide", [](Query<Position, Velocity>) {});
-    sched.add("damage", [](Query<Health>, ResMut<Score>) {}); // independent branch
-    sched.add("render", [](WorldView) {}); // reads-all -> after writers
+    sched.add_serial("apply_gravity", [](Query<Velocity, Mass const>, Res<Gravity>) {});
+    sched.add_serial("integrate", [](Query<Position, Velocity const>) {});
+    sched.add_serial("collide", [](Query<Position, Velocity>) {});
+    sched.add_serial("damage", [](Query<Health>, ResMut<Score>) {}); // independent branch
+    sched.add_serial("render", [](WorldView) {}); // reads-all -> after writers
 
     // teardown (phase 1)
-    sched.add("reap_dead", [](Commands&) {}, phase<1> {});
+    sched.add_serial("reap_dead", [](Commands&) {}, phase<1> {});
     // A declared-exclusive system (raw World& is not a system parameter; a
-    // genuinely unanalyzable system says so explicitly via add_dynamic).
+    // genuinely unanalyzable system says so explicitly via add_dynamic_serial).
     ecs::SystemAccess excl;
     excl.exclusive = true;
-    sched.add_dynamic(
+    sched.add_dynamic_serial(
         "debug_overlay",
         excl,
         [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},

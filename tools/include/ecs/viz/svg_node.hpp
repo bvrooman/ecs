@@ -18,7 +18,8 @@ namespace ecs::viz::detail {
 inline constexpr double kHeaderH = 24, kLineH = 18, kBotPad = 6, kPadX = 12;
 
 inline double box_w(NodeView const& v) {
-    double w = approx(v.name, 13, true) + (v.once ? approx(" (once)", 10) : 0);
+    auto const badge = times_badge(v.times);
+    double w = approx(v.name, 13, true) + (badge.empty() ? 0 : approx(" " + badge, 10));
     for (auto const& ln : v.lines) {
         double lw = approx(ln.label, 11);
         if (ln.style == Line::Access)
@@ -67,8 +68,9 @@ inline std::string svg_node(NodeView const& v, double x, double y, double w, dou
          "\" rx=\"6\" fill=\"none\" stroke=\"#b9c2cf\" stroke-width=\"0.6\"/>";
     // header
     std::string hd = "<tspan font-weight=\"500\">" + esc(v.name) + "</tspan>";
-    if (v.once)
-        hd += "<tspan font-size=\"10\" fill=\"#8a8a8a\">&#160;&#160;(once)</tspan>";
+    if (auto const b = times_badge(v.times); !b.empty())
+        hd +=
+            "<tspan font-size=\"10\" fill=\"#8a8a8a\">&#160;&#160;" + esc(b) + "</tspan>";
     s += svg_text(x + w / 2, y + 16, "middle", 13, "#2b3440", hd);
     // rows
     double base = y + 24 + 13;

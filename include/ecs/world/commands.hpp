@@ -94,12 +94,12 @@ public:
 private:
     friend class Schedule; // constructs Commands during run
     template <class P>
-    friend struct detail::kernel_param; // per-item recording for kernel systems
+    friend struct detail::parallel_param; // per-item recording for parallel systems
     explicit Commands(World& w)
         : world_(w) {}
     // A kernel work item's Commands records into its own private store (no
     // lock, deterministic replay order) instead of the world's thread-sharded
-    // buffer; kernel_param<Commands&> owns the stores and enqueues them at
+    // buffer; parallel_param<Commands&> owns the stores and enqueues them at
     // the wave barrier (see schedule/params/commands.hpp).
     Commands(World& w, CommandStore& local)
         : world_(w)
@@ -114,7 +114,7 @@ private:
     // Barrier-time (single-threaded): splice this item's recorded commands
     // into the wave's flush by enqueueing one replay command that drains the
     // private store in record order. Enqueued from one thread in ordinal
-    // order, so kernel-recorded edits apply in canonical order.
+    // order, so parallel-recorded edits apply in canonical order.
     void enqueue_local() {
         world_.commands_.record([s = local_](World& w) { s->apply(w); });
     }

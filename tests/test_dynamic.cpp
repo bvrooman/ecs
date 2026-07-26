@@ -154,7 +154,7 @@ static void destroy_keeps_storage_consistent() {
     CHECK(got.x == 2.f);
 }
 
-// A dynamic "gravity" then "integrate" pair, registered via add_dynamic, must
+// A dynamic "gravity" then "integrate" pair, registered via add_dynamic_serial, must
 // (a) level correctly off their declared access -- integrate reads Velocity that
 // gravity writes, so it runs second -- and (b) mutate storage through the column
 // views. dt=0.1, g=-10 over one tick from Pos{0,0}, Vel{1,0}:
@@ -172,26 +172,29 @@ static void dynamic_systems_run_and_level() {
     Schedule sched;
     SystemAccess grav;
     grav.writes = {Vel};
-    sched.add_dynamic("gravity",
-                      grav,
-                      each_chunk({Vel}, [Vel](std::size_t n, Archetype& a) {
-                          auto* vy = base(a, Vel, 1);
-                          for (std::size_t i = 0; i < n; ++i)
-                              vy[i] += -10.f * 0.1f;
-                      }));
+    sched.add_dynamic_serial("gravity",
+                             grav,
+                             each_chunk({Vel}, [Vel](std::size_t n, Archetype& a) {
+                                 auto* vy = base(a, Vel, 1);
+                                 for (std::size_t i = 0; i < n; ++i)
+                                     vy[i] += -10.f * 0.1f;
+                             }));
     SystemAccess integ;
     integ.writes = {Pos};
     integ.reads  = {Vel};
-    sched.add_dynamic("integrate",
-                      integ,
-                      each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
-                          auto *px = base(a, Pos, 0), *py = base(a, Pos, 1);
-                          auto *vx = base(a, Vel, 0), *vy = base(a, Vel, 1);
-                          for (std::size_t i = 0; i < n; ++i) {
-                              px[i] += vx[i] * 0.1f;
-                              py[i] += vy[i] * 0.1f;
-                          }
-                      }));
+    sched.add_dynamic_serial("integrate",
+                             integ,
+                             each_chunk({Pos, Vel},
+                                        [Pos, Vel](std::size_t n, Archetype& a) {
+                                            auto *px = base(a, Pos, 0),
+                                                 *py = base(a, Pos, 1);
+                                            auto *vx = base(a, Vel, 0),
+                                                 *vy = base(a, Vel, 1);
+                                            for (std::size_t i = 0; i < n; ++i) {
+                                                px[i] += vx[i] * 0.1f;
+                                                py[i] += vy[i] * 0.1f;
+                                            }
+                                        }));
 
     // gravity (writes Vel) and integrate (reads Vel) conflict -> two waves.
     CHECK(sched.level_count() == 2);
@@ -222,14 +225,15 @@ static void dynamic_system_filters_by_archetype() {
     SystemAccess acc;
     acc.writes = {Pos};
     acc.reads  = {Vel};
-    sched.add_dynamic("integrate",
-                      acc,
-                      each_chunk({Pos, Vel}, [Pos, Vel](std::size_t n, Archetype& a) {
-                          auto* px = base(a, Pos, 0);
-                          auto* vx = base(a, Vel, 0);
-                          for (std::size_t i = 0; i < n; ++i)
-                              px[i] += vx[i] * 0.1f;
-                      }));
+    sched.add_dynamic_serial("integrate",
+                             acc,
+                             each_chunk({Pos, Vel},
+                                        [Pos, Vel](std::size_t n, Archetype& a) {
+                                            auto* px = base(a, Pos, 0);
+                                            auto* vx = base(a, Vel, 0);
+                                            for (std::size_t i = 0; i < n; ++i)
+                                                px[i] += vx[i] * 0.1f;
+                                        }));
     sched.run(w);
 
     F2 mp {}, fp {};
@@ -254,25 +258,27 @@ static void native_component_runtime_access() {
     Schedule sched;
     // Spawn the native entities in an earlier phase, so they exist (spawn
     // commands flush at the phase barrier) before the runtime system queries them.
-    sched.add_once(
+    sched.add_serial(
         "spawn",
         [](Commands& cmd) {
             for (int i = 0; i < 4; ++i)
                 cmd.spawn(NPos {float(i), 0.f});
         },
-        phase<-1> {});
+        phase<-1> {},
+        /*every=*/1,
+        /*times=*/1);
     SystemAccess acc;
     acc.writes = {component_id<NPos>};
-    sched.add_dynamic("scale",
-                      acc,
-                      each_chunk({component_id<NPos>}, [](std::size_t n, Archetype& a) {
-                          // Field 0 of a *native* column, reached through the runtime
-                          // IColumn vtable.
-                          auto* xs = static_cast<float*>(
-                              a.column_at(component_id<NPos>).field_base(0));
-                          for (std::size_t i = 0; i < n; ++i)
-                              xs[i] *= 10.f;
-                      }));
+    sched.add_dynamic_serial(
+        "scale",
+        acc,
+        each_chunk({component_id<NPos>}, [](std::size_t n, Archetype& a) {
+            // Field 0 of a *native* column, reached through the runtime
+            // IColumn vtable.
+            auto* xs = static_cast<float*>(a.column_at(component_id<NPos>).field_base(0));
+            for (std::size_t i = 0; i < n; ++i)
+                xs[i] *= 10.f;
+        }));
     sched.run(w);
 
     CHECK(w.size() == 4);

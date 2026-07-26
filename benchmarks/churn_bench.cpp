@@ -40,7 +40,7 @@ namespace {
 
 void run_setup(World& w, auto fn) {
     Schedule s;
-    s.add_once("setup", std::move(fn));
+    s.add_serial("setup", std::move(fn), {}, /*every=*/1, /*times=*/1);
     s.run(w);
 }
 
@@ -175,14 +175,14 @@ int main() {
         w.resource<Ring>().fifo.assign(es.begin(), es.end());
 
         Schedule s;
-        s.add("churn", [K](Commands& cmd, ResMut<Ring> ring) {
+        s.add_serial("churn", [K](Commands& cmd, ResMut<Ring> ring) {
             for (std::size_t i = 0; i < K; ++i) {
                 cmd.destroy(ring->fifo.front());
                 ring->fifo.pop_front();
                 ring->fifo.push_back(cmd.spawn(P {0, 0, 0}, V {1, 1, 1}));
             }
         });
-        s.add("integrate", [](Query<P, V const> q) {
+        s.add_serial("integrate", [](Query<P, V const> q) {
             q.for_each_chunk([](std::span<Entity const>, chunk<P> p, chunk<V const> v) {
                 auto px = p.column<0>();
                 auto vx = v.column<0>();

@@ -16,8 +16,8 @@ struct Unit {
 };
 
 // One claimable piece of a wave's work -- what a single lane runs at a time. A
-// kernel (add_kernel) system is sliced into several items, each a ~grain-sized
-// row range of one matched archetype (one Unit); a serial (add/add_once) system
+// parallel (add_parallel) system is sliced into several items, each a ~grain-sized
+// row range of one matched archetype (one Unit); a serial (add_serial) system
 // is one item whose `units` span every matched archetype.
 struct WorkItem {
     SystemId system; // index into the schedule's system list

@@ -8,10 +8,18 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace ecs::viz::detail {
+
+// Run-budget badge for a system header: empty when it never retires.
+inline std::string times_badge(std::uint64_t const times) {
+    if (times == 0)
+        return {};
+    return times == 1 ? std::string {"(once)"} : "(x" + std::to_string(times) + ")";
+}
 
 inline std::string esc(std::string_view s) {
     std::string o;

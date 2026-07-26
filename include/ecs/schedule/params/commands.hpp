@@ -1,15 +1,15 @@
 // ecs/schedule/params/commands.hpp
 //
-// Commands& in a KERNEL system: per-item command recording with canonical
+// Commands& in a PARALLEL system: per-item command recording with canonical
 // replay order.
 //
-// An imperative system's Commands records into the world's thread-sharded
+// An serial system's Commands records into the world's thread-sharded
 // buffer -- safe, but the replay order across shards follows item-to-lane
 // timing, so structural edits recorded from a parallel dispatch land in a
 // different order run to run. Here each work item instead records into its
 // own private CommandStore slot (no lock at all on the hot path), and the
 // barrier enqueues the slots into the wave's flush in item-ordinal
-// (serial-walk) order. Kernel-recorded edits therefore APPLY in canonical
+// (serial-walk) order. Parallel-recorded edits therefore APPLY in canonical
 // world order: the same order, and the same resulting archetype-row layout,
 // at 1 lane and N.
 //
@@ -17,7 +17,7 @@
 // reserves its Entity handle at RECORD time (the API returns a usable handle
 // immediately), so the ID a given spawn receives still depends on cross-lane
 // reservation timing even though the spawns themselves apply in canonical
-// order -- and imperative systems' commands keep the sharded path. Canonical
+// order -- and serial systems' commands keep the sharded path. Canonical
 // ID assignment needs record-time reservation to move into the barrier,
 // which is an API-visible change tracked in docs/IMPROVEMENTS.md.
 
@@ -35,7 +35,7 @@ namespace ecs {
 namespace detail {
 
     template <>
-    struct kernel_param<Commands&> {
+    struct parallel_param<Commands&> {
         static constexpr bool allowed = true;
         // Commands is deliberately unmovable, so slots live behind unique_ptr
         // (stable addresses; each slot is its own allocation, so no false
@@ -58,7 +58,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const&) {
+                            WaveContext const&) {
             if (s.world != &w) {
                 s.slots.clear();
                 s.world = &w;
