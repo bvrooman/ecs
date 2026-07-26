@@ -63,7 +63,11 @@ if [[ $version != "$PIN" ]]; then
     echo "warning: $CF is $version, pinned is $PIN (same major; output should match)" >&2
 fi
 
-mapfile -t files < <(git ls-files '*.hpp' '*.cpp')
+# --cached --others --exclude-standard: tracked files PLUS new ones that are
+# not yet committed, minus anything gitignored (build dirs carry generated
+# .cpp files). Plain `git ls-files` lists only tracked files, so a new file
+# would pass this check locally and then fail in CI once committed.
+mapfile -t files < <(git ls-files --cached --others --exclude-standard '*.hpp' '*.cpp' | sort -u)
 
 if [[ ${1:-} == --check ]]; then
     if ! "$CF" --dry-run -Werror "${files[@]}" 2> /tmp/ecs-fmt-err; then
