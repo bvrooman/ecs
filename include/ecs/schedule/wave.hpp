@@ -269,14 +269,9 @@ public:
                 build_serial(world, s, items);
             }
         }
-        result_.build_us = detail::elapsed_us(t_build); // flatten loop, sans sort
+        result_.build_us = detail::elapsed_us(t_build);
         // Greedy LPT: opaque (imperative) items first, then longest-first, with a
-        // deterministic tie-break so a 1-lane run replays. An imperative system's
-        // item has unknown cost -- and a Commands-only / WorldView one has a zero
-        // row range, so a pure longest-first order would sort it LAST, where an
-        // expensive one becomes the join straggler. Claiming it before the kernel
-        // slices (whose cost is proportional to their known row count) keeps the
-        // biggest unknown off the tail.
+        // deterministic tie-break.
         auto const t_sort = detail::sched_clock::now();
         std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
             bool const ia = !systems[a.system].is_parallel;

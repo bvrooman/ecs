@@ -46,7 +46,7 @@ void scatter_row(chunk<C> c, std::size_t i, V const& v) {
 // reference (bindable as auto& p) plus the entity if the kernel declares one, then
 // scatter the mutable ones back.
 template <class F, class... Cs>
-void for_each_row(F& fn, std::span<Entity> ents, chunk<Cs>... cs) {
+void for_each_row(F& fn, std::span<Entity const> ents, chunk<Cs>... cs) {
     for (std::size_t i = 0; i < ents.size(); ++i) {
         std::tuple<std::remove_const_t<Cs>...> locals {gather_row<Cs>(cs, i)...};
         [&]<std::size_t... I>(std::index_sequence<I...>) {

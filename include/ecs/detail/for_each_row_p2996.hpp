@@ -35,7 +35,7 @@ row<C> row_at(chunk<C> c, std::size_t i) {
 // lvalues (bindable as auto& p), plus the entity if the kernel declares one
 // (detected by arity, so both kernel shapes compile).
 template <class F, class... Cs>
-void for_each_row(F& fn, std::span<Entity> ents, chunk<Cs>... cs) {
+void for_each_row(F& fn, std::span<Entity const> ents, chunk<Cs>... cs) {
     for (std::size_t i = 0; i < ents.size(); ++i) {
         std::tuple<row<Cs>...> rows {row_at<Cs>(cs, i)...};
         std::apply(

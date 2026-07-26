@@ -98,6 +98,8 @@ public:
     template <class F>
     void for_each(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
+            if (begin == end)
+                continue;
             auto& arch    = *world_.archetypes()[archetype];
             auto entities = std::span(arch.entities).subspan(begin, end - begin);
             detail::for_each_row(fn, entities, chunk_arg<Cs>(arch, begin, end)...);
@@ -123,15 +125,9 @@ public:
     void for_each_chunk(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
             if (begin == end)
-                continue; // never invoke the kernel with an empty chunk (a serial
-                          // system's item spans every matched archetype, including
-                          // ones emptied by migration; matches World::for_each_chunk)
-            auto& arch = *world_.archetypes()[archetype];
-            // Entity handles are the world's row->entity bookkeeping; a kernel may
-            // read them (e.g. to hand a row to Commands::destroy) but never write
-            // them, so the span is const even when a component chunk is mutable.
-            std::span<Entity const> entities =
-                std::span(arch.entities).subspan(begin, end - begin);
+                continue;
+            auto& arch    = *world_.archetypes()[archetype];
+            auto entities = std::span(arch.entities).subspan(begin, end - begin);
             fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }

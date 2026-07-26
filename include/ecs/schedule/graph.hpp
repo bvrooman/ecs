@@ -71,9 +71,9 @@ inline void build_wave_plans(SystemVector const& systems,
         auto& wave = it->second;
         wave.push_back(id);
     }
-    std::ranges::sort(wave_groups, {}, search);
     wave_plans.clear();
     wave_plans.reserve(wave_groups.size());
+    std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
 }

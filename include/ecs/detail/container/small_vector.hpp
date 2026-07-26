@@ -52,10 +52,10 @@ public:
         return size_ == 0;
     }
 
-    T* begin() noexcept { return data(); }
-    T* end() noexcept { return data() + size_; }
-    T const* begin() const noexcept { return data(); }
-    T const* end() const noexcept { return data() + size_; }
+    auto begin() noexcept { return data(); }
+    auto end() noexcept { return data() + size_; }
+    auto begin() const noexcept { return data(); }
+    auto end() const noexcept { return data() + size_; }
 
 private:
     // Inline capacity (index 0) is N; once spilled (index 1) it is the buffer's
@@ -68,12 +68,12 @@ private:
     }
     // The live buffer's front, whichever alternative holds it. get_if avoids the
     // throwing check of std::get on this hot access.
-    T* data() noexcept {
+    auto data() noexcept {
         if (auto* inline_buf = std::get_if<0>(&store_))
             return inline_buf->data();
         return std::get_if<1>(&store_)->data();
     }
-    T const* data() const noexcept {
+    auto const* data() const noexcept {
         if (auto* inline_buf = std::get_if<0>(&store_))
             return inline_buf->data();
         return std::get_if<1>(&store_)->data();
