@@ -5,7 +5,7 @@
 //
 //   * the system-parameter protocol (detail::system_param<P>): how a system's
 //     parameter types declare access and are bound when it runs, and
-//   * the kernel plumbing (system_param<Query<Cs...>>): how a kernel system's
+//   * the parallel plumbing (system_param<Query<Cs...>>): how a parallel system's
 //     single Query parameter binds restricted to one work item's row range.
 //
 // The Schedule (schedule.hpp) consumes these; the Wave executor (wave.hpp)
@@ -17,8 +17,7 @@
 #include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/work_item.hpp>
-#include <ecs/world.hpp>
-#include <ecs/world/view.hpp> // WorldView
+#include <ecs/world.hpp> // World, Commands, WorldView
 
 #include <chrono>
 #include <cstddef>
@@ -149,7 +148,7 @@ struct system_param<WorldView> {
 // be analyzed and is dangerous under any concurrent executor, so it is not a
 // system parameter. Setup happens on the World directly (outside a run),
 // mutation goes through Commands, ad-hoc reads through WorldView; a system
-// registered via add_dynamic may still declare itself `exclusive` when its
+// registered via add_dynamic_serial may still declare itself `exclusive` when its
 // access is genuinely unanalyzable.
 
 // A supported system parameter: anything the protocol above can declare and
@@ -179,10 +178,10 @@ template <class... A>
 inline constexpr bool any_res_mut_v<std::tuple<A...>> = (is_res_mut_v<A> || ...);
 
 template <class P>
-concept KernelParam = SystemParam<P> && !is_res_mut_v<P>;
+concept ParallelParam = SystemParam<P> && !is_res_mut_v<P>;
 
 // How many parameters of Args are Query<Cs...>, and where the first one sits.
-// A kernel system must have exactly one: it is the iteration the executor
+// A parallel system must have exactly one: it is the iteration the executor
 // slices into work items.
 template <class Args>
 struct query_info;
@@ -200,9 +199,10 @@ struct query_info<std::tuple<A...>> {
     static constexpr bool has_query = index != ~std::size_t {0};
 };
 
-// The whole-parameter-list declare/invoke drivers live with the parameter
-// protocols: schedule/params/local.hpp for imperative systems (which adds the
-// stateful Local<T> face), schedule/params/protocol.hpp for kernel systems.
+// The whole-parameter-list declare/invoke drivers live in
+// schedule/params/protocol.hpp. They are generic over the parameter policy, so
+// one set serves both kinds -- instantiated with serial_param for add() and
+// with parallel_param for add_parallel().
 
 // Timing shorthand shared by the schedule/executor instrumentation.
 using sched_clock = std::chrono::steady_clock;
@@ -210,18 +210,18 @@ inline double elapsed_us(sched_clock::time_point const t0) {
     return std::chrono::duration<double, std::micro>(sched_clock::now() - t0).count();
 }
 
-// Identity a wave hands to stateful kernel parameters' prepare hooks: which
+// Identity a wave hands to stateful parameters' prepare hooks: which
 // system is preparing and which schedule tick this is. Random derives its
 // per-item stream seeds from these (deterministic, lane-count-independent);
 // most parameters ignore it.
-struct KernelWaveContext {
+struct WaveContext {
     SystemId system    = {};
     std::uint64_t tick = 0;
 };
 
 // A memoized query match list, keyed by (world instance, archetype
 // generation) -- the per-record counterpart of Query's per-type thread_local
-// memo, for kernel systems whose component set is a runtime value.
+// memo, for parallel systems whose component set is a runtime value.
 struct MatchCache {
     std::vector<ArchetypeId> const* list = nullptr;
     WorldId world                        = WorldId::none();
@@ -237,9 +237,9 @@ struct MatchCache {
     }
 };
 
-using RunFn          = move_only_function<void(World&, Commands&, WorkItem const&)>;
-using PrepareItemsFn = move_only_function<
-    void(World&, std::span<std::uint32_t const>, KernelWaveContext const&)>;
+using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
+using PrepareItemsFn =
+    move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
 
 // One registered system, in either of its two forms.
@@ -255,11 +255,16 @@ struct SystemRecord {
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
     Signature query_sig = Signature::null();
-    MatchCache match; // kernel systems: memoized query_sig match list
+    MatchCache match; // parallel systems: memoized query_sig match list
     Phase phase = 0;
     Level level = 0;
-    bool once   = false;
-    // Tombstone: a removed (or spent one-shot) system. Its slot is retained so
+    // Run budget: the system is retired after it has been due `times` times
+    // (0 = unlimited). times == 1 is the one-shot/setup case. Counted in
+    // Schedule::run only -- prewarm() also walks the wave plans, and must not
+    // spend a system's budget before it has run.
+    std::uint64_t times = 0;
+    std::uint64_t runs  = 0;
+    // Tombstone: a removed (or spent) system. Its slot is retained so
     // every other system keeps its position -- and a SystemId, being that
     // position, stays valid. Skipped by leveling, wave building, and size().
     bool dead = false;

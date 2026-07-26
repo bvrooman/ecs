@@ -58,13 +58,13 @@ static void resource_conflict_serializes() {
     // Two systems that both write the same resource (ResMut) must land on
     // different levels; two that only read it (Res) may share a level.
     Schedule sched;
-    sched.add("writer_a", [](ResMut<Counter>) {});
-    sched.add("writer_b", [](ResMut<Counter>) {});
+    sched.add_serial("writer_a", [](ResMut<Counter>) {});
+    sched.add_serial("writer_b", [](ResMut<Counter>) {});
     CHECK(sched.level_count() == 2);
 
     Schedule readers;
-    readers.add("reader_a", [](Res<Counter>) {});
-    readers.add("reader_b", [](Res<Counter>) {});
+    readers.add_serial("reader_a", [](Res<Counter>) {});
+    readers.add_serial("reader_b", [](Res<Counter>) {});
     CHECK(readers.level_count() == 1);
 }
 
@@ -72,9 +72,9 @@ static void resource_and_component_conflicts_are_independent() {
     // A resource conflict alone is enough to serialize, even when component
     // access is disjoint.
     Schedule sched;
-    sched.add("a", [](Query<Position>, ResMut<Counter>) {});
-    sched.add("b", [](Res<Counter>) {}); // no component overlap
-    CHECK(sched.level_count() == 2);     // serialized purely by the resource
+    sched.add_serial("a", [](Query<Position>, ResMut<Counter>) {});
+    sched.add_serial("b", [](Res<Counter>) {}); // no component overlap
+    CHECK(sched.level_count() == 2);            // serialized purely by the resource
 }
 
 static void serialized_writers_run_without_races() {
@@ -88,9 +88,10 @@ static void serialized_writers_run_without_races() {
     // Both systems mutate the shared Counter; ResMut<Counter> on each forces
     // them onto separate levels, so the unsynchronized += is safe.
     Schedule sched;
-    sched.add("inc_by_count",
-              [](Query<Position const> q, ResMut<Counter> c) { c->n += int(q.count()); });
-    sched.add("inc_by_one", [](ResMut<Counter> c) { c->n += 1; });
+    sched.add_serial("inc_by_count", [](Query<Position const> q, ResMut<Counter> c) {
+        c->n += int(q.count());
+    });
+    sched.add_serial("inc_by_one", [](ResMut<Counter> c) { c->n += 1; });
 
     CHECK(sched.level_count() == 2);
 

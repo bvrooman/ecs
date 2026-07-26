@@ -230,7 +230,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         World w;
         Schedule s;
         w.emplace_resource<int>(0);
-        s.add("count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
+        s.add_serial("count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
         for (int t = 0; t < 9; ++t)
             s.run(w);
     }
@@ -246,7 +246,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         Schedule s;
         // Re-sort by cell every 4 ticks: a phase<-1> system recording a sort
         // command, applied at that phase's (world-quiescent) barrier.
-        s.add(
+        s.add_serial(
             "sort",
             [](Commands& c) {
                 c.sort<Position>([](Position const& p) { return int(p.x); });
@@ -254,7 +254,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
             phase<-1> {},
             /*every=*/4);
         // Churn: cull a band each tick (swap-and-pop disorders the tail)...
-        s.add_kernel("cull", [](Query<Health const> q, Commands& cmd) {
+        s.add_parallel("cull", [](Query<Health const> q, Commands& cmd) {
             q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {
                 auto const hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i)
@@ -263,15 +263,15 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
             });
         });
         // ...and gather the walk order every tick.
-        s.add_kernel("gather",
-                     [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity const>,
-                                              chunk<Position const> p) {
-                             auto const x = p.column<0>();
-                             for (std::size_t i = 0; i < x.size(); ++i)
-                                 out[i] = x[i];
-                         });
-                     });
+        s.add_parallel("gather",
+                       [](Query<Position const> q, Extract<std::vector<float>> out) {
+                           q.for_each_chunk([&](std::span<Entity const>,
+                                                chunk<Position const> p) {
+                               auto const x = p.column<0>();
+                               for (std::size_t i = 0; i < x.size(); ++i)
+                                   out[i] = x[i];
+                           });
+                       });
         WorkerPool pool {lanes};
         std::vector<float> log;
         for (int t = 0; t < 12; ++t) {
@@ -300,15 +300,15 @@ static void sorted_layout_stays_lane_count_invariant() {
         });
         w.sort_rows<Position>([](Position const& p) { return p.x; });
         Schedule s;
-        s.add_kernel("gather",
-                     [](Query<Position const> q, Extract<std::vector<float>> out) {
-                         q.for_each_chunk([&](std::span<Entity const>,
-                                              chunk<Position const> p) {
-                             auto const x = p.column<0>();
-                             for (std::size_t i = 0; i < x.size(); ++i)
-                                 out[i] = x[i];
-                         });
-                     });
+        s.add_parallel("gather",
+                       [](Query<Position const> q, Extract<std::vector<float>> out) {
+                           q.for_each_chunk([&](std::span<Entity const>,
+                                                chunk<Position const> p) {
+                               auto const x = p.column<0>();
+                               for (std::size_t i = 0; i < x.size(); ++i)
+                                   out[i] = x[i];
+                           });
+                       });
         WorkerPool pool {lanes};
         s.run(w, pool);
         return w.resource<std::vector<float>>();
@@ -377,7 +377,7 @@ static void sort_command_applies_at_barrier() {
     CHECK(descents() > 0); // scrambled to start
 
     Schedule s;
-    s.add("resort", [](Commands& c) {
+    s.add_serial("resort", [](Commands& c) {
         c.sort<Position>([](Position const& p) { return int(p.x); });
     });
     s.run(w);               // records the sort; applied at the wave barrier

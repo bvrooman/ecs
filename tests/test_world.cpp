@@ -228,7 +228,7 @@ static void add_remove_churn_preserves_data() {
     });
 
     Schedule s;
-    auto churn = s.add("churn", [&](Query<Position const>, Commands& cmd) {
+    auto churn = s.add_serial("churn", [&](Query<Position const>, Commands& cmd) {
         if (w.has<Velocity>(a))
             cmd.remove<Velocity>(a);
         else

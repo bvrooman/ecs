@@ -85,11 +85,11 @@ static std::pair<Stats, double> measure(int warm, int n, RunOne&& run_one) {
     return {st, allocs};
 }
 
-// --- imperative vs kernel systems (the work-item executor) -----------------
+// --- serial vs parallel systems (the work-item executor) -----------------
 // One conflict-free wave: 8 tiny disjoint-write systems + 1 heavy system over
 // the same entities. Registered imperatively, every system is one opaque work
 // item -- the heavy one cannot be split, so it is the wave's straggler.
-// Registered as kernel systems, the heavy system's rows slice across lanes and
+// Registered as parallel systems, the heavy system's rows slice across lanes and
 // overlap the tiny systems' items in the same single dispatch.
 namespace shape {
 template <int>
@@ -108,25 +108,25 @@ inline float heavy_step(float v) {
     return v;
 }
 
-// add() and add_kernel() take the SAME system callable -- the registration
+// add() and add_parallel() take the SAME system callable -- the registration
 // word is the only difference between the opaque and the sliceable form.
 template <int I>
-void add_small(ecs::Schedule& s, bool kernel) {
+void add_small(ecs::Schedule& s, bool parallel) {
     auto body = [](ecs::Query<Small<I>> q) {
         q.for_each_chunk([](std::span<ecs::Entity const>, ecs::chunk<Small<I>> c) {
             for (auto& v : c.template column<0>())
                 v = v * 1.0001f + 0.5f;
         });
     };
-    if (kernel)
-        s.add_kernel("small", body);
+    if (parallel)
+        s.add_parallel("small", body);
     else
-        s.add("small", body);
+        s.add_serial("small", body);
 }
 
-inline void build(ecs::Schedule& s, bool kernel) {
+inline void build(ecs::Schedule& s, bool parallel) {
     [&]<int... I>(std::integer_sequence<int, I...>) {
-        (add_small<I>(s, kernel), ...);
+        (add_small<I>(s, parallel), ...);
     }(std::make_integer_sequence<int, 8> {});
     auto body = [](ecs::Query<Heavy> q) {
         q.for_each_chunk([](std::span<ecs::Entity const>, ecs::chunk<Heavy> c) {
@@ -134,26 +134,31 @@ inline void build(ecs::Schedule& s, bool kernel) {
                 v = heavy_step(v);
         });
     };
-    if (kernel)
-        s.add_kernel("heavy", body);
+    if (parallel)
+        s.add_parallel("heavy", body);
     else
-        s.add("heavy", body);
+        s.add_serial("heavy", body);
 }
 
 inline void populate(ecs::World& w, std::size_t n) {
     ecs::Schedule init;
-    init.add_once("seed", [n](ecs::Commands& cmd) {
-        for (std::size_t i = 0; i < n; ++i)
-            cmd.spawn(Small<0> {1},
-                      Small<1> {1},
-                      Small<2> {1},
-                      Small<3> {1},
-                      Small<4> {1},
-                      Small<5> {1},
-                      Small<6> {1},
-                      Small<7> {1},
-                      Heavy {1});
-    });
+    init.add_serial(
+        "seed",
+        [n](ecs::Commands& cmd) {
+            for (std::size_t i = 0; i < n; ++i)
+                cmd.spawn(Small<0> {1},
+                          Small<1> {1},
+                          Small<2> {1},
+                          Small<3> {1},
+                          Small<4> {1},
+                          Small<5> {1},
+                          Small<6> {1},
+                          Small<7> {1},
+                          Heavy {1});
+        },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     init.run(w);
 }
 } // namespace shape
@@ -200,30 +205,30 @@ int main(int argc, char** argv) {
     }
 
     // The SAME 9-system wave (8 disjoint-write "small" systems + 1 compute-
-    // bound "heavy" one) registered two ways -- all add() vs all add_kernel()
-    // (shape::build) -- each swept across the lane set. This is imperative vs
-    // kernel *registration*, not imperative-at-different-lane-counts: the two
+    // bound "heavy" one) registered two ways -- all add() vs all add_parallel()
+    // (shape::build) -- each swept across the lane set. This is serial vs
+    // parallel *registration*, not serial-at-different-lane-counts: the two
     // families share identical bodies and differ only in the registration
     // word. The lane axis is the point. Imperative makes each system one
     // opaque work item, so the heavy system is an unsliceable straggler and
-    // the wave plateaus at ~heavy-time no matter how many lanes; kernel
+    // the wave plateaus at ~heavy-time no matter how many lanes; parallel
     // registration slices the heavy system's rows too, so it keeps scaling.
-    // Reading the two blocks down the lanes shows imperative flattening (and,
-    // past the physical-core count, its tail blowing up) while kernel keeps
+    // Reading the two blocks down the lanes shows serial flattening (and,
+    // past the physical-core count, its tail blowing up) while parallel keeps
     // dropping.
-    std::printf("\nimperative vs kernel REGISTRATION of one 9-system wave "
+    std::printf("\nimperative vs parallel REGISTRATION of one 9-system wave "
                 "(8 small + 1 heavy straggler), 40k entities, swept:\n");
     int const shape_ticks = std::max(200, measured / 10);
-    for (bool kernel : {false, true}) {
+    for (bool parallel : {false, true}) {
         for (unsigned t : lanes) {
             World w;
             shape::populate(w, 40'000);
             Schedule s;
-            shape::build(s, kernel);
+            shape::build(s, parallel);
             WorkerPool pool {t};
             auto [st, al] = measure(warm / 4, shape_ticks, [&] { s.run(w, pool); });
-            report(kernel ? "kernel" : "imperative", t, st, al);
-            emit_stats(kernel ? "shape_kernel" : "shape_imperative",
+            report(parallel ? "parallel" : "serial", t, st, al);
+            emit_stats(parallel ? "shape_parallel" : "shape_serial",
                        t,
                        st,
                        al,

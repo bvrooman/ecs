@@ -1,7 +1,7 @@
 // ecs/schedule/params/collect.hpp
 //
 // Collect<T>: filtered gather (kill lists, visibility sets, target lists) for
-// kernel systems -- the Extract shape when output size is NOT known up front.
+// parallel systems -- the Extract shape when output size is NOT known up front.
 // Each item appends into a private T partial; at the barrier the partials are
 // concatenated into the T RESOURCE in ordinal order, so the result is exactly
 // what a serial filtered walk would have produced. The target is rebuilt
@@ -29,7 +29,7 @@ concept CollectTarget = requires(T& into, T& part) {
                 std::make_move_iterator(part.end()));
 };
 
-// Filtered-gather output for a kernel system. `out->push_back(x)` / `*out`
+// Filtered-gather output for a parallel system. `out->push_back(x)` / `*out`
 // reaches THIS ITEM's private partial of T -- no sharing, no atomics, no
 // pre-counting. At the wave barrier the partials are moved-appended into the
 // T resource in item-ordinal (serial-walk) order: the collected sequence is
@@ -46,7 +46,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     explicit Collect(T& partial) noexcept
         : partial_(&partial) {}
     T* partial_;
@@ -55,7 +55,7 @@ private:
 namespace detail {
 
     template <class T>
-    struct kernel_param<Collect<T>> {
+    struct parallel_param<Collect<T>> {
         static constexpr bool allowed = true;
         struct state {
             slot_array<T> parts;
@@ -66,7 +66,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const&) {
+                            WaveContext const&) {
             s.parts.prepare(rows.size());
             // The target holds THIS run's gather: rebuilt every run.
             reset_value(w.resource<T>());

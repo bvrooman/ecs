@@ -16,7 +16,7 @@
 //       proxy under P2996, a gathered local on the portable backend), accessed as
 //       p.x, plus an optional leading Entity.
 //
-//   q.for_each_chunk([](std::span<Entity> ents,
+//   q.for_each_chunk([](std::span<Entity const> ents,
 //                       chunk<Position> pos, chunk<Velocity const> vel){ ... });
 //       COLUMN-shaped (SoA) iteration: a `chunk` per component whose column<I>()
 //       is that field's contiguous std::span (span<const F> for a read-only
@@ -26,7 +26,7 @@
 //       portable backend, where for_each reassembles the whole struct.
 //
 // A Query never dispatches: both forms iterate on the calling thread. Parallelism
-// is the executor's job -- an add_kernel system slices its rows into work items
+// is the executor's job -- an add_parallel system slices its rows into work items
 // across the pool's lanes, each binding a Query restricted to its slice.
 
 #pragma once
@@ -98,6 +98,8 @@ public:
     template <class F>
     void for_each(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
+            if (begin == end)
+                continue;
             auto& arch    = *world_.archetypes()[archetype];
             auto entities = std::span(arch.entities).subspan(begin, end - begin);
             detail::for_each_row(fn, entities, chunk_arg<Cs>(arch, begin, end)...);
@@ -112,9 +114,9 @@ public:
     // for_each for a wide or sparsely-touched component on the portable
     // backend (where for_each reassembles the whole struct per row). Like
     // for_each it never dispatches: parallelism comes only from an
-    // add_kernel system's row slicing.
+    // add_parallel system's row slicing.
     //
-    //   q.for_each_chunk([](std::span<Entity>,
+    //   q.for_each_chunk([](std::span<Entity const>,
     //                       chunk<Position> pos, chunk<Velocity const> vel) {
     //       auto px = pos.column<0>(); auto vx = vel.column<0>();
     //       for (std::size_t i = 0; i < px.size(); ++i) px[i] += vx[i]; // vectorizable
@@ -123,15 +125,10 @@ public:
     void for_each_chunk(F&& fn) {
         for (auto const& [archetype, begin, end] : item_.units) {
             if (begin == end)
-                continue; // never invoke the kernel with an empty chunk (a serial
-                          // system's item spans every matched archetype, including
-                          // ones emptied by migration; matches World::for_each_chunk)
+                continue;
             auto& arch = *world_.archetypes()[archetype];
-            // Entity handles are the world's row->entity bookkeeping; a kernel may
-            // read them (e.g. to hand a row to Commands::destroy) but never write
-            // them, so the span is const even when a component chunk is mutable.
-            std::span<Entity const> entities =
-                std::span(arch.entities).subspan(begin, end - begin);
+            auto entities =
+                std::span<Entity const>(arch.entities).subspan(begin, end - begin);
             fn(entities, chunk_arg<Cs>(arch, begin, end)...);
         }
     }

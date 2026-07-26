@@ -8,11 +8,11 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+#include <ecs/viz/graph.hpp>
+#include <ecs/viz/name_table.hpp>
+#include <ecs/viz/node_view.hpp>
+#include <ecs/viz/text.hpp>
 
-#include "graph.hpp"
-#include "name_table.hpp"
-#include "node_view.hpp"
-#include "text.hpp"
 #include <cstddef>
 #include <map>
 #include <optional>
@@ -24,8 +24,8 @@ namespace ecs::viz::detail {
 inline std::string dot_label(NodeView const& v) {
     auto [body, head] = palette(v.kind);
     std::string hdr   = "<b>" + esc(v.name) + "</b>";
-    if (v.once)
-        hdr += "<font color=\"#888888\" point-size=\"10\">  (once)</font>";
+    if (auto const b = times_badge(v.times); !b.empty())
+        hdr += "<font color=\"#888888\" point-size=\"10\">  " + esc(b) + "</font>";
     std::string rows;
     for (auto const& ln : v.lines) {
         if (ln.style == Line::Note)

@@ -31,16 +31,20 @@ include/ecs/
     view.hpp             WorldView -- the read-only ad-hoc read parameter
   schedule/            conflict analysis + the WorkerPool executor
     access.hpp           phase<N>, SystemAccess, conflicts()
-    system.hpp           SystemRecord + the parameter/kernel protocols
+    system.hpp           SystemRecord + system_param, the per-parameter
+                         binding protocol both system kinds route through
     validate.hpp         the consteval checks registration is gated on
     work_item.hpp        WorkItem/Unit -- one claimable slice of a wave
     wave.hpp             the work-item executor (build + dispatch)
     graph.hpp            systems -> wavefront levels -> wave plans
     schedule.hpp         the Schedule class (registration, run loop)
     events.hpp           sched_event::*, ScheduleEvent
-    kernel_params.hpp    umbrella over params/
+    params.hpp           umbrella over params/
     params/              one header per system parameter (Bin, Collect,
                          Extract, Local, Random, Reduce, Scratch, Events, ...)
+                         plus the two policies: parallel.hpp (parallel_param,
+                         for add_parallel) and serial.hpp (serial_param, for
+                         add_serial), over shared protocol.hpp drivers
   dynamic/             runtime-described components         (namespace ecs::dynamic)
   reflection/          reusable, ECS-agnostic reflection     (namespace ecs::reflect)
   parallel/            the data-parallel runtime            (namespace ecs::parallel)
@@ -233,11 +237,11 @@ gather/scatter** -- prefer it for a wide or sparsely-touched component on the
 portable backend, where `for_each` reassembles the whole struct.
 
 Neither form dispatches: both iterate on the calling thread. Parallelism is the
-executor's job, not the query's -- an `add_kernel` system slices its matched rows
+executor's job, not the query's -- an `add_parallel` system slices its matched rows
 into work items across the worker pool's lanes, and each item binds a `Query`
 restricted to its own `[begin, end)` slice (so a lane physically cannot reach
 another's rows: the split is data-parallel and race-free). The same `for_each` /
-`for_each_chunk` body then runs over that slice. An imperative `add` system is one
+`for_each_chunk` body then runs over that slice. An serial `add` system is one
 opaque work item, so its query iterates every matched row serially.
 
 The set of archetypes a query matches is **cached** per required-component
@@ -279,7 +283,7 @@ A trailing `phase<N>` tag is the only non-parameter argument (ordering). A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through
-`WorldView`; a system registered via `add_dynamic` may still *declare* itself
+`WorldView`; a system registered via `add_dynamic_serial` may still *declare* itself
 exclusive when its access is genuinely unanalyzable.
 
 Conflict analysis: two systems conflict when one's write set intersects the
@@ -287,13 +291,13 @@ other's read-or-write set — evaluated independently over the component and
 resource id spaces, so a shared mutable resource serializes two systems even
 when their component access is disjoint. A `WorldView` (reads-everything) system
 conflicts only with writers — two `WorldView` readers still run concurrently —
-while a declared-`exclusive` system (`add_dynamic`) conflicts with everything. Each system is assigned a **level** equal to
+while a declared-`exclusive` system (`add_dynamic_serial`) conflicts with everything. Each system is assigned a **level** equal to
 `1 + max(level)` over earlier conflicting systems; the executor runs waves in
 level order, and same-level systems are conflict-free (any order).
 
 Execution (`Schedule::run(world, pool)`) is a **work-item executor**: each wave
 is flattened into one list of items and executed with a single fork-join
-dispatch on the `WorkerPool`. A **kernel system** — `add_kernel(name, fn)`,
+dispatch on the `WorkerPool`. A **parallel system** — `add_parallel(name, fn)`,
 same signature rules as `add()` but with exactly ONE `Query<Cs...>` parameter —
 contributes one item per row-range slice of each archetype that query matches
 (a fixed target of ~64 slices, floored at 1024 rows — deliberately independent
@@ -310,47 +314,47 @@ a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
 resource, `Scratch<T>` private workspace, `Random` deterministic
 per-item streams) bind per item and fold into the derived access, so a
 components-plus-resources system (read the clock, chase a goal, record
-spawns, jitter an emitter) keeps slicing — and an imperative system with
-independent per-row work becomes a kernel system by changing one word:
+spawns, jitter an emitter) keeps slicing — and an serial system with
+independent per-row work becomes a parallel system by changing one word:
 
 ```cpp
-sched.add_kernel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
+sched.add_parallel("steer", [](Query<const Position, Velocity> q, Res<Clock> clk) {
   q.for_each([&](auto& p, auto& v) { /* ... */ });
 });
 ```
 
 The body must be independent per-row work — it runs concurrently with the
-system's own other items. `ResMut<T>` is therefore rejected in a kernel (the
+system's own other items. `ResMut<T>` is therefore rejected in a parallel system (the
 conflict analysis serializes *other* systems against a resource writer, but a
 system's own items run concurrently, so writes through `ResMut` would race
 between them); a system that writes a resource is a *reduction* — spelled
-`Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a kernel, with
+`Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a parallel system, with
 the shared-target writes confined to the single-threaded barrier hooks.
 Genuinely ordered iteration still belongs in `add()` systems. An
-**imperative system** (`add`/`add_once`/`add_dynamic` — an opaque callable that
+**serial system** (`add_serial`/`add_dynamic_serial` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
 persisting across ticks, do reductions or ordered work)
 contributes itself as a single item; its queries are pure iterators that always
 walk their matched rows serially on whichever lane claims the item (a
 single-system wave runs inline on the caller). Parallelism within a wave comes
-only from kernel items -- an imperative system never fans its own rows across
+only from parallel items -- an serial system never fans its own rows across
 lanes. Items are
 sorted longest-first (greedy LPT — the biggest work cannot become the join's
-straggler) and claimed by the lanes from an atomic cursor, so a heavy kernel
+straggler) and claimed by the lanes from an atomic cursor, so a heavy parallel system
 system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
 1-lane pool claims in list order and is fully deterministic). Commands recorded
-by kernel systems are insulated from that timing: each item records into a
+by parallel systems are insulated from that timing: each item records into a
 private per-item store, and the barrier enqueues the stores into the wave's
 flush in ordinal order, so kernel structural edits *apply* in canonical
 serial-walk order at any lane count (`spawn()` still reserves its Entity handle
 at record time, so the IDs themselves — not the resulting layout — remain
-timing-dependent; imperative systems' commands keep the thread-sharded buffer
+timing-dependent; serial systems' commands keep the thread-sharded buffer
 with its unspecified cross-shard order). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
-with the heavy system registered as a kernel, because an opaque heavy system is
+with the heavy system registered as a parallel system, because an opaque heavy system is
 an unsliceable straggler.
 
 The `WorkerPool` (`parallel/worker_pool.hpp`) is built once and reused
@@ -365,8 +369,8 @@ bounded-spin-then-futex hybrid — the per-tick wakeup latency dwarfs the
 idle-core cost it saves (so spinning stays). A dispatch is allocation-free (the
 kernel is referenced via a static trampoline, not stored) and **not
 re-entrant**: there is one job slot, so a nested `parallel_for` on the same pool
-throws rather than corrupting the in-flight dispatch (kernel systems cannot
-reach this by construction; an imperative system that iterates one pool-bound
+throws rather than corrupting the in-flight dispatch (parallel systems cannot
+reach this by construction; an serial system that iterates one pool-bound
 query inside another's kernel can). The first exception from any lane is
 rethrown on the caller, so a throwing system escapes `run()` as it would
 serially. Commands flush at each level barrier. (An earlier
@@ -390,7 +394,7 @@ remaining caveats:
   only against writers.
 * **There is no raw-`World&` parameter.** Unanalyzable read-write access has no
   safe meaning under a concurrent executor, so the type system simply does not
-  offer it; `add_dynamic` can declare a system `exclusive` when a runtime-typed
+  offer it; `add_dynamic_serial` can declare a system `exclusive` when a runtime-typed
   system is genuinely unanalyzable, and it then runs alone. (Resource reads from
   outside any system, e.g. a consumer thread calling `world.resource<T>()`,
   remain the caller's responsibility.)
@@ -457,7 +461,7 @@ one-shot system and run the schedule (inline, no thread pool needed):
 
 ```cpp
 Schedule init;
-init.add_once("populate", [&](Commands& cmd) {
+init.add_serial("populate", [&](Commands& cmd) {
   for (...) cmd.spawn(Position{...}, Velocity{...});
 });
 init.run(world);   // inline run on the calling thread
@@ -485,7 +489,7 @@ closure that is held until the wave flushes, so a single batch of *n* spawns
 holds ~one closure per entity transiently (tens of bytes each). That is
 inconsequential for per-frame spawning and for setups up to ~1M entities; for a
 multi-million-entity *single* batch it can be a meaningful transient spike,
-mitigable by splitting setup across several `add_once` runs (each flushes).
+mitigable by splitting setup across several one-shot runs (each flushes).
 
 Value mutation *through a query* (`each`/`for_each_chunk` writing the component
 references it was handed) is not a structural change and is not routed through
@@ -495,13 +499,13 @@ proven conflict-free. Only the explicit `world.*` mutators defer.
 ### One-shot and removable systems
 
 `Schedule::add` returns a `SystemId`; `Schedule::remove(id)` unschedules a
-system. `Schedule::add_once(...)` registers a system that runs on the next
+system. A `times=1` system (`add_serial(..., /*every=*/1, /*times=*/1)`) runs on the next
 `run()` and is then removed -- the idiomatic way to express startup work that
 should populate the world once and then stop:
 
 ```cpp
 Schedule sched;
-sched.add_once("startup", setup_fn, phase<-1>{}); // runs before everything, once
+sched.add_serial("startup", setup_fn, phase<-1>{}, /*every=*/1, /*times=*/1);
 sched.add("gameplay", gameplay_fn, ...);           // default phase 0
 sched.run(world, pool);   // startup runs (and flushes) first, then gameplay
 sched.run(world, pool);   // only gameplay from here on
@@ -510,7 +514,7 @@ sched.run(world, pool);   // only gameplay from here on
 **Phases** give coarse ordering independent of access conflicts. A `phase<N>`
 tag puts a system in phase `N` (default 0); the schedule runs phases in
 ascending order with a barrier between them, and within a phase the usual
-conflict-based wavefront leveling applies. So `add_once(..., phase<-1>{})` is a
+conflict-based wavefront leveling applies. So a `times=1` system at `phase<-1>` is a
 startup phase guaranteed to run -- and have its spawns flushed -- before any
 phase-0 system observes the world; `phase<1>` is a teardown/late phase. Without
 a phase tag, a one-shot system is leveled by conflicts like any other, which is

@@ -1,6 +1,6 @@
 // ecs/schedule/params/random.hpp
 //
-// Random: per-item deterministic random stream (PCG32) for kernel systems,
+// Random: per-item deterministic random stream (PCG32) for parallel systems,
 // with streams derived from (RandomSeed resource, schedule tick, system id,
 // item ordinal) -- counter-based, no shared state, independent of lane count
 // and iteration timing.
@@ -21,7 +21,7 @@ struct RandomSeed {
     std::uint64_t value = 0x9E37'79B9'7F4A'7C15ull;
 };
 
-// Per-item deterministic random stream (PCG32) for a kernel system. The
+// Per-item deterministic random stream (PCG32) for a parallel system. The
 // stream is derived from (RandomSeed resource, schedule tick, system id, item
 // ordinal) -- counter-based, no shared state -- so results are independent of
 // lane count and iteration timing: the same world, seed, and tick produce the
@@ -47,7 +47,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     Random(std::uint64_t seed, std::uint64_t seq) noexcept
         : inc_((seq << 1u) | 1u) {
         u32();
@@ -70,7 +70,7 @@ namespace detail {
     }
 
     template <>
-    struct kernel_param<Random> {
+    struct parallel_param<Random> {
         static constexpr bool allowed = true;
         struct state {
             std::uint64_t stream_base = 0;
@@ -86,7 +86,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const>,
-                            KernelWaveContext const& ctx) {
+                            WaveContext const& ctx) {
             auto const* seed = w.try_resource<RandomSeed>();
             auto const base  = seed ? seed->value : RandomSeed {}.value;
             s.stream_base    = mix64(base) ^ mix64(ctx.tick) ^ mix64(ctx.system.value);

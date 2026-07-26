@@ -26,9 +26,9 @@ struct Health {
 
 static void leveling_respects_conflicts() {
     Schedule sched;
-    auto a = sched.add("physics", [](Query<Position>) {});      // writes Position
-    auto b = sched.add("damage", [](Query<Health>) {});         // writes Health
-    auto c = sched.add("render", [](Query<Position const>) {}); // reads Position
+    auto a = sched.add_serial("physics", [](Query<Position>) {});      // writes Position
+    auto b = sched.add_serial("damage", [](Query<Health>) {});         // writes Health
+    auto c = sched.add_serial("render", [](Query<Position const>) {}); // reads Position
     // physics & damage are independent -> level 0; render reads Position that
     // physics writes -> level 1.
     CHECK(sched.level_count() == 2);
@@ -40,9 +40,9 @@ static void leveling_respects_conflicts() {
 static void parallel_systems_are_independent_levels() {
     Schedule sched;
     // Three systems with disjoint writes -> all level 0, fully parallel.
-    sched.add("a", [](Query<Position>) {});
-    sched.add("b", [](Query<Velocity>) {});
-    sched.add("c", [](Query<Health>) {});
+    sched.add_serial("a", [](Query<Position>) {});
+    sched.add_serial("b", [](Query<Velocity>) {});
+    sched.add_serial("c", [](Query<Health>) {});
     CHECK(sched.level_count() == 1);
 }
 
@@ -56,16 +56,18 @@ static void run_on_thread_pool_executes_all_systems() {
     std::atomic<int> render_calls {0};
     Schedule sched;
     // writes Position, reads Velocity
-    sched.add("physics", [](Query<Position, Velocity const> q) {
+    sched.add_serial("physics", [](Query<Position, Velocity const> q) {
         q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
     });
     // writes Health
-    sched.add("damage", [](Query<Health> q) { q.for_each([](auto& h) { h.hp -= 1; }); });
+    sched.add_serial("damage",
+                     [](Query<Health> q) { q.for_each([](auto& h) { h.hp -= 1; }); });
     // no ECS access -- just a side effect
-    sched.add("render", [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
+    sched.add_serial("render",
+                     [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 
     WorkerPool pool {4};
     sched.run(w, pool);
@@ -84,27 +86,27 @@ static void run_on_thread_pool_executes_all_systems() {
 static void worldview_reads_all_parallel_but_after_writers() {
     {
         Schedule sched;
-        sched.add("observe_a", [](WorldView) {});
-        sched.add("observe_b", [](WorldView) {});
+        sched.add_serial("observe_a", [](WorldView) {});
+        sched.add_serial("observe_b", [](WorldView) {});
         CHECK(sched.level_count() == 1); // two readers -> one wave
     }
     {
         Schedule sched;
-        sched.add("mutate", [](Query<Position>) {}); // writes Position
-        sched.add("observe", [](WorldView) {});      // reads everything
+        sched.add_serial("mutate", [](Query<Position>) {}); // writes Position
+        sched.add_serial("observe", [](WorldView) {});      // reads everything
         CHECK(sched.level_count() == 2);
         // reader serialized after writer
     }
     {
         Schedule sched;
-        sched.add("observe", [](WorldView) {}); // reads everything
+        sched.add_serial("observe", [](WorldView) {}); // reads everything
         // Raw World& is not a system parameter; a genuinely unanalyzable
-        // system declares itself exclusive via add_dynamic.
+        // system declares itself exclusive via add_dynamic_serial.
         SystemAccess excl;
         excl.exclusive = true;
-        sched.add_dynamic("exclusive",
-                          excl,
-                          [](World&, Commands&, detail::WorkItem const&) {});
+        sched.add_dynamic_serial("exclusive",
+                                 excl,
+                                 [](World&, Commands&, detail::WorkItem const&) {});
         CHECK(sched.level_count() == 2); // exclusive conflicts with all
     }
 }
@@ -119,12 +121,12 @@ static void worldview_sees_writers_flush_in_prior_wave() {
     std::atomic<int> observed {-1};
     Schedule sched;
     // Spawns three more, flushed at the wave barrier.
-    sched.add("spawn", [](Commands& cmd) {
+    sched.add_serial("spawn", [](Commands& cmd) {
         for (int i = 0; i < 3; ++i)
             cmd.spawn(Position {2, 2});
     });
     // Read-only ad-hoc access via WorldView, serialized after spawn by phase.
-    sched.add(
+    sched.add_serial(
         "observe",
         [&](WorldView view) {
             observed.store(int(view.size()), std::memory_order_relaxed);
@@ -142,7 +144,7 @@ static void worldview_sees_writers_flush_in_prior_wave() {
 static void system_exception_propagates() {
     World w;
     Schedule sched;
-    sched.add("boom", [](Commands&) { throw std::runtime_error("boom"); });
+    sched.add_serial("boom", [](Commands&) { throw std::runtime_error("boom"); });
 
     WorkerPool pool {2};
     bool caught = false;
@@ -160,10 +162,11 @@ static void system_exception_propagates() {
 static void aborted_run_discards_recorded_commands() {
     World w;
     Schedule bad;
-    bad.add("spawner", [](Commands& cmd) {
+    bad.add_serial("spawner", [](Commands& cmd) {
         cmd.spawn(Position {1, 1}); // recorded before the throw...
     });
-    bad.add("boom", [](Query<Position const>) { throw std::runtime_error("boom"); });
+    bad.add_serial("boom",
+                   [](Query<Position const>) { throw std::runtime_error("boom"); });
 
     bool threw = false;
     try {
@@ -177,7 +180,7 @@ static void aborted_run_discards_recorded_commands() {
     // A subsequent clean run on the same world must not replay the discarded
     // spawn.
     Schedule ok;
-    ok.add_once("noop", [](Commands&) {});
+    ok.add_serial("noop", [](Commands&) {}, {}, /*every=*/1, /*times=*/1);
     ok.run(w);
     CHECK(w.size() == 0);
 }
@@ -222,8 +225,8 @@ static void multiple_observers_notified_in_order() {
             c.spawn(Position {});
     });
     Schedule sched;
-    sched.add("physics", [](Query<Position> q) { q.for_each([](auto&) {}); });
-    sched.add("render", [](Query<Position const>) {}); // reads Position -> wave 1
+    sched.add_serial("physics", [](Query<Position> q) { q.for_each([](auto&) {}); });
+    sched.add_serial("render", [](Query<Position const>) {}); // reads Position -> wave 1
 
     std::vector<char> order;
     TallyObserver a {'A', &order}, b {'B', &order};

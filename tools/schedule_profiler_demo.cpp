@@ -39,16 +39,21 @@ int main() {
     World world;
     {
         Schedule setup;
-        setup.add_once("spawn", [](Commands& cmd) {
-            for (int i = 0; i < 50'000; ++i)
-                cmd.spawn(Position {0, 0}, Velocity {1, 1}, Health {100});
-        });
+        setup.add_serial(
+            "spawn",
+            [](Commands& cmd) {
+                for (int i = 0; i < 50'000; ++i)
+                    cmd.spawn(Position {0, 0}, Velocity {1, 1}, Health {100});
+            },
+            {},
+            /*every=*/1,
+            /*times=*/1);
         setup.run(world);
     }
 
     Schedule sched;
     // Cheap: advance positions (writes Position, reads Velocity).
-    sched.add("integrate", [](Query<Position, Velocity const> q) {
+    sched.add_serial("integrate", [](Query<Position, Velocity const> q) {
         q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
@@ -57,21 +62,21 @@ int main() {
     // Expensive: a curl-ish turbulence pass (writes Velocity, reads Position).
     // It conflicts with integrate, so it lands in a later wave -- and the sin/cos
     // makes it visibly the hottest system in the report.
-    sched.add("turbulence", [](Query<Position const, Velocity> q) {
+    sched.add_serial("turbulence", [](Query<Position const, Velocity> q) {
         q.for_each([](auto& p, auto& v) {
             v.dx += 0.01f * std::sin(p.y);
             v.dy += 0.01f * std::cos(p.x);
         });
     });
     // Cheap independent branch (writes Health) -- shares wave 0 with integrate.
-    sched.add("damage", [](Query<Health> q) {
+    sched.add_serial("damage", [](Query<Health> q) {
         q.for_each([](auto& h) {
             if (--h.hp <= 0)
                 h.hp = 100;
         });
     });
     // Reads everything -> runs after the writers, in its own final wave.
-    sched.add("render", [](WorldView) {});
+    sched.add_serial("render", [](WorldView) {});
 
     // Two observers on one schedule: a distribution report and a CSV trace. Each
     // is a stateful visitor, registered on the schedule's event emitter by

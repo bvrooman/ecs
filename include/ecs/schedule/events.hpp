@@ -48,7 +48,7 @@ namespace sched_event {
     // (CPU time, not wall: a fanned wave's busy times legitimately sum past
     // the wave's wall duration); prepare_us/finish_us bracket the system's
     // single-threaded barrier hooks (Reduce folds, Extract pre-sizing...), so
-    // a kernel whose finish fold rivals its dispatch is visible directly.
+    // a parallel system whose finish fold rivals its dispatch is visible directly.
     // flush_us is the part of the wave's command flush spent applying THIS
     // system's commands (spawns/despawns/sort...) -- so a system whose real
     // cost is a barrier command, not busy work, is attributed directly.
@@ -58,7 +58,7 @@ namespace sched_event {
         double busy_us      = 0;
         double prepare_us   = 0;
         double finish_us    = 0;
-        std::uint32_t items = 0; // work items this wave (1 for imperative)
+        std::uint32_t items = 0; // work items this wave (1 for serial)
         double flush_us     = 0; // this system's share of the wave's cmd flush
     };
     // Emitted instead of the remaining WaveEnd/TickEnd when a system throws and

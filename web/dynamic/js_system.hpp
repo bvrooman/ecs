@@ -76,11 +76,10 @@ inline SystemId add_js_system(Schedule& schedule,
     // barrier. Flag commands so the scheduler accounts for the structural effect.
     if (query.empty()) {
         access.commands = true;
-        return schedule.add_dynamic(std::move(name),
-                                    std::move(access),
-                                    [kernel](World&, Commands&, detail::WorkItem const&) {
-                                        kernel();
-                                    });
+        return schedule.add_dynamic_serial(
+            std::move(name),
+            std::move(access),
+            [kernel](World&, Commands&, detail::WorkItem const&) { kernel(); });
     }
 
     // Query system: kernel(count, views, entities) once per matching archetype.
@@ -111,7 +110,9 @@ inline SystemId add_js_system(Schedule& schedule,
             kernel(static_cast<unsigned>(count), views, entities);
         }
     };
-    return schedule.add_dynamic(std::move(name), std::move(access), std::move(run));
+    return schedule.add_dynamic_serial(std::move(name),
+                                       std::move(access),
+                                       std::move(run));
 }
 
 } // namespace ecs::dynamic::web

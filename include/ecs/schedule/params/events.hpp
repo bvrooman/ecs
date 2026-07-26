@@ -1,14 +1,14 @@
 // ecs/schedule/params/events.hpp
 //
 // Frame-buffered gameplay events: an Events<T> channel resource, written
-// through EventWriter<T> and read through EventReader<T> kernel parameters.
+// through EventWriter<T> and read through EventReader<T> parallel parameters.
 //
 // The channel is double-buffered per schedule run: events emitted during tick
 // N become readable during tick N+1 and are dropped after it. Readers
 // therefore always see a complete, stable snapshot -- one tick old -- no
 // matter where in the tick they run, and writers and readers never touch the
 // same buffer. The swap happens at most once per tick, driven by the schedule
-// tick in KernelWaveContext, inside the single-threaded prepare hooks.
+// tick in WaveContext, inside the single-threaded prepare hooks.
 //
 // The write side uses the same slot plumbing as Collect: each work item
 // appends into a private partial, and the barrier concatenates partials into
@@ -48,11 +48,11 @@ public:
         return {read_.data(), read_.size()};
     }
     // Emit an event, readable next tick. For serial systems (through
-    // ResMut<Events<T>>); kernel systems emit through EventWriter<T>.
+    // ResMut<Events<T>>); parallel systems emit through EventWriter<T>.
     void emit(T e) { write_.push_back(std::move(e)); }
     // Swap the buffers for a new tick (idempotent per tick value). Driven
     // automatically by the EventWriter/EventReader prepare hooks; call it
-    // directly only when NO kernel system touches the channel (pure
+    // directly only when NO parallel system touches the channel (pure
     // ResMut/Res usage), e.g. once per frame outside run().
     void advance_to(std::uint64_t const tick) {
         if (tick == tick_)
@@ -64,13 +64,13 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     std::vector<T> read_;
     std::vector<T> write_;
     std::uint64_t tick_ = 0;
 };
 
-// Kernel-side write face of Events<T>: emits into THIS ITEM's private
+// Parallel-side write face of Events<T>: emits into THIS ITEM's private
 // partial; the barrier moves the partials into the channel in ordinal order.
 // Precondition, checked at prepare: the world owns an Events<T> resource.
 template <class T>
@@ -80,13 +80,13 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     explicit EventWriter(std::vector<T>& partial) noexcept
         : partial_(&partial) {}
     std::vector<T>* partial_;
 };
 
-// Kernel-side read face of Events<T>: a stable view of everything emitted
+// Parallel-side read face of Events<T>: a stable view of everything emitted
 // during the PREVIOUS tick (same span for every item -- events are not
 // per-row). Iterable: `for (auto const& e : events) ...`.
 // Precondition, checked at prepare: the world owns an Events<T> resource.
@@ -120,7 +120,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     explicit EventReader(std::span<T const> events) noexcept
         : events_(events) {}
     std::span<T const> events_;
@@ -129,7 +129,7 @@ private:
 namespace detail {
 
     template <class T>
-    struct kernel_param<EventWriter<T>> {
+    struct parallel_param<EventWriter<T>> {
         static constexpr bool allowed = true;
         struct state {
             slot_array<std::vector<T>> parts;
@@ -137,7 +137,7 @@ namespace detail {
 
         // A WRITE on the channel: two writer systems land in distinct waves
         // (deterministic cross-system event order), and serial
-        // ResMut<Events<T>> systems level against kernel writers.
+        // ResMut<Events<T>> systems level against parallel writers.
         static void declare(SystemAccess& a) {
             a.res_writes.push_back(resource_id<Events<T>>);
         }
@@ -145,7 +145,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const& ctx) {
+                            WaveContext const& ctx) {
             w.resource<Events<T>>().advance_to(ctx.tick);
             s.parts.prepare(rows.size());
         }
@@ -167,7 +167,7 @@ namespace detail {
     };
 
     template <class T>
-    struct kernel_param<EventReader<T>> {
+    struct parallel_param<EventReader<T>> {
         static constexpr bool allowed = true;
         struct state {
             std::span<T const> events;
@@ -183,7 +183,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const>,
-                            KernelWaveContext const& ctx) {
+                            WaveContext const& ctx) {
             auto& channel = w.resource<Events<T>>();
             channel.advance_to(ctx.tick);
             s.events = channel.read();

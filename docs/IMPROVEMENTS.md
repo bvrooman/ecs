@@ -26,7 +26,7 @@ that introduced this document; the rest are recorded as a roadmap.
    was below the 256-row parallel threshold).
 6. **[done]** Cross-system parallelism, via the **work-item executor**: each
    wave is flattened into one LPT-sorted item list — declarative kernel
-   systems (`add_kernel<Cs...>`) contribute row-range slices, imperative
+   systems (`add_parallel<Cs...>`) contribute row-range slices, imperative
    systems one opaque item each — executed with a single dispatch, lanes
    claiming items dynamically. Replaces the interim opt-in `RunPolicy`;
    `benchmarks/schedule_bench` shows ~2.2x on a mixed heavy+small wave.
@@ -263,7 +263,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | `EventWriter/Reader<T>` | messages between systems (item 3 above; `Events<T>` channel resource, tick-keyed buffer swap, serial systems participate via `Res`/`ResMut<Events<T>>`) | unknown | barrier concat into double-buffered channel, swap once per tick | **done** — same slot plumbing as Collect |
    | `Scratch<T>` | per-item temp workspace (neighbor lists) | — | none; reset keeping capacity | **done** |
    | `Random` | per-item deterministic RNG stream (counter-based PCG32, seeded by `RandomSeed` resource/tick/system/item — repairs the `ResMut<Rng>` ban casualty with BETTER determinism than the serial version) | — | none | **done** |
-   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only — rejected in `add_kernel`, where per-item state is `Scratch` and merging state is `Reduce`/`Collect`) | — | none | **done** |
+   | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only — rejected in `add_parallel`, where per-item state is `Scratch` and merging state is `Reduce`/`Collect`) | — | none | **done** |
    | `Bin<V>` / group-by | (bucket, value) emission into contiguous per-bucket spans of a `Bins<V>` resource (spatial hashing) | buckets | barrier counting sort: count → prefix-sum → ordinal-order scatter | **done** |
 
    **The unifying prize — lane-count invariance.** Every primitive merges in
@@ -283,13 +283,13 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
    **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
    branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);
-   (2) `Random` + `Scratch` — done, this branch (`KernelWaveContext` threads
+   (2) `Random` + `Scratch` — done, this branch (`WaveContext` threads
    the system id + schedule tick into the prepare hooks for stream seeding);
    (3) `Collect`, then Events on the same plumbing — done, this branch
    (events readable exactly one tick after emission, deterministic order at
    any lane count); (4) `Local<T>` — done, this branch (with the
-   imperative-parameter protocol mirroring `kernel_param`, so `add()` and
-   `add_kernel()` now compile against the same protocol shape); (5) `Bin` and
+   imperative-parameter protocol mirroring `parallel_param`, so `add()` and
+   `add_parallel()` now compile against the same protocol shape); (5) `Bin` and
    deterministic kernel Commands — done, this branch (canonical replay order;
    record-time ID reservation is the documented residual).
    Deliberately out: parallel sort (a utility over an Extract'd buffer),
@@ -329,7 +329,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    - The losing shape: per-row work ≈ zero AND keys uncorrelated with row
      order (mist's grid — a cheap scatter-add over many cells). Partials
      neither compress nor come cheap; keep it serial.
-   The A/B is safe by construction — `add` ↔ `add_kernel` is a one-word,
+   The A/B is safe by construction — `add` ↔ `add_parallel` is a one-word,
    behavior-preserving switch (identical results at any lane count), so
    measure with `ScheduleReport` and believe the numbers. **[done]** The
    profiler surfaces exactly this: each system emits a `SystemWork` event
@@ -370,7 +370,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      layouts alone.
    - **[done]** Structural upkeep is a regular system, not a bespoke hook.
      Two general primitives replace the old `Schedule::add_maintenance`:
-     a runtime `every` cadence on `add`/`add_kernel` (a system runs only on
+     a runtime `every` cadence on `add`/`add_parallel` (a system runs only on
      ticks where `tick % every == 0`; a wave emptied by skips runs no barrier),
      and `Commands::sort<C>(key)` — a deferred `World::sort_rows` that applies
      at the barrier (world-quiescent, single-threaded) like every other
@@ -500,7 +500,7 @@ diagonal so the turnover past the physical-core count is a picture.
 ## 9. Examples & tooling (roadmap)
 
 - `examples/hello.cpp` minimal example built in CI (the README snippet is
-  untested documentation); lead the quickstart with an `add_kernel` system
+  untested documentation); lead the quickstart with an `add_parallel` system
   (parallelism lives on the executor, not the query).
 - De-macOS-ify `particles`/`mist` (glad instead of CGL includes) or point
   non-Mac users at the wasm build explicitly.

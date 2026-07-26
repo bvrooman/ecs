@@ -42,10 +42,13 @@ static void multi_lane_chunk_split_covers_every_row() {
 
     WorkerPool pool {4};
     Schedule s;
-    s.add_kernel("bump", [](Query<Position, Velocity const> q) {
-        q.for_each_chunk([](std::span<Entity const>,
-                            chunk<Position> p,
-                            chunk<Velocity const> v) {
+    s.add_parallel("bump", [](Query<Position, Velocity const> q) {
+        // Deduced, not spelled: fails to compile if the entity span ever stops
+        // being const. Entity handles are the world's row->entity bookkeeping --
+        // a kernel reads them, never writes them.
+        q.for_each_chunk([](auto ents, chunk<Position> p, chunk<Velocity const> v) {
+            static_assert(std::is_const_v<typename decltype(ents)::element_type>,
+                          "for_each_chunk must hand kernels a read-only entity span");
             auto px = p.column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < px.size(); ++i)
@@ -73,7 +76,8 @@ static void multi_lane_kernel_serial_covers_every_row() {
     });
     WorkerPool pool {4};
     Schedule s;
-    s.add_kernel("inc", [](Query<Health> q) { q.for_each([](auto& h) { h.hp += 1; }); });
+    s.add_parallel("inc",
+                   [](Query<Health> q) { q.for_each([](auto& h) { h.hp += 1; }); });
     s.run(w, pool);
     CHECK(w.count<Health const>() == 10'000);
     bool all_one = true;
@@ -96,7 +100,7 @@ static void commands_recorded_from_parallel_kernel() {
 
     WorkerPool pool {4};
     Schedule s;
-    s.add("reap_and_seed", [](Query<Health const> q, Commands& cmd) {
+    s.add_serial("reap_and_seed", [](Query<Health const> q, Commands& cmd) {
         q.for_each_chunk([&](std::span<Entity const> ents, chunk<Health const> h) {
             auto hp = h.column<0>();
             for (std::size_t i = 0; i < hp.size(); ++i) {
@@ -131,7 +135,7 @@ static void kernel_system_covers_every_row() {
     Schedule s;
     // Same signature rules as add(): the one Query parameter is what the
     // executor slices; the body iterates just its item's rows.
-    s.add_kernel("integrate", [](Query<Position, Velocity const> q) {
+    s.add_parallel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> p,
                             chunk<Velocity const> v) {
@@ -179,15 +183,15 @@ static void mixed_wave_flattened_dispatch_is_exact() {
         Schedule s;
         // Kernel bodies may use the per-row ergonomic path too -- the sliced
         // Query's for_each covers just the item's rows.
-        s.add_kernel("a", [](Query<A> q) { q.for_each([](auto& a) { a.v += 1; }); });
-        s.add("b", [](Query<B> q) { q.for_each([](auto& b) { b.v += 2; }); });
-        s.add_kernel("c", [](Query<C> q) {
+        s.add_parallel("a", [](Query<A> q) { q.for_each([](auto& a) { a.v += 1; }); });
+        s.add_serial("b", [](Query<B> q) { q.for_each([](auto& b) { b.v += 2; }); });
+        s.add_parallel("c", [](Query<C> q) {
             q.for_each_chunk([](std::span<Entity const>, chunk<C> c) {
                 for (auto& v : c.column<0>())
                     v += 3;
             });
         });
-        s.add("spawner", [](Commands& cmd) { cmd.spawn(B {100}); });
+        s.add_serial("spawner", [](Commands& cmd) { cmd.spawn(B {100}); });
         CHECK(s.level_count() == 1); // all conflict-free: one wave, one dispatch
 
         WorkerPool pool {lanes};
@@ -224,25 +228,25 @@ static void kernel_with_resource_and_commands_extras() {
     });
 
     Schedule s;
-    s.add_kernel("steer",
-                 [](Query<Position, Velocity const> q,
-                    Res<Clock> clk,
-                    Res<Goal> goal,
-                    Commands& cmd) {
-                     q.for_each_chunk([&](std::span<Entity const> ents,
-                                          chunk<Position> p,
-                                          chunk<Velocity const> v) {
-                         auto px = p.column<0>();
-                         auto vx = v.column<0>();
-                         for (std::size_t i = 0; i < px.size(); ++i) {
-                             px[i] += vx[i] * clk->dt;
-                             if (px[i] > goal->x)
-                                 cmd.destroy(ents[i]); // sharded: safe per item
-                         }
-                     });
-                 });
+    s.add_parallel("steer",
+                   [](Query<Position, Velocity const> q,
+                      Res<Clock> clk,
+                      Res<Goal> goal,
+                      Commands& cmd) {
+                       q.for_each_chunk([&](std::span<Entity const> ents,
+                                            chunk<Position> p,
+                                            chunk<Velocity const> v) {
+                           auto px = p.column<0>();
+                           auto vx = v.column<0>();
+                           for (std::size_t i = 0; i < px.size(); ++i) {
+                               px[i] += vx[i] * clk->dt;
+                               if (px[i] > goal->x)
+                                   cmd.destroy(ents[i]); // sharded: safe per item
+                           }
+                       });
+                   });
     // The Res reads must show in the derived access: a Clock WRITER conflicts.
-    s.add("tick", [](ResMut<Clock>) {});
+    s.add_serial("tick", [](ResMut<Clock>) {});
     CHECK(s.level_count() == 2);
 
     WorkerPool pool {4};
@@ -285,10 +289,10 @@ static void reduce_is_bitwise_deterministic_across_lane_counts() {
         w.emplace_resource<FSum>();
         populate_mixed(w, 30'000);
         Schedule s;
-        s.add_kernel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
+        s.add_parallel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
             q.for_each([&](auto& p) { sum->v += p.x; });
         });
-        s.add("read", [](Res<FSum>) {}); // reader of the reduce target
+        s.add_serial("read", [](Res<FSum>) {}); // reader of the reduce target
         if (s.level_count() != 2)
             return -1.0f; // leveling broken; fail loudly below
         WorkerPool pool {lanes};
@@ -334,13 +338,13 @@ static void reduce_vector_partials_match_serial_collect() {
     populate_mixed(w, 12'000);
 
     Schedule s;
-    s.add_kernel("collect",
-                 [](Query<Health const> q, Reduce<std::vector<int>, HpConcat> out) {
-                     q.for_each([&](auto& h) {
-                         if (h.hp % 7 == 0)
-                             out->push_back(h.hp);
-                     });
-                 });
+    s.add_parallel("collect",
+                   [](Query<Health const> q, Reduce<std::vector<int>, HpConcat> out) {
+                       q.for_each([&](auto& h) {
+                           if (h.hp % 7 == 0)
+                               out->push_back(h.hp);
+                       });
+                   });
     WorkerPool pool {4};
     for (int t = 0; t < 3; ++t) // repeated runs: rebuilt, capacity retained
         s.run(w, pool);
@@ -374,11 +378,11 @@ static void reduce_sparse_partial_matches_dense_histogram() {
         w.emplace_resource<DenseHist>();
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("hist",
-                     [](Query<Health const> q,
-                        Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
-                         q.for_each([&](auto& hp) { ++(*h)[hp.hp % 16]; });
-                     });
+        s.add_parallel("hist",
+                       [](Query<Health const> q,
+                          Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
+                           q.for_each([&](auto& hp) { ++(*h)[hp.hp % 16]; });
+                       });
         WorkerPool pool {lanes};
         for (int t = 0; t < 2; ++t) // rebuilt per run, not accumulated
             s.run(w, pool);
@@ -404,13 +408,15 @@ static void extract_matches_serial_gather_order() {
     populate_mixed(w, 20'000);
 
     Schedule s;
-    s.add_kernel("extract", [](Query<Position const> q, Extract<std::vector<float>> out) {
-        q.for_each_chunk([&](std::span<Entity const>, chunk<Position const> p) {
-            auto x = p.column<0>();
-            for (std::size_t i = 0; i < x.size(); ++i)
-                out[i] = x[i];
-        });
-    });
+    s.add_parallel("extract",
+                   [](Query<Position const> q, Extract<std::vector<float>> out) {
+                       q.for_each_chunk([&](std::span<Entity const>,
+                                            chunk<Position const> p) {
+                           auto x = p.column<0>();
+                           for (std::size_t i = 0; i < x.size(); ++i)
+                               out[i] = x[i];
+                       });
+                   });
     WorkerPool pool {4};
     for (int t = 0; t < 3; ++t)
         s.run(w, pool);
@@ -432,13 +438,13 @@ static void collect_matches_serial_filter_order() {
         w.emplace_resource<std::vector<int>>();
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("cull", [](Query<Health const> q, Collect<std::vector<int>> out) {
+        s.add_parallel("cull", [](Query<Health const> q, Collect<std::vector<int>> out) {
             q.for_each([&](auto& h) {
                 if (h.hp % 7 == 0)
                     out->push_back(h.hp);
             });
         });
-        s.add("consume", [](Res<std::vector<int>>) {}); // reader of the target
+        s.add_serial("consume", [](Res<std::vector<int>>) {}); // reader of the target
         if (s.level_count() != 2)
             return std::vector<int> {}; // leveling broken; fail loudly below
         WorkerPool pool {lanes};
@@ -484,7 +490,7 @@ static void events_are_double_buffered_and_deterministic() {
         populate_mixed(w, 9'000);
         Schedule s;
         // Wave 1: emit one ping per Health row with hp % 5 == 0.
-        s.add_kernel("emit", [](Query<Health const> q, EventWriter<Ping> ev) {
+        s.add_parallel("emit", [](Query<Health const> q, EventWriter<Ping> ev) {
             q.for_each([&](auto& h) {
                 if (h.hp % 5 == 0)
                     ev.emit(Ping {h.hp});
@@ -492,13 +498,13 @@ static void events_are_double_buffered_and_deterministic() {
         });
         // Wave 2: every item of the reader kernel sees the SAME full snapshot
         // of last tick's pings; fold its size into each row.
-        s.add_kernel("consume", [](Query<Position> q, EventReader<Ping> ev) {
+        s.add_parallel("consume", [](Query<Position> q, EventReader<Ping> ev) {
             auto const n = float(ev.size());
             q.for_each([&](auto& p) { p.y += n; });
         });
         // Serial reader through the plain resource (registered after the
         // writer, so its wave runs post-swap): log the exact sequence.
-        s.add("log", [](Res<Events<Ping>> ev, ResMut<PingLog> log) {
+        s.add_serial("log", [](Res<Events<Ping>> ev, ResMut<PingLog> log) {
             for (auto const& ping : ev->read())
                 log->v.push_back(ping.from);
         });
@@ -550,7 +556,7 @@ static void scratch_is_private_and_cleared() {
 
     std::atomic<int> dirty {0};
     Schedule s;
-    s.add_kernel("smooth", [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
+    s.add_parallel("smooth", [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
         if (!tmp->empty())
             dirty.fetch_add(1, std::memory_order_relaxed);
         q.for_each([&](auto& h) {
@@ -591,7 +597,7 @@ static void random_streams_are_lane_count_invariant() {
                 cmd.spawn(Position {});
         });
         Schedule s;
-        s.add_kernel("jitter", [](Query<Position> q, Random rng) {
+        s.add_parallel("jitter", [](Query<Position> q, Random rng) {
             q.for_each([&](auto& p) { p.x = rng.f32(); });
         });
         WorkerPool pool {lanes};
@@ -624,7 +630,7 @@ static void random_streams_are_lane_count_invariant() {
 
 // Local: per-system state persisting across ticks, private to each registered
 // system -- two registrations of the same callable get independent state, and
-// an add_once system's Local dies with it.
+// a times=1 system's Local dies with it.
 struct TickLog {
     std::vector<int> a, b;
 };
@@ -639,8 +645,8 @@ static void local_state_persists_across_ticks() {
         log->a.push_back(*n);
     };
     Schedule s;
-    s.add("count-a", counter);
-    s.add("count-b", counter);
+    s.add_serial("count-a", counter);
+    s.add_serial("count-b", counter);
     for (int t = 0; t < 4; ++t)
         s.run(w);
 
@@ -660,7 +666,7 @@ static void kernel_commands_replay_in_canonical_order() {
         World w;
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("edit", [](Query<Health const> q, Commands& cmd) {
+        s.add_parallel("edit", [](Query<Health const> q, Commands& cmd) {
             q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {
                 auto hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i) {
@@ -697,7 +703,7 @@ static void bin_groups_match_serial_walk() {
         w.emplace_resource<Bins<int>>().reserve_buckets(16);
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("bucketize", [](Query<Health const> q, Bin<int> bin) {
+        s.add_parallel("bucketize", [](Query<Health const> q, Bin<int> bin) {
             q.for_each([&](auto& h) {
                 if (h.hp % 2 == 0) // only even hp: buckets 8..15 stay empty
                     bin.emit(std::uint32_t(h.hp % 8), h.hp);
@@ -748,7 +754,7 @@ static void prewarm_sizes_state_without_changing_results() {
         w.emplace_resource<FSum>();
         populate_mixed(w, 30'000);
         Schedule s;
-        s.add_kernel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
+        s.add_parallel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
             q.for_each([&](auto& p) { sum->v += p.x; });
         });
         WorkerPool pool {4};

@@ -20,7 +20,9 @@
 namespace ecs {
 using WaveId = StrongId<struct WaveIdTag, uint32_t>;
 
-// A kernel system's barrier prepare hook, bound to one system for one tick.
+// A system's barrier prepare hook, bound to one system for one tick. Built
+// for every due system -- an serial one taking Local<T> is stateful too;
+// a system with no state carries a null fn and the hook no-ops.
 // Holds only a pointer + ids, so the vector of these refills each tick (clear +
 // push_back) without per-element allocation; the row-count scratch it fills is
 // owned by the Wave and shared across contexts -- one reused buffer, not one
@@ -46,7 +48,7 @@ public:
                 rows.resize(it.ordinal + 1);
             rows[it.ordinal] = it.end - it.begin;
         }
-        (*fn_)(world, rows, detail::KernelWaveContext {system, tick_});
+        (*fn_)(world, rows, detail::WaveContext {system, tick_});
         return true;
     }
 
@@ -61,7 +63,8 @@ private:
     uint64_t tick_;
 };
 
-// A kernel system's barrier finish hook, bound to one system.
+// A system's barrier finish hook, bound to one system. Built for every due
+// system, like PrepareContext above.
 class FinishContext {
     using Fn = detail::FinishItemsFn;
 
@@ -217,7 +220,7 @@ public:
     using System                                = detail::SystemRecord;
     using SystemVector                          = detail::IdVector<SystemId, System>;
     static constexpr auto kMinItemRows          = 1024uz;
-    static constexpr auto kTargetItemsPerKernel = 64uz;
+    static constexpr auto kTargetItemsPerSystem = 64uz;
 
     WaveId wave_id = {};
 
@@ -248,7 +251,7 @@ public:
     }
 
     // Flatten this tick's due systems into the reused Wave: one opaque item per
-    // imperative system, ~kTargetItemsPerKernel row-range items per kernel, plus
+    // serial system, ~kTargetItemsPerSystem row-range items per parallel system, plus
     // a prepare/finish context per due system. Sorted longest-first with a
     // deterministic tie-break (a 1-lane run replays identically). Requires
     // prepare() to have populated due_ this tick.
@@ -269,20 +272,15 @@ public:
                 build_serial(world, s, items);
             }
         }
-        result_.build_us = detail::elapsed_us(t_build); // flatten loop, sans sort
-        // Greedy LPT: opaque (imperative) items first, then longest-first, with a
-        // deterministic tie-break so a 1-lane run replays. An imperative system's
-        // item has unknown cost -- and a Commands-only / WorldView one has a zero
-        // row range, so a pure longest-first order would sort it LAST, where an
-        // expensive one becomes the join straggler. Claiming it before the kernel
-        // slices (whose cost is proportional to their known row count) keeps the
-        // biggest unknown off the tail.
+        result_.build_us = detail::elapsed_us(t_build);
+        // Greedy LPT: opaque (serial) items first, then longest-first, with a
+        // deterministic tie-break.
         auto const t_sort = detail::sched_clock::now();
         std::ranges::sort(items, [&systems](WorkItem const& a, WorkItem const& b) {
             bool const ia = !systems[a.system].is_parallel;
             bool const ib = !systems[b.system].is_parallel;
             if (ia != ib)
-                return ia; // opaque/imperative items first
+                return ia; // opaque/serial items first
             auto const ra = a.end - a.begin;
             auto const rb = b.end - b.begin;
             if (ra != rb)
@@ -306,7 +304,7 @@ private:
         auto total          = 0uz;
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
-        auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerKernel);
+        auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerSystem);
         std::uint32_t ordinal = 0;
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();

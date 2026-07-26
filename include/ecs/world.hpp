@@ -7,6 +7,7 @@
 //                       resources, and the immediate mutation primitives
 //   world/commands.hpp  Commands -- the deferred mutation API systems see
 //   world/res.hpp       Res<T> / ResMut<T> -- typed resource parameters
+//   world/view.hpp      WorldView -- the read-only ad-hoc read parameter
 //
 // Include this header; the split is an implementation layout, not an API.
 

@@ -111,13 +111,14 @@ static void world_extraction_handoff() {
     });
 
     Schedule sched;
-    sched.add("extract",
-              [](Query<Position const> q, ResMut<TripleBuffer<PositionSnapshot>> tb) {
-                  PositionSnapshot& out = tb->back();
-                  out.clear();
-                  q.for_each([&](auto& p) { out.push_back({p.x, p.y}); });
-                  tb->publish();
-              });
+    sched.add_serial("extract",
+                     [](Query<Position const> q,
+                        ResMut<TripleBuffer<PositionSnapshot>> tb) {
+                         PositionSnapshot& out = tb->back();
+                         out.clear();
+                         q.for_each([&](auto& p) { out.push_back({p.x, p.y}); });
+                         tb->publish();
+                     });
 
     WorkerPool pool {4};
     for (int frame = 0; frame < 50; ++frame)

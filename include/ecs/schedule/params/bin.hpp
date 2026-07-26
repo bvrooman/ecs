@@ -1,6 +1,6 @@
 // ecs/schedule/params/bin.hpp
 //
-// Bin<V>: group-by for kernel systems -- emit (bucket, value) pairs during
+// Bin<V>: group-by for parallel systems -- emit (bucket, value) pairs during
 // iteration, read back a Bins<V> resource of contiguous per-bucket spans.
 // Each item appends into a private partial; the barrier counting-sorts the
 // partials into the resource (count -> prefix-sum -> scatter, walking the
@@ -48,13 +48,13 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     std::vector<V> items_;
     std::vector<std::size_t> offsets_; // bucket b: items_[offsets_[b], offsets_[b+1])
     std::size_t min_buckets_ = 0;
 };
 
-// Kernel-side write face of Bins<V>: emits into THIS ITEM's private partial;
+// Parallel-side write face of Bins<V>: emits into THIS ITEM's private partial;
 // the barrier counting-sorts all partials into the resource.
 // Precondition, checked at prepare: the world owns a Bins<V> resource.
 template <class V>
@@ -66,7 +66,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     using Entry = std::pair<std::uint32_t, V>;
     explicit Bin(std::vector<Entry>& partial) noexcept
         : partial_(&partial) {}
@@ -76,7 +76,7 @@ private:
 namespace detail {
 
     template <class V>
-    struct kernel_param<Bin<V>> {
+    struct parallel_param<Bin<V>> {
         static constexpr bool allowed = true;
         using Entry                   = std::pair<std::uint32_t, V>;
         struct state {
@@ -91,7 +91,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const&) {
+                            WaveContext const&) {
             s.parts.prepare(rows.size());
             // Rebuilt every run: reset now so an aborted wave leaves the
             // target empty rather than stale (same contract as Reduce).

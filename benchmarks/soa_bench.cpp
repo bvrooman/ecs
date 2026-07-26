@@ -76,10 +76,15 @@ int main(int argc, char** argv) {
     // --- populate the ECS world (one entity = {Pos, Vel, Acc}) ---------------
     World w;
     Schedule init;
-    init.add_once("populate", [N](Commands& cmd) {
-        for (std::size_t i = 0; i < N; ++i)
-            cmd.spawn(Pos {float(i), 0, 0}, Vel {1, 1, 1}, Acc {0.01f, 0, 0});
-    });
+    init.add_serial(
+        "populate",
+        [N](Commands& cmd) {
+            for (std::size_t i = 0; i < N; ++i)
+                cmd.spawn(Pos {float(i), 0, 0}, Vel {1, 1, 1}, Acc {0.01f, 0, 0});
+        },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     init.run(w);
 
     // --- an equivalent array-of-structures baseline --------------------------

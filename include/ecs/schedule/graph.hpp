@@ -24,14 +24,21 @@ namespace ecs::detail {
 // The schedule's registered systems, keyed by the SystemId it handed out.
 using SystemVector = IdVector<SystemId, SystemRecord>;
 
-// Tombstone spent one-shot systems (see remove()): they keep their slot so
-// no other system's position -- and so no SystemId -- shifts.
-inline void prune_once(SystemVector& systems, bool& dirty) {
-    for (auto& s : systems)
-        if (s.once && !s.dead) {
+// Charge one run against every system that was due this tick and retire the
+// ones whose budget is spent (see remove()): they keep their slot so no other
+// system's position -- and so no SystemId -- shifts.
+//
+// Dueness is recomputed here rather than counted in WavePlan::prepare, because
+// prewarm() calls prepare() too and must not spend anyone's budget.
+inline void prune_expired(SystemVector& systems, std::uint64_t const tick, bool& dirty) {
+    for (auto& s : systems) {
+        if (s.dead || s.times == 0 || tick % s.every != 0)
+            continue;
+        if (++s.runs >= s.times) {
             s.dead = true;
             dirty  = true;
         }
+    }
 }
 
 // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
@@ -71,9 +78,9 @@ inline void build_wave_plans(SystemVector const& systems,
         auto& wave = it->second;
         wave.push_back(id);
     }
-    std::ranges::sort(wave_groups, {}, search);
     wave_plans.clear();
     wave_plans.reserve(wave_groups.size());
+    std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
 }

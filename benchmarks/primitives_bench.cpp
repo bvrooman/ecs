@@ -1,23 +1,23 @@
 // benchmarks/primitives_bench.cpp
 //
-// The kernel parallel primitives against hand-rolled imperative baselines:
+// The parallel parallel primitives against hand-rolled serial baselines:
 // what does the slot/partial/barrier machinery cost at 1 lane, and what does
 // it buy at hw lanes? Each case is the primitive's canonical shape:
 //
 //   * reduce   -- Reduce<Sum>: fold a float per row into one resource
-//                 vs an imperative ResMut serial accumulation
+//                 vs an serial ResMut serial accumulation
 //   * extract  -- Extract<Snapshot>: disjoint-span gather of one field
-//                 vs an imperative resize + serial write
+//                 vs an serial resize + serial write
 //   * collect  -- Collect<Hits>: filtered gather (~half the rows pass)
-//                 vs an imperative clear + push_back walk
+//                 vs an serial clear + push_back walk
 //   * bin      -- Bin<float>: group rows into 64 buckets (counting sort at
-//                 the barrier) vs an imperative bucket-vector rebuild
+//                 the barrier) vs an serial bucket-vector rebuild
 //   * events   -- EventWriter/Reader roundtrip (K events/tick) vs a ResMut
 //                 vector rebuilt each tick
 //
 // Every case reports mean us/tick (distribution rows in ECS_BENCH_OUT) for the
-// imperative baseline at 1 lane and the kernel swept across ECS_LANES: the
-// 1-lane kernel point is the primitive's raw overhead, and the curve across
+// serial baseline at 1 lane and the parallel swept across ECS_LANES: the
+// 1-lane parallel point is the primitive's raw overhead, and the curve across
 // lanes is the payoff -- including where it turns over past the physical-core
 // count. Default lane set is 1,2,4,...,hw (see bench::lane_set).
 //
@@ -57,10 +57,15 @@ namespace {
 
 void populate(World& w, std::size_t n) {
     Schedule s;
-    s.add_once("seed", [n](Commands& cmd) {
-        for (std::size_t i = 0; i < n; ++i)
-            cmd.spawn(P {float(i % 977), float(i % 313), float(i)});
-    });
+    s.add_serial(
+        "seed",
+        [n](Commands& cmd) {
+            for (std::size_t i = 0; i < n; ++i)
+                cmd.spawn(P {float(i % 977), float(i % 313), float(i)});
+        },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     s.run(w);
 }
 
@@ -77,9 +82,9 @@ double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup, Build&
         .mean;
 }
 
-// Imperative serial baseline + a kernel LANE SWEEP, printed and emitted. The
-// per-lane bracket is speedup vs the imperative baseline (>1 = kernel faster),
-// matching the CSV's kernel_speedup: the x1 point is the primitive's raw
+// Imperative serial baseline + a parallel LANE SWEEP, printed and emitted. The
+// per-lane bracket is speedup vs the serial baseline (>1 = parallel faster),
+// matching the CSV's parallel_speedup: the x1 point is the primitive's raw
 // overhead (the slot/partial/barrier machinery before any lanes help), and the
 // curve across lanes is the payoff -- including where it turns over. si/sk are
 // the setups (they differ for bin/events); imp/ker build the one-system
@@ -95,13 +100,13 @@ void run_primitive(char const* name,
                    Ker&& ker) {
     auto const t      = std::size_t(ticks);
     double const base = time_case(n, ticks, 1, si, imp);
-    std::printf("  %-10s imperative %8.1f us |", name, base);
-    bench::emit(name, "imperative_us_per_tick", base, "us", "lower", n, 1, t);
+    std::printf("  %-10s serial %8.1f us |", name, base);
+    bench::emit(name, "serial_us_per_tick", base, "us", "lower", n, 1, t);
     for (unsigned L : lanes) {
         double const k = time_case(n, ticks, L, sk, ker);
         std::printf(" x%u %7.1f (%.2fx)", L, k, base / k);
-        bench::emit(name, "kernel_us_per_tick", k, "us", "lower", n, L, t);
-        bench::emit(name, "kernel_speedup", base / k, "x", "higher", n, L, t);
+        bench::emit(name, "parallel_us_per_tick", k, "us", "lower", n, L, t);
+        bench::emit(name, "parallel_speedup", base / k, "x", "higher", n, L, t);
     }
     std::printf("\n");
 }
@@ -121,9 +126,9 @@ int main() {
 
     // --- reduce --------------------------------------------------------------
     {
-        auto setup      = [](World& w) { w.emplace_resource<Sum>(); };
-        auto imperative = [](Schedule& s) {
-            s.add("sum", [](Query<P const> q, ResMut<Sum> out) {
+        auto setup  = [](World& w) { w.emplace_resource<Sum>(); };
+        auto serial = [](Schedule& s) {
+            s.add_serial("sum", [](Query<P const> q, ResMut<Sum> out) {
                 out->v = 0;
                 q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     double acc = 0;
@@ -133,8 +138,8 @@ int main() {
                 });
             });
         };
-        auto kernel = [](Schedule& s) {
-            s.add_kernel("sum", [](Query<P const> q, Reduce<Sum, AddSum> r) {
+        auto parallel = [](Schedule& s) {
+            s.add_parallel("sum", [](Query<P const> q, Reduce<Sum, AddSum> r) {
                 q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     double acc = 0;
                     for (float x : p.column<0>())
@@ -143,14 +148,14 @@ int main() {
                 });
             });
         };
-        run_primitive("reduce", N, T, lanes, setup, imperative, setup, kernel);
+        run_primitive("reduce", N, T, lanes, setup, serial, setup, parallel);
     }
 
     // --- extract ---------------------------------------------------------------
     {
-        auto setup      = [](World& w) { w.emplace_resource<Snapshot>(); };
-        auto imperative = [](Schedule& s) {
-            s.add("snap", [](Query<P const> q, ResMut<Snapshot> out) {
+        auto setup  = [](World& w) { w.emplace_resource<Snapshot>(); };
+        auto serial = [](Schedule& s) {
+            s.add_serial("snap", [](Query<P const> q, ResMut<Snapshot> out) {
                 out->clear();
                 q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     auto x = p.column<0>();
@@ -158,8 +163,8 @@ int main() {
                 });
             });
         };
-        auto kernel = [](Schedule& s) {
-            s.add_kernel("snap", [](Query<P const> q, Extract<Snapshot> out) {
+        auto parallel = [](Schedule& s) {
+            s.add_parallel("snap", [](Query<P const> q, Extract<Snapshot> out) {
                 q.for_each_chunk([&](std::span<Entity const>, chunk<P const> p) {
                     auto x = p.column<0>();
                     for (std::size_t i = 0; i < x.size(); ++i)
@@ -167,14 +172,14 @@ int main() {
                 });
             });
         };
-        run_primitive("extract", N, T, lanes, setup, imperative, setup, kernel);
+        run_primitive("extract", N, T, lanes, setup, serial, setup, parallel);
     }
 
     // --- collect ---------------------------------------------------------------
     {
-        auto setup      = [](World& w) { w.emplace_resource<Hits>(); };
-        auto imperative = [](Schedule& s) {
-            s.add("hits", [](Query<P const> q, ResMut<Hits> out) {
+        auto setup  = [](World& w) { w.emplace_resource<Hits>(); };
+        auto serial = [](Schedule& s) {
+            s.add_serial("hits", [](Query<P const> q, ResMut<Hits> out) {
                 out->clear();
                 q.for_each([&](auto& p) {
                     if (p.y > 156.0f) // ~half of y in [0, 313)
@@ -182,15 +187,15 @@ int main() {
                 });
             });
         };
-        auto kernel = [](Schedule& s) {
-            s.add_kernel("hits", [](Query<P const> q, Collect<Hits> out) {
+        auto parallel = [](Schedule& s) {
+            s.add_parallel("hits", [](Query<P const> q, Collect<Hits> out) {
                 q.for_each([&](auto& p) {
                     if (p.y > 156.0f)
                         out->push_back(p.x);
                 });
             });
         };
-        run_primitive("collect", N, T, lanes, setup, imperative, setup, kernel);
+        run_primitive("collect", N, T, lanes, setup, serial, setup, parallel);
     }
 
     // --- bin -------------------------------------------------------------------
@@ -202,8 +207,8 @@ int main() {
         auto setup_imp = [](World& w) {
             w.emplace_resource<Buckets>(Buckets {std::vector<std::vector<float>>(64)});
         };
-        auto imperative = [](Schedule& s) {
-            s.add("bin", [](Query<P const> q, ResMut<Buckets> out) {
+        auto serial = [](Schedule& s) {
+            s.add_serial("bin", [](Query<P const> q, ResMut<Buckets> out) {
                 for (auto& b : out->v)
                     b.clear();
                 q.for_each([&](auto& p) {
@@ -214,19 +219,19 @@ int main() {
         auto setup_k = [](World& w) {
             w.emplace_resource<Bins<float>>().reserve_buckets(64);
         };
-        auto kernel = [](Schedule& s) {
-            s.add_kernel("bin", [](Query<P const> q, Bin<float> out) {
+        auto parallel = [](Schedule& s) {
+            s.add_parallel("bin", [](Query<P const> q, Bin<float> out) {
                 q.for_each([&](auto& p) { out.emit(std::uint32_t(p.x) & 63, p.z); });
             });
         };
-        run_primitive("bin", N, T, lanes, setup_imp, imperative, setup_k, kernel);
+        run_primitive("bin", N, T, lanes, setup_imp, serial, setup_k, parallel);
     }
 
     // --- events ------------------------------------------------------------------
-    // Writer emits ~N/20 messages per tick, reader folds them. The imperative
+    // Writer emits ~N/20 messages per tick, reader folds them. The serial
     // baseline is what you'd write without the channel: a plain vector
     // rebuilt each tick, reader ordered after the writer by the ResMut/Res
-    // conflict. The kernel form emits through EventWriter (per-item partials,
+    // conflict. The parallel form emits through EventWriter (per-item partials,
     // barrier concat; readable next tick by the double-buffer contract).
     {
         struct PingBuf {
@@ -236,8 +241,8 @@ int main() {
             w.emplace_resource<PingBuf>();
             w.emplace_resource<Sum>();
         };
-        auto imperative = [](Schedule& s) {
-            s.add("write", [](Query<P const> q, ResMut<PingBuf> out) {
+        auto serial = [](Schedule& s) {
+            s.add_serial("write", [](Query<P const> q, ResMut<PingBuf> out) {
                 out->v.clear();
                 std::uint32_t i = 0;
                 q.for_each([&](auto&) {
@@ -246,7 +251,7 @@ int main() {
                     ++i;
                 });
             });
-            s.add("read", [](Res<PingBuf> ch, ResMut<Sum> sum) {
+            s.add_serial("read", [](Res<PingBuf> ch, ResMut<Sum> sum) {
                 double acc = 0;
                 for (auto const& e : ch->v)
                     acc += e.v;
@@ -257,8 +262,8 @@ int main() {
             w.emplace_resource<Events<Ping>>();
             w.emplace_resource<Sum>();
         };
-        auto kernel = [](Schedule& s) {
-            s.add_kernel("write", [](Query<P const> q, EventWriter<Ping> out) {
+        auto parallel = [](Schedule& s) {
+            s.add_parallel("write", [](Query<P const> q, EventWriter<Ping> out) {
                 std::uint32_t i = 0;
                 q.for_each([&](auto&) {
                     if (i % 20 == 0)
@@ -266,14 +271,14 @@ int main() {
                     ++i;
                 });
             });
-            s.add("read", [](Res<Events<Ping>> ch, ResMut<Sum> sum) {
+            s.add_serial("read", [](Res<Events<Ping>> ch, ResMut<Sum> sum) {
                 double acc = 0;
                 for (auto const& e : ch->read())
                     acc += e.v;
                 sum->v = acc;
             });
         };
-        run_primitive("events", N, T, lanes, setup_imp, imperative, setup_k, kernel);
+        run_primitive("events", N, T, lanes, setup_imp, serial, setup_k, parallel);
     }
     return 0;
 }

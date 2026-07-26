@@ -1,6 +1,6 @@
 // ecs/schedule/params/scratch.hpp
 //
-// Scratch<T>: per-item temporary workspace for kernel systems. No declared
+// Scratch<T>: per-item temporary workspace for parallel systems. No declared
 // access, no barrier merge -- pure scratch, for the temp vector / stack /
 // candidate list a body would otherwise allocate per row.
 
@@ -14,7 +14,7 @@
 
 namespace ecs {
 
-// Per-item temporary WORKSPACE for a kernel system: `tmp->...` / `*tmp`
+// Per-item temporary WORKSPACE for a parallel system: `tmp->...` / `*tmp`
 // reaches this item's private T, cleared (capacity retained, when T offers
 // clear()) before every run. No declared access, no barrier merge -- it is
 // pure scratch, for the temp vector / stack / candidate list a body would
@@ -30,7 +30,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     explicit Scratch(T& scratch) noexcept
         : scratch_(&scratch) {}
     T* scratch_;
@@ -39,7 +39,7 @@ private:
 namespace detail {
 
     template <class T>
-    struct kernel_param<Scratch<T>> {
+    struct parallel_param<Scratch<T>> {
         static constexpr bool allowed = true;
         struct state {
             slot_array<T> parts;
@@ -50,7 +50,7 @@ namespace detail {
         static void prepare(state& s,
                             World&,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const&) {
+                            WaveContext const&) {
             s.parts.prepare(rows.size());
         }
 

@@ -24,7 +24,7 @@ void reset_value(T& v) {
 // item, indexed by ordinal, reset (capacity retained) at each prepare.
 // Slots are cache-line padded because items write into their slot
 // throughout iteration, and adjacent small values would otherwise
-// false-share across lanes -- ~kTargetItemsPerKernel slots per system, so
+// false-share across lanes -- ~kTargetItemsPerSystem slots per system, so
 // the padding costs a few KB.
 template <class T>
 struct slot_array {
@@ -48,19 +48,19 @@ struct slot_array {
 };
 
 // The primary template covers every ordinary system parameter (stateless; binds
-// through system_param). The kernel's single Query parameter is NOT routed
+// through system_param). The parallel system's single Query parameter is NOT routed
 // through here -- system_param<Query<Cs...>> binds it sliced to the work item
-// (see Schedule::add_kernel and query.hpp). Each primitive specializes this
+// (see Schedule::add_parallel and query.hpp). Each primitive specializes this
 // template in its own header.
 template <class P>
-struct kernel_param {
-    static constexpr bool allowed = KernelParam<P>;
+struct parallel_param {
+    static constexpr bool allowed = ParallelParam<P>;
     using state                   = no_state;
     static void declare(SystemAccess& a) { system_param<P>::declare(a); }
     static void prepare(state&,
                         World&,
                         std::span<std::uint32_t const>,
-                        KernelWaveContext const&) {}
+                        WaveContext const&) {}
     static void finish(state&, World&) {}
     static P bind(state&, World& w, Commands& c, WorkItem const& item) {
         return system_param<P>::bind(w, c, item);

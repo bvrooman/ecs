@@ -1,7 +1,7 @@
 // ecs/schedule/params/reduce.hpp
 //
 // Reduce<T, Op, Partial = T>: fold-shaped state (sums, bounds, grids) for
-// kernel systems. Each item gets a private Partial; at the barrier the
+// parallel systems. Each item gets a private Partial; at the barrier the
 // partials fold into the T RESOURCE with Op in ordinal order. The target is
 // rebuilt every run (reset at prepare), like the serial rebuild-every-tick
 // reductions it replaces.
@@ -28,7 +28,7 @@
 
 namespace ecs {
 
-// Fold-shaped per-item state for a kernel system. `sum->field` / `*sum`
+// Fold-shaped per-item state for a parallel system. `sum->field` / `*sum`
 // reaches THIS ITEM's private Partial -- no sharing, no atomics. At the wave
 // barrier the partials are folded into the T resource, in item-ordinal
 // (serial-walk) order, with Op: any stateless callable
@@ -46,7 +46,7 @@ public:
 
 private:
     template <class P>
-    friend struct detail::kernel_param;
+    friend struct detail::parallel_param;
     explicit Reduce(Partial& partial) noexcept
         : partial_(&partial) {}
     Partial* partial_;
@@ -55,7 +55,7 @@ private:
 namespace detail {
 
     template <class T, class Op, class Partial>
-    struct kernel_param<Reduce<T, Op, Partial>> {
+    struct parallel_param<Reduce<T, Op, Partial>> {
         static constexpr bool allowed = true;
         struct state {
             slot_array<Partial> parts;
@@ -66,7 +66,7 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            KernelWaveContext const&) {
+                            WaveContext const&) {
             s.parts.prepare(rows.size());
             // The target holds THIS run's reduction: rebuilt every run, like
             // the serial rebuild-every-tick systems Reduce replaces.

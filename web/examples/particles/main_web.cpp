@@ -99,9 +99,14 @@ void apply_inputs(App& a) {
     e.origin_y                        = a.in_nozzle_y.load(std::memory_order_relaxed);
     if (a.reset_req.exchange(false, std::memory_order_acq_rel)) {
         Schedule clear;
-        clear.add_once("reset", [](Query<Position const> q, Commands& cmd) {
-            q.for_each([&](Entity en, auto&) { cmd.destroy(en); });
-        });
+        clear.add_serial(
+            "reset",
+            [](Query<Position const> q, Commands& cmd) {
+                q.for_each([&](Entity en, auto&) { cmd.destroy(en); });
+            },
+            {},
+            /*every=*/1,
+            /*times=*/1);
         clear.run(a.world);
     }
 }

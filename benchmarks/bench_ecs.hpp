@@ -21,7 +21,7 @@
 template <class Sys>
 void bench_system(char const* name, std::size_t n, ecs::World& world, Sys sys) {
     ecs::Schedule s;
-    s.add(name, std::move(sys));
+    s.add_serial(name, std::move(sys));
     bench::run(name, n, [&] { s.run(world); });
 }
 
@@ -30,6 +30,6 @@ void bench_system(char const* name, std::size_t n, ecs::World& world, Sys sys) {
 template <class Sys>
 double ns_per_system(std::size_t n, int repeats, ecs::World& world, Sys sys) {
     ecs::Schedule s;
-    s.add("bench", std::move(sys));
+    s.add_serial("bench", std::move(sys));
     return bench::min_ns_per(n, repeats, [&] { s.run(world); });
 }

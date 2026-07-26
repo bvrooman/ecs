@@ -70,14 +70,19 @@ int main() {
     // Initial population: a one-shot setup system, deferred through Commands.
     {
         Schedule init;
-        init.add_once("populate", [&](Commands& cmd) {
-            for (int i = 0; i < kParticles; ++i) {
-                float f = float(i);
-                cmd.spawn(Position {f, -f, 0.5f * f},
-                          Velocity {0.1f, -0.2f, 0.05f},
-                          Mass {1.0f + 0.001f * f});
-            }
-        });
+        init.add_serial(
+            "populate",
+            [&](Commands& cmd) {
+                for (int i = 0; i < kParticles; ++i) {
+                    float f = float(i);
+                    cmd.spawn(Position {f, -f, 0.5f * f},
+                              Velocity {0.1f, -0.2f, 0.05f},
+                              Mass {1.0f + 0.001f * f});
+                }
+            },
+            {},
+            /*every=*/1,
+            /*times=*/1);
         init.run(world); // inline: builds WorkerPool{1}, spawns no thread
     }
     std::printf("spawned %zu entities\n", world.size());
@@ -85,13 +90,13 @@ int main() {
     Schedule schedule;
 
     // gravity: read Mass + the Gravity resource, write Velocity.
-    schedule.add("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
+    schedule.add_serial("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
         q.for_each([a](auto& v, auto&) { v.y += a * kDt; });
     });
 
     // emitter: spawn short-lived tracer particles via the command buffer.
-    schedule.add("emitter", [](Commands& cmd) {
+    schedule.add_serial("emitter", [](Commands& cmd) {
         for (int i = 0; i < kEmit; ++i) {
             Entity e = cmd.spawn(Position {0, 0, 0},
                                  Velocity {float(i % 7) - 3, 5, 0},
@@ -102,7 +107,7 @@ int main() {
     });
 
     // reaper: age every Lifetime, destroy the expired ones (deferred).
-    schedule.add("reaper", [](Query<Lifetime> q, Commands& cmd) {
+    schedule.add_serial("reaper", [](Query<Lifetime> q, Commands& cmd) {
         q.for_each([&](Entity e, auto& l) {
             if (--l.ticks <= 0)
                 cmd.destroy(e);
@@ -110,7 +115,7 @@ int main() {
     });
 
     // integrate: read Velocity (written by gravity -> later level), write Position.
-    schedule.add("integrate", [](Query<Position, Velocity const> q) {
+    schedule.add_serial("integrate", [](Query<Position, Velocity const> q) {
         q.for_each([](auto& p, auto& v) {
             p.x += v.x * kDt;
             p.y += v.y * kDt;
@@ -119,14 +124,16 @@ int main() {
     });
 
     // extract: publish tracer positions to the snapshot channel.
-    schedule.add("extract",
-                 [](Query<Position const, Tracer const> q,
-                    ResMut<SnapshotChannel<Snapshot>> ch) {
-                     Snapshot& out = ch->back();
-                     out.clear();
-                     q.for_each([&](auto& p, auto&) { out.push_back({p.x, p.y, p.z}); });
-                     ch->publish();
-                 });
+    schedule.add_serial("extract",
+                        [](Query<Position const, Tracer const> q,
+                           ResMut<SnapshotChannel<Snapshot>> ch) {
+                            Snapshot& out = ch->back();
+                            out.clear();
+                            q.for_each([&](auto& p, auto&) {
+                                out.push_back({p.x, p.y, p.z});
+                            });
+                            ch->publish();
+                        });
 
     std::printf("schedule: %zu systems across %zu parallel levels\n",
                 schedule.size(),

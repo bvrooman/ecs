@@ -44,7 +44,7 @@ std::uint32_t cell_of(P const& p) {
 
 void run_setup(World& w, auto fn) {
     Schedule s;
-    s.add_once("setup", std::move(fn));
+    s.add_serial("setup", std::move(fn), {}, /*every=*/1, /*times=*/1);
     s.run(w);
 }
 

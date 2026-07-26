@@ -29,13 +29,13 @@ struct Velocity {
 // Two systems -> two waves (integrate writes Position, render reads it).
 static Schedule make_sched() {
     Schedule sched;
-    sched.add("integrate", [](Query<Position, Velocity const> q) {
+    sched.add_serial("integrate", [](Query<Position, Velocity const> q) {
         q.for_each([](auto& p, auto& v) {
             p.x += v.dx;
             p.y += v.dy;
         });
     });
-    sched.add("render", [](Query<Position const>) {});
+    sched.add_serial("render", [](Query<Position const>) {});
     return sched;
 }
 
@@ -142,9 +142,10 @@ static void fanned_wave_reports_real_busy_time() {
     });
     Schedule sched;
     // Disjoint access -> one wave, two systems, flattened items.
-    sched.add_kernel("move",
-                     [](Query<Position> q) { q.for_each([](auto& p) { p.x += 0.5f; }); });
-    sched.add_kernel("drag", [](Query<Velocity> q) {
+    sched.add_parallel("move", [](Query<Position> q) {
+        q.for_each([](auto& p) { p.x += 0.5f; });
+    });
+    sched.add_parallel("drag", [](Query<Velocity> q) {
         q.for_each([](auto& v) { v.dx *= 0.999f; });
     });
     CHECK(sched.level_count() == 1);
@@ -210,7 +211,11 @@ static void trace_records_every_cadence_system() {
     int ran        = 0;
     // Own phase so it is alone in its wave; that wave is present only every 3rd
     // tick and skipped (no rows) otherwise.
-    sched.add("beat", [&](Query<Position const>) { ++ran; }, phase<1> {}, /*every=*/3);
+    sched.add_serial(
+        "beat",
+        [&](Query<Position const>) { ++ran; },
+        phase<1> {},
+        /*every=*/3);
 
     std::vector<std::string> rows;
     diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
@@ -248,8 +253,8 @@ static void trace_records_every_cadence_system() {
 static void flush_attributed_per_system() {
     World w;
     Schedule s;
-    s.add("cheap", [](Commands& c) { c.spawn(Position {1, 0}); });
-    s.add("heavy", [](Commands& c) {
+    s.add_serial("cheap", [](Commands& c) { c.spawn(Position {1, 0}); });
+    s.add_serial("heavy", [](Commands& c) {
         for (int i = 0; i < 20'000; ++i)
             c.spawn(Position {float(i), 0});
     });

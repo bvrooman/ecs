@@ -8,8 +8,9 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+#include <ecs/viz/name_table.hpp>
 
-#include "name_table.hpp"
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,8 +28,10 @@ struct Line {
 
 struct NodeView {
     std::string name;
-    bool once = false;
-    Kind kind = Kind::Normal;
+    // Run budget from SystemRecord::times (0 = never retires). Rendered as a
+    // badge: "(once)" at 1, "(xN)" above that.
+    std::uint64_t times = 0;
+    Kind kind           = Kind::Normal;
     std::vector<Line> lines;
 };
 
@@ -36,7 +39,7 @@ inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
     auto const& a = s.access;
     NodeView v;
     v.name         = s.name;
-    v.once         = s.once;
+    v.times        = s.times;
     bool const has = !a.reads.empty() || !a.writes.empty() || !a.res_reads.empty() ||
                      !a.res_writes.empty();
     v.kind         = a.exclusive   ? Kind::Exclusive

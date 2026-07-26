@@ -20,7 +20,7 @@
 //
 // The division of labour the port demonstrates: per-bird data-parallel work
 // (`grid`, `steer`, `integrate`, `extract`, `metrics`) is registered with
-// add_kernel, so the executor slices each system's rows into work items and
+// add_parallel, so the executor slices each system's rows into work items and
 // overlaps everything in a wave across the pool's lanes -- while the small
 // ORDERED resource writers (`input`, `clock`, `goal`, `publish`) stay
 // imperative add() systems. Where a serial system gathered shared output, the
@@ -226,9 +226,12 @@ static void scatter_flock(Commands& cmd, Rng& rng, int const count) {
 
 void seed_flock(World& world, int const count) {
     Schedule s;
-    s.add_once("seed_flock", [count](Commands& cmd, ResMut<Rng> rng) {
-        scatter_flock(cmd, *rng, count);
-    });
+    s.add_serial(
+        "seed_flock",
+        [count](Commands& cmd, ResMut<Rng> rng) { scatter_flock(cmd, *rng, count); },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     s.run(world); // one flush spawns the birds into their archetype
     // Sort by grid cell now, so the flock starts as row-coherent as the
     // sort-rows system keeps it. Spawn order is uncorrelated with cell, so
@@ -243,7 +246,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
 
     // input: copy the latest cursor into the Cursor resource on the sim thread
     // (single-writer); `goal`/`steer` read it. wave 0.
-    schedule.add("input", [in](ResMut<Cursor> cur) {
+    schedule.add_serial("input", [in](ResMut<Cursor> cur) {
         std::uint64_t const c = in.cursor->load(std::memory_order_relaxed);
         std::uint32_t const f = in.flags->load(std::memory_order_relaxed);
         cur->x                = cursor_x(c);
@@ -252,7 +255,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     });
 
     // clock: advance sim time (drives the goal's wander). wave 0.
-    schedule.add("clock", [](ResMut<Clock> c) { c->t += cfg::kDt; });
+    schedule.add_serial("clock", [](ResMut<Clock> c) { c->t += cfg::kDt; });
 
     // goal: set the global attractor the whole flock flies toward. This is the
     // single force that steers the murmuration as a mass, so the *cursor steers
@@ -263,7 +266,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // stays in view at any depth) and converted to world at the goal's depth; the
     // depth gz keeps its autonomous swing either way, so the overhead sweeps
     // persist whether or not you are steering. wave 0.
-    schedule.add("goal", [T](ResMut<Goal> go, Res<Clock> clk, Res<Cursor> cur) {
+    schedule.add_serial("goal", [T](ResMut<Goal> go, Res<Clock> clk, Res<Cursor> cur) {
         float const t = clk->t;
         float sx, sy;
         if (cur->active) {
@@ -304,7 +307,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // identical at every lane count, so the sim stays bitwise reproducible
     // (mist-headless asserts it). Counting-sort path: ~0.9ms per 40k birds,
     // ~14us/tick amortized at this cadence.
-    schedule.add(
+    schedule.add_serial(
         "sort-rows",
         [](Commands& c) { c.sort<Position>(flock_cell); },
         phase<-1> {},
@@ -323,34 +326,34 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // scatter-add is MADE to compress. The registration is a bet on lanes:
     // at 1 lane the indirection still costs ~10% of the tick vs the serial
     // rebuild; at 4 lanes the whole tick is ~7% faster and scales further.
-    schedule.add_kernel("grid",
-                        [](Query<Position const, Velocity const> q,
-                           Reduce<FlockGrid, MergeCells, CellAccum> g) {
-                            q.for_each([&](auto& p, auto& v) {
-                                int const c = FlockGrid::index(FlockGrid::axis(p.x),
-                                                               FlockGrid::axis(p.y),
-                                                               FlockGrid::axis(p.z));
-                                auto& [count, sx, sy, sz, vx, vy, vz] = g->at(c);
-                                count += 1;
-                                sx += p.x;
-                                sy += p.y;
-                                sz += p.z;
-                                vx += v.x;
-                                vy += v.y;
-                                vz += v.z;
-                            });
-                        });
+    schedule.add_parallel("grid",
+                          [](Query<Position const, Velocity const> q,
+                             Reduce<FlockGrid, MergeCells, CellAccum> g) {
+                              q.for_each([&](auto& p, auto& v) {
+                                  int const c = FlockGrid::index(FlockGrid::axis(p.x),
+                                                                 FlockGrid::axis(p.y),
+                                                                 FlockGrid::axis(p.z));
+                                  auto& [count, sx, sy, sz, vx, vy, vz] = g->at(c);
+                                  count += 1;
+                                  sx += p.x;
+                                  sy += p.y;
+                                  sz += p.z;
+                                  vx += v.x;
+                                  vy += v.y;
+                                  vz += v.z;
+                              });
+                          });
 
     // steer: turn each bird. Accumulate the boids rules + goal into a steering
     // acceleration, apply it, then pull speed back to the cruise. (The cursor
     // acts through the goal above, so there is no per-bird cursor force here.)
     // A KERNEL -- the compute-bound heart of the tick: components-in-the-Query
     // plus read-only resources, per-row independent, exactly the shape
-    // add_kernel slices. The body is untouched from the imperative version;
-    // the registration changed one word (add -> add_kernel) and the body
+    // add_parallel slices. The body is untouched from the imperative version;
+    // the registration changed one word (add -> add_parallel) and the body
     // iterates with for_each (the executor parallelizes ACROSS the items,
     // and each item's slice iterates inline on its claiming lane).
-    schedule.add_kernel(
+    schedule.add_parallel(
         "steer",
         [T](Query<Position const, Velocity> q,
             Res<FlockGrid> grid,
@@ -477,7 +480,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // integrate: advance Position by Velocity. No wrap -- the flock flies free,
     // held in the roaming region by steer's soft boundary. A kernel: pure
     // per-row map over the components in the Query.
-    schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {
+    schedule.add_parallel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each([](auto& p, auto& v) {
             p.x += v.x * cfg::kDt;
             p.y += v.y * cfg::kDt;
@@ -491,25 +494,25 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // the executor pre-sizes it once at the barrier and each item writes its
     // disjoint span of GPU vertices in place -- the old serial gather, spread
     // across the wave, with no intermediate copy.
-    schedule.add_kernel("extract",
-                        [](Query<Position const> q, Extract<SnapshotTarget> out) {
-                            q.for_each_chunk([&](std::span<Entity const>,
-                                                 chunk<Position const> p) {
-                                auto const x = p.column<0>();
-                                auto const y = p.column<1>();
-                                auto const z = p.column<2>();
-                                for (std::size_t i = 0; i < x.size(); ++i)
-                                    out[i] = GpuParticle {x[i], y[i], z[i]};
-                            });
-                        });
+    schedule.add_parallel("extract",
+                          [](Query<Position const> q, Extract<SnapshotTarget> out) {
+                              q.for_each_chunk([&](std::span<Entity const>,
+                                                   chunk<Position const> p) {
+                                  auto const x = p.column<0>();
+                                  auto const y = p.column<1>();
+                                  auto const z = p.column<2>();
+                                  for (std::size_t i = 0; i < x.size(); ++i)
+                                      out[i] = GpuParticle {x[i], y[i], z[i]};
+                              });
+                          });
 
     // publish: flip the finished back buffer to the renderer. Ordered small
     // work -- an imperative system. Reading SnapshotTarget places it after
     // extract's write at the next barrier, when the spans are complete.
-    schedule.add("publish",
-                 [](Res<SnapshotTarget>, ResMut<TripleBuffer<RenderSnapshot>> ch) {
-                     ch->publish();
-                 });
+    schedule.add_serial("publish",
+                        [](Res<SnapshotTarget>, ResMut<TripleBuffer<RenderSnapshot>> ch) {
+                            ch->publish();
+                        });
 
     // metrics (optional, ECS_METRICS=<path.csv>): log whole-flock dynamics each
     // tick so behaviour can be reviewed *quantitatively over time* (not by eye on
@@ -528,58 +531,57 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     // its FlockStats read. Reads settled positions, so both land in the last
     // waves. Only registered when enabled.
     if (char const* mpath = std::getenv("ECS_METRICS")) {
-        schedule.add_kernel("metrics",
-                            [](Query<Position const, Velocity const> q,
-                               Reduce<FlockStats, AddStats> st) {
-                                q.for_each([&](auto& p, auto& v) {
-                                    st->x += p.x;
-                                    st->y += p.y;
-                                    st->z += p.z;
-                                    st->vx += v.x;
-                                    st->vy += v.y;
-                                    st->vz += v.z;
-                                    st->speed +=
-                                        std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-                                    st->r2 += p.x * p.x + p.y * p.y + p.z * p.z;
-                                    st->n += 1;
-                                });
-                            });
+        schedule.add_parallel("metrics",
+                              [](Query<Position const, Velocity const> q,
+                                 Reduce<FlockStats, AddStats> st) {
+                                  q.for_each([&](auto& p, auto& v) {
+                                      st->x += p.x;
+                                      st->y += p.y;
+                                      st->z += p.z;
+                                      st->vx += v.x;
+                                      st->vy += v.y;
+                                      st->vz += v.z;
+                                      st->speed +=
+                                          std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                                      st->r2 += p.x * p.x + p.y * p.y + p.z * p.z;
+                                      st->n += 1;
+                                  });
+                              });
 
         auto out = std::make_shared<std::ofstream>(mpath);
         *out << "t,com_sx,com_sy,com_z,goal_sx,goal_sy,follow_err,spread,coherence\n";
-        schedule.add("metrics-write",
-                     [out](Res<FlockStats> st, Res<Goal> goal, Res<Clock> clk) {
-                         if (st->n == 0)
-                             return;
-                         double const inv = 1.0 / double(st->n);
-                         double const mcx = st->x * inv, mcy = st->y * inv,
-                                      mcz  = st->z * inv;
-                         double const mspd = st->speed * inv;
-                         // RMS radius about the mean in one pass: E[|p|^2] - |mean|^2
-                         // (clamped: the difference of two large sums can go a hair
-                         // negative in floating point when the flock is very tight).
-                         double const svar =
-                             st->r2 * inv - (mcx * mcx + mcy * mcy + mcz * mcz);
-                         float const spread = float(std::sqrt(std::max(0.0, svar)));
-                         // CoM/goal -> screen. Floor the depth at the cull plane:
-                         // a deep fly-over can carry the CoM past the camera
-                         // (kCamZ - z <= 0), which would divide by ~0 and flip.
-                         float const ci = cfg::kFocal / std::max(cfg::kNearClip,
-                                                                 cfg::kCamZ - float(mcz));
-                         float const gi =
-                             cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - goal->z);
-                         float const csx = float(mcx) * ci, csy = float(mcy) * ci;
-                         float const gsx = goal->x * gi, gsy = goal->y * gi;
-                         float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +
-                                                      (csy - gsy) * (csy - gsy));
-                         double const mv  = std::sqrt(st->vx * st->vx + st->vy * st->vy +
-                                                      st->vz * st->vz);
-                         float const coh  = mspd > 1e-5 ? float(mv * inv / mspd) : 0.0f;
-                         *out << clk->t << ',' << csx << ',' << csy << ',' << float(mcz)
-                              << ',' << gsx << ',' << gsy << ',' << ferr << ',' << spread
-                              << ',' << coh << '\n';
-                         out->flush(); // headless runs are killed by timeout; don't lose
-                                       // buffered rows
-                     });
+        schedule.add_serial(
+            "metrics-write",
+            [out](Res<FlockStats> st, Res<Goal> goal, Res<Clock> clk) {
+                if (st->n == 0)
+                    return;
+                double const inv = 1.0 / double(st->n);
+                double const mcx = st->x * inv, mcy = st->y * inv, mcz = st->z * inv;
+                double const mspd = st->speed * inv;
+                // RMS radius about the mean in one pass: E[|p|^2] - |mean|^2
+                // (clamped: the difference of two large sums can go a hair
+                // negative in floating point when the flock is very tight).
+                double const svar  = st->r2 * inv - (mcx * mcx + mcy * mcy + mcz * mcz);
+                float const spread = float(std::sqrt(std::max(0.0, svar)));
+                // CoM/goal -> screen. Floor the depth at the cull plane:
+                // a deep fly-over can carry the CoM past the camera
+                // (kCamZ - z <= 0), which would divide by ~0 and flip.
+                float const ci =
+                    cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - float(mcz));
+                float const gi =
+                    cfg::kFocal / std::max(cfg::kNearClip, cfg::kCamZ - goal->z);
+                float const csx = float(mcx) * ci, csy = float(mcy) * ci;
+                float const gsx = goal->x * gi, gsy = goal->y * gi;
+                float const ferr =
+                    std::sqrt((csx - gsx) * (csx - gsx) + (csy - gsy) * (csy - gsy));
+                double const mv =
+                    std::sqrt(st->vx * st->vx + st->vy * st->vy + st->vz * st->vz);
+                float const coh = mspd > 1e-5 ? float(mv * inv / mspd) : 0.0f;
+                *out << clk->t << ',' << csx << ',' << csy << ',' << float(mcz) << ','
+                     << gsx << ',' << gsy << ',' << ferr << ',' << spread << ',' << coh
+                     << '\n';
+                out->flush(); // headless runs are killed by timeout; don't lose
+                              // buffered rows
+            });
     }
 }

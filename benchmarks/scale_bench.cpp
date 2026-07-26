@@ -23,7 +23,7 @@
 using namespace ecs;
 
 // The per-entity hot path only: a fixed population, no spawning/reaping.
-// Registered as KERNELS (add_kernel), so the executor slices each system's
+// Registered as KERNELS (add_parallel), so the executor slices each system's
 // rows across lanes -- which is what makes "where the pool pays off" a
 // meaningful question. An imperative add() is one opaque work item over all
 // rows: the pool cannot split it, so it would only overlap the two
@@ -35,20 +35,20 @@ using namespace ecs;
 // a kernel stays a single item, so the small-N rows honestly show ~no
 // speedup rather than a fabricated one.
 static void build_steady(Schedule& s) {
-    s.add_kernel("gravity", [](Query<Velocity> q, Res<Gravity> g) {
+    s.add_parallel("gravity", [](Query<Velocity> q, Res<Gravity> g) {
         float const a = g->accel;
         q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> v) {
             for (auto& vy : v.column<1>())
                 vy += a * cfg::kDt;
         });
     });
-    s.add_kernel("age", [](Query<Age> q) {
+    s.add_parallel("age", [](Query<Age> q) {
         q.for_each_chunk([](std::span<Entity const>, chunk<Age> a) {
             for (auto& t : a.column<0>())
                 t += cfg::kDt;
         });
     });
-    s.add_kernel("integrate", [](Query<Position, Velocity const> q) {
+    s.add_parallel("integrate", [](Query<Position, Velocity const> q) {
         q.for_each_chunk([](std::span<Entity const>,
                             chunk<Position> p,
                             chunk<Velocity const> v) {
@@ -66,23 +66,23 @@ static void build_steady(Schedule& s) {
     // once at the barrier and each item writes its disjoint span, so the
     // gather parallelizes too (vs the old serial push_back into a TripleBuffer,
     // which forced this system serial and capped the whole sweep's speedup).
-    s.add_kernel("extract",
-                 [](Query<Position const, Color const, Age const> q,
-                    Extract<RenderSnapshot> out) {
-                     q.for_each_chunk([&](std::span<Entity const>,
-                                          chunk<Position const> p,
-                                          chunk<Color const> c,
-                                          chunk<Age const>) {
-                         auto px = p.column<0>();
-                         auto py = p.column<1>();
-                         auto cr = c.column<0>();
-                         auto cg = c.column<1>();
-                         auto cb = c.column<2>();
-                         for (std::size_t i = 0; i < px.size(); ++i)
-                             out[i] =
-                                 GpuParticle {px[i], py[i], cr[i], cg[i], cb[i], 1.0f};
-                     });
-                 });
+    s.add_parallel("extract",
+                   [](Query<Position const, Color const, Age const> q,
+                      Extract<RenderSnapshot> out) {
+                       q.for_each_chunk([&](std::span<Entity const>,
+                                            chunk<Position const> p,
+                                            chunk<Color const> c,
+                                            chunk<Age const>) {
+                           auto px = p.column<0>();
+                           auto py = p.column<1>();
+                           auto cr = c.column<0>();
+                           auto cg = c.column<1>();
+                           auto cb = c.column<2>();
+                           for (std::size_t i = 0; i < px.size(); ++i)
+                               out[i] =
+                                   GpuParticle {px[i], py[i], cr[i], cg[i], cb[i], 1.0f};
+                       });
+                   });
 }
 
 static void setup(World& w) {
@@ -93,13 +93,18 @@ static void setup(World& w) {
 
 static void spawn_n(World& w, int n) {
     Schedule init;
-    init.add_once("spawn", [n](Commands& cmd) {
-        for (int i = 0; i < n; ++i)
-            cmd.spawn(Position {0, 0},
-                      Velocity {0.1f, 1.0f},
-                      Color {1, 0.7f, 0.3f},
-                      Age {0.0f, 1e9f}); // effectively immortal for the run
-    });
+    init.add_serial(
+        "spawn",
+        [n](Commands& cmd) {
+            for (int i = 0; i < n; ++i)
+                cmd.spawn(Position {0, 0},
+                          Velocity {0.1f, 1.0f},
+                          Color {1, 0.7f, 0.3f},
+                          Age {0.0f, 1e9f}); // effectively immortal for the run
+        },
+        {},
+        /*every=*/1,
+        /*times=*/1);
     init.run(w);
 }
 
