@@ -66,8 +66,8 @@ int main(int argc, char** argv) {
     bench::set_suite("soa");
     std::size_t const N = argc > 1 ? std::strtoull(argv[1], nullptr, 10)
                                    : bench::env_size("ECS_ENTITIES", 1'000'000);
-    bench::g_iters   = int(bench::env_long("ECS_ITERS", bench::g_iters));
-    bench::g_repeats = int(bench::env_long("ECS_REPEATS", bench::g_repeats));
+    bench::g_iters      = int(bench::env_long("ECS_ITERS", bench::g_iters));
+    bench::g_repeats    = int(bench::env_long("ECS_REPEATS", bench::g_repeats));
     if (argc > 2)
         bench::g_iters = std::atoi(argv[2]);
     if (argc > 3)
@@ -105,19 +105,24 @@ int main(int argc, char** argv) {
             p.z += v.z;
         });
     });
-    bench_system("for_each_chunk integrate (1 RW, 1 RO)", N, w, [](Query<Pos, Vel const> q) {
-        q.for_each_chunk([](std::span<Entity const>, chunk<Pos> p, chunk<Vel const> v) {
-            auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-            auto const vx = v.column<0>();
-            auto const vy = v.column<1>();
-            auto const vz = v.column<2>();
-            for (std::size_t i = 0; i < px.size(); ++i) {
-                px[i] += vx[i];
-                py[i] += vy[i];
-                pz[i] += vz[i];
-            }
-        });
-    });
+    bench_system("for_each_chunk integrate (1 RW, 1 RO)",
+                 N,
+                 w,
+                 [](Query<Pos, Vel const> q) {
+                     q.for_each_chunk([](std::span<Entity const>,
+                                         chunk<Pos> p,
+                                         chunk<Vel const> v) {
+                         auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+                         auto const vx = v.column<0>();
+                         auto const vy = v.column<1>();
+                         auto const vz = v.column<2>();
+                         for (std::size_t i = 0; i < px.size(); ++i) {
+                             px[i] += vx[i];
+                             py[i] += vy[i];
+                             pz[i] += vz[i];
+                         }
+                     });
+                 });
 
     // 3/4/5) multi read+write: write Pos and Vel, read Acc; vs AoS ------------
     bench_system("for_each multi (2 RW, 1 RO)", N, w, [](Query<Pos, Vel, Acc const> q) {
@@ -130,22 +135,27 @@ int main(int argc, char** argv) {
             p.z += v.z;
         });
     });
-    bench_system("for_each_chunk multi (2 RW, 1 RO)", N, w, [](Query<Pos, Vel, Acc const> q) {
-        q.for_each_chunk(
-            [](std::span<Entity const>, chunk<Pos> p, chunk<Vel> v, chunk<Acc const> a) {
-                auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
-                auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
-                auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
-                for (std::size_t i = 0; i < px.size(); ++i) {
-                    vx[i] += ax[i];
-                    vy[i] += ay[i];
-                    vz[i] += az[i];
-                    px[i] += vx[i];
-                    py[i] += vy[i];
-                    pz[i] += vz[i];
-                }
-            });
-    });
+    bench_system("for_each_chunk multi (2 RW, 1 RO)",
+                 N,
+                 w,
+                 [](Query<Pos, Vel, Acc const> q) {
+                     q.for_each_chunk([](std::span<Entity const>,
+                                         chunk<Pos> p,
+                                         chunk<Vel> v,
+                                         chunk<Acc const> a) {
+                         auto px = p.column<0>(), py = p.column<1>(), pz = p.column<2>();
+                         auto vx = v.column<0>(), vy = v.column<1>(), vz = v.column<2>();
+                         auto ax = a.column<0>(), ay = a.column<1>(), az = a.column<2>();
+                         for (std::size_t i = 0; i < px.size(); ++i) {
+                             vx[i] += ax[i];
+                             vy[i] += ay[i];
+                             vz[i] += az[i];
+                             px[i] += vx[i];
+                             py[i] += vy[i];
+                             pz[i] += vz[i];
+                         }
+                     });
+                 });
     bench::run("AoS baseline   multi (2 RW, 1 RO)", N, [&] {
         for (auto& b : aos) {
             b.v.x += b.a.x;
@@ -201,13 +211,16 @@ int main(int argc, char** argv) {
             p.z += v.z;
         });
     });
-    bench_system("for_each read Vel const (no write-back)", N, w, [](Query<Pos, Vel const> q) {
-        q.for_each([](auto& p, auto& v) {
-            p.x += v.x;
-            p.y += v.y;
-            p.z += v.z;
-        });
-    });
+    bench_system("for_each read Vel const (no write-back)",
+                 N,
+                 w,
+                 [](Query<Pos, Vel const> q) {
+                     q.for_each([](auto& p, auto& v) {
+                         p.x += v.x;
+                         p.y += v.y;
+                         p.z += v.z;
+                     });
+                 });
 
     return 0;
 }

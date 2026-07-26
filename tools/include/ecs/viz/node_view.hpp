@@ -8,6 +8,7 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+
 #include "name_table.hpp"
 #include <string>
 #include <utility>

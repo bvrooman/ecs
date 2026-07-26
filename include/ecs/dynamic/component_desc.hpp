@@ -9,6 +9,7 @@
 #pragma once
 
 #include <ecs/entity.hpp> // ComponentId
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -23,10 +24,14 @@ enum class FieldType : std::uint8_t { f32, f64, i32, u32 };
 
 constexpr std::size_t field_size(FieldType t) noexcept {
     switch (t) {
-    case FieldType::f32: return 4;
-    case FieldType::f64: return 8;
-    case FieldType::i32: return 4;
-    case FieldType::u32: return 4;
+    case FieldType::f32:
+        return 4;
+    case FieldType::f64:
+        return 8;
+    case FieldType::i32:
+        return 4;
+    case FieldType::u32:
+        return 4;
     }
     return 0;
 }

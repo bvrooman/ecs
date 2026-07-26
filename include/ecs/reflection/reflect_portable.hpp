@@ -17,6 +17,7 @@
 #pragma once
 
 #include <ecs/reflection/reflect_common.hpp> // Reflectable, detail::unqualified
+
 #include <array>
 #include <cstddef>
 #include <string_view>
@@ -32,7 +33,7 @@ namespace detail {
 
     struct any_field {
         template <class U>
-        requires (!std::is_lvalue_reference_v<U>)
+            requires (!std::is_lvalue_reference_v<U>)
         constexpr operator U&&() const noexcept;
         template <class U>
         constexpr operator U&() const noexcept;

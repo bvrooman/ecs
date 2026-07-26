@@ -8,7 +8,7 @@
 #pragma once
 
 #include <ecs/schedule/params/protocol.hpp> // detail::params_info
-#include <ecs/schedule/system.hpp>           // IntrospectableSystem, query_info, any_res_mut_v
+#include <ecs/schedule/system.hpp> // IntrospectableSystem, query_info, any_res_mut_v
 
 namespace ecs::detail {
 

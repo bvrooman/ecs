@@ -4,6 +4,7 @@
 //   ./schedule-viz --dot | dot -Tsvg > schedule.svg
 #include <ecs/ecs.hpp>
 #include <ecs/viz/schedule_viz.hpp>
+
 #include <iostream>
 #include <string_view>
 
@@ -46,10 +47,11 @@ int main(int argc, char** argv) {
     // genuinely unanalyzable system says so explicitly via add_dynamic).
     ecs::SystemAccess excl;
     excl.exclusive = true;
-    sched.add_dynamic("debug_overlay",
-                      excl,
-                      [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},
-                      /*phase=*/1); // exclusive -> runs alone
+    sched.add_dynamic(
+        "debug_overlay",
+        excl,
+        [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},
+        /*phase=*/1); // exclusive -> runs alone
 
     // Component/resource names come from reflection at build time (this target
     // is compiled with ECS_REFLECT_NAMES=1) -- no manual name table. Pass a

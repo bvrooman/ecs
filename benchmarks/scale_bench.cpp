@@ -11,8 +11,9 @@
 // count is part of the picture rather than a hidden single-point default).
 //
 //   scale_bench            (ECS_LANES="1,2,4,8" overrides the lane set)
-#include "bench.hpp"
 #include <ecs/ecs.hpp>
+
+#include "bench.hpp"
 #include "particles.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -78,8 +79,8 @@ static void build_steady(Schedule& s) {
                          auto cg = c.column<1>();
                          auto cb = c.column<2>();
                          for (std::size_t i = 0; i < px.size(); ++i)
-                             out[i] = GpuParticle {px[i], py[i],
-                                                   cr[i], cg[i], cb[i], 1.0f};
+                             out[i] =
+                                 GpuParticle {px[i], py[i], cr[i], cg[i], cb[i], 1.0f};
                      });
                  });
 }
@@ -128,7 +129,9 @@ int main() {
     // dispatch/cache overhead wins -- reads straight off the row instead of
     // being hidden behind a single (often past-peak) hw column.
     std::printf("scale_bench: steady per-tick cost, lanes x N. speedup vs x%u; "
-                "* = best lane in the row\n%12s", lanes.front(), "particles");
+                "* = best lane in the row\n%12s",
+                lanes.front(),
+                "particles");
     for (unsigned L : lanes)
         std::printf(" |  x%-2u us  spd", L);
     std::printf("\n");
@@ -141,18 +144,28 @@ int main() {
         std::vector<double> us(lanes.size());
         for (std::size_t i = 0; i < lanes.size(); ++i)
             us[i] = cell_us(n, lanes[i], warm, iters);
-        double const base = us.front();
-        std::size_t const best =
-            std::min_element(us.begin(), us.end()) - us.begin();
+        double const base      = us.front();
+        std::size_t const best = std::min_element(us.begin(), us.end()) - us.begin();
 
         std::printf("%12d", n);
         for (std::size_t i = 0; i < lanes.size(); ++i) {
-            std::printf(" | %6.1f %4.2f%c", us[i], base / us[i],
-                        i == best ? '*' : ' ');
-            bench::emit("steady_state", "us_per_tick", us[i], "us", "lower", nn,
-                        lanes[i], it);
-            bench::emit("steady_state", "pool_speedup", base / us[i], "x",
-                        "higher", nn, lanes[i], it);
+            std::printf(" | %6.1f %4.2f%c", us[i], base / us[i], i == best ? '*' : ' ');
+            bench::emit("steady_state",
+                        "us_per_tick",
+                        us[i],
+                        "us",
+                        "lower",
+                        nn,
+                        lanes[i],
+                        it);
+            bench::emit("steady_state",
+                        "pool_speedup",
+                        base / us[i],
+                        "x",
+                        "higher",
+                        nn,
+                        lanes[i],
+                        it);
         }
         std::printf("\n");
     }

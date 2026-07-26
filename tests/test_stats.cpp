@@ -1,7 +1,8 @@
 // tests/test_stats.cpp -- the timing-diagnostics utility (ecs/diag/stats.hpp).
 
-#include "check.hpp"
 #include <ecs/diag/stats.hpp>
+
+#include "check.hpp"
 
 using ecs::diag::TickStats;
 
@@ -15,14 +16,14 @@ static void summary_over_known_samples() {
     auto const s = ts.flush();
     CHECK(s.has_value());
     CHECK(s->n == 100);
-    CHECK(s->mean == 49.5);             // (0 + 1 + ... + 99) / 100
+    CHECK(s->mean == 49.5); // (0 + 1 + ... + 99) / 100
     CHECK(s->max == 99.0);
-    CHECK(s->p50 == 50.0);              // samples[100 * 0.50] = samples[50]
-    CHECK(s->p99 == 99.0);              // samples[min(99, 99)]
+    CHECK(s->p50 == 50.0);                 // samples[100 * 0.50] = samples[50]
+    CHECK(s->p99 == 99.0);                 // samples[min(99, 99)]
     CHECK((s->sd > 28.8 && s->sd < 28.9)); // population sd of 0..99 ~= 28.866
 
-    CHECK(ts.pending() == 0);           // flush() consumes the samples
-    CHECK(!ts.flush().has_value());     // nothing left
+    CHECK(ts.pending() == 0);       // flush() consumes the samples
+    CHECK(!ts.flush().has_value()); // nothing left
 }
 
 // No samples -> nullopt (and due() is not yet due right after construction).

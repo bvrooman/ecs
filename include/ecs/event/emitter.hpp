@@ -131,7 +131,8 @@ public:
 
     // Remove the observer with this token. Returns true if one was removed.
     bool remove(Token tok) {
-        assert(emit_depth_ == 0 && "Emitter::remove called from an observer during emit()");
+        assert(emit_depth_ == 0 &&
+               "Emitter::remove called from an observer during emit()");
         return std::erase_if(observers_,
                              [tok](auto const& e) { return e.first == tok; }) != 0;
     }

@@ -8,16 +8,14 @@
 // scratch buffer this host exposes as a zero-copy typed-array view, and calls
 // draw_points(). The C++ here is the runtime + render glue only.
 
+#include "../gl_util.hpp"
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
+#include <cstddef>
+#include <cstdio>
 #include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
-
-#include "../gl_util.hpp"
-
-#include <cstddef>
-#include <cstdio>
 #include <vector>
 
 namespace {
@@ -50,7 +48,12 @@ void frame() {
     glClear(GL_COLOR_BUFFER_BIT);
 
     // Hand the frame to JS: it steps the JS-defined sim and calls draw_points().
-    EM_ASM({ if (Module.onFrame) Module.onFrame($0); }, dt);
+    EM_ASM(
+        {
+            if (Module.onFrame)
+                Module.onFrame($0);
+        },
+        dt);
 }
 
 } // namespace
@@ -60,7 +63,8 @@ void frame() {
 // Float32Array view (points * 6 floats: x, y, r, g, b, life) for JS to fill.
 emscripten::val scratch_view(unsigned points) {
     g.scratch.resize(static_cast<std::size_t>(points) * 6);
-    return emscripten::val(emscripten::typed_memory_view(g.scratch.size(), g.scratch.data()));
+    return emscripten::val(emscripten::typed_memory_view(g.scratch.size(),
+                                                         g.scratch.data()));
 }
 
 // Upload the first `count` points from the scratch buffer and draw them.
@@ -98,17 +102,26 @@ int main() {
     }
     glfwMakeContextCurrent(g.window);
 
-    g.program = web::link_program_files("/shaders/particle.vert", "/shaders/particle.frag");
+    g.program =
+        web::link_program_files("/shaders/particle.vert", "/shaders/particle.frag");
     if (!g.program)
         return 1;
     glGenVertexArrays(1, &g.vao);
     glGenBuffers(1, &g.vbo);
     glBindVertexArray(g.vao);
     glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+    glVertexAttribPointer(0,
+                          2,
+                          GL_FLOAT,
+                          GL_FALSE,
+                          6 * sizeof(float),
                           reinterpret_cast<void*>(0));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+    glVertexAttribPointer(1,
+                          4,
+                          GL_FLOAT,
+                          GL_FALSE,
+                          6 * sizeof(float),
                           reinterpret_cast<void*>(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
     glEnable(GL_BLEND);

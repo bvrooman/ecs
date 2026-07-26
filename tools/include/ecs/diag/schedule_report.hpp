@@ -22,10 +22,10 @@
 
 #pragma once
 
+#include <ecs/diag/sink.hpp>      // ecs::diag::Sink
+#include <ecs/diag/stats.hpp>     // ecs::diag::TickStats
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
-#include <ecs/schedule.hpp>        // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
-#include <ecs/diag/sink.hpp>                // ecs::diag::Sink
-#include <ecs/diag/stats.hpp>               // ecs::diag::TickStats
+#include <ecs/schedule.hpp>       // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
 
 #include <chrono>
 #include <string>
@@ -50,51 +50,50 @@ public:
 
     void operator()(ScheduleEvent const& e) {
         using namespace sched_event;
-        std::visit(
-            event::overloaded {
-                [this](TickBegin const& ev) {
-                    if (waves_.size() < ev.n_waves) {
-                        waves_.resize(ev.n_waves);
-                        wave_systems_.resize(ev.n_waves);
-                        wave_flush_us_.resize(ev.n_waves, 0.0);
-                    }
-                    // Rebuild the per-wave ordering each tick so it always reflects
-                    // the current execution order (cheap: small vectors, capacity
-                    // retained).
-                    for (auto& ids : wave_systems_)
-                        ids.clear();
-                    t_tick_ = clock::now();
-                },
-                [this](WaveBegin const& ev) {
-                    cur_wave_ = ev.level;
-                    t_wave_   = clock::now();
-                },
-                // The report keys every system line off SystemWork (real
-                // measured busy time, in fanned waves too).
-                [this](SystemWork const& ev) {
-                    Slot& s = slot(ev.id, ev.name);
-                    wave_systems_[cur_wave_].push_back(ev.id); // execution order
-                    s.stats.sample(ev.busy_us);
-                    s.prepare_us += ev.prepare_us;
-                    s.finish_us += ev.finish_us;
-                    s.items = ev.items;
-                },
-                [this](WaveEnd const& ev) {
-                    waves_[ev.level].sample(elapsed_us(t_wave_));
-                    wave_flush_us_[ev.level] += ev.flush_us;
-                },
-                [this](TickEnd const&) {
-                    tick_.sample(elapsed_us(t_tick_));
-                    if (auto const s = tick_.due())
-                        report(*s);
-                },
-                [](TickAbort const&) {
-                    // The run unwound mid-tick: the open wave/tick timestamps
-                    // are simply never sampled (the next TickBegin/WaveBegin
-                    // overwrite them), so a truncated measurement never lands.
-                },
-            },
-            e);
+        std::visit(event::overloaded {
+                       [this](TickBegin const& ev) {
+                           if (waves_.size() < ev.n_waves) {
+                               waves_.resize(ev.n_waves);
+                               wave_systems_.resize(ev.n_waves);
+                               wave_flush_us_.resize(ev.n_waves, 0.0);
+                           }
+                           // Rebuild the per-wave ordering each tick so it always
+                           // reflects the current execution order (cheap: small vectors,
+                           // capacity retained).
+                           for (auto& ids : wave_systems_)
+                               ids.clear();
+                           t_tick_ = clock::now();
+                       },
+                       [this](WaveBegin const& ev) {
+                           cur_wave_ = ev.level;
+                           t_wave_   = clock::now();
+                       },
+                       // The report keys every system line off SystemWork (real
+                       // measured busy time, in fanned waves too).
+                       [this](SystemWork const& ev) {
+                           Slot& s = slot(ev.id, ev.name);
+                           wave_systems_[cur_wave_].push_back(ev.id); // execution order
+                           s.stats.sample(ev.busy_us);
+                           s.prepare_us += ev.prepare_us;
+                           s.finish_us += ev.finish_us;
+                           s.items = ev.items;
+                       },
+                       [this](WaveEnd const& ev) {
+                           waves_[ev.level].sample(elapsed_us(t_wave_));
+                           wave_flush_us_[ev.level] += ev.flush_us;
+                       },
+                       [this](TickEnd const&) {
+                           tick_.sample(elapsed_us(t_tick_));
+                           if (auto const s = tick_.due())
+                               report(*s);
+                       },
+                       [](TickAbort const&) {
+                           // The run unwound mid-tick: the open wave/tick timestamps
+                           // are simply never sampled (the next TickBegin/WaveBegin
+                           // overwrite them), so a truncated measurement never lands.
+                       },
+                   },
+                   e);
     }
 
     // Emit a report now regardless of cadence (e.g. at shutdown). No-op if no
@@ -167,8 +166,8 @@ private:
     }
 
     Sink sink_;
-    TickStats tick_;               // whole-tick distribution + report cadence
-    std::vector<TickStats> waves_; // per wave index
+    TickStats tick_;                    // whole-tick distribution + report cadence
+    std::vector<TickStats> waves_;      // per wave index
     std::vector<double> wave_flush_us_; // per wave: flush sums over the window
     std::unordered_map<SystemId, Slot> systems_;
     // Per-wave system ids in execution order, rebuilt each tick (index == wave).

@@ -13,13 +13,14 @@
 #pragma once
 
 #include <ecs/schedule/params/protocol.hpp>
+
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <type_traits>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace ecs {
 

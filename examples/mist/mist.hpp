@@ -59,8 +59,8 @@ using RenderSnapshot = std::vector<GpuParticle>;
 struct FlockStats {
     double x = 0, y = 0, z = 0;    // position sum
     double vx = 0, vy = 0, vz = 0; // velocity sum
-    double speed = 0;              // sum of per-bird |v|
-    double r2    = 0;              // sum of per-bird |p|^2
+    double speed    = 0;           // sum of per-bird |v|
+    double r2       = 0;           // sum of per-bird |p|^2
     std::uint64_t n = 0;           // bird count
 };
 

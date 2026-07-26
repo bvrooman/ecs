@@ -17,11 +17,10 @@
 
 #include <ecs/parallel/worker_pool.hpp>
 
-#include <emscripten.h>
-#include <pthread.h>
-
 #include <cstdint>
 #include <cstdio>
+#include <emscripten.h>
+#include <pthread.h>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,11 +38,10 @@ int main() {
 
     // A pure JS kernel: x10 over [begin,end) of a Float32 view at byte offset
     // `base` into the shared heap. No closures -- only its arguments.
-    std::string const src =
-        "(function(begin,end,base){"
-        "var v=new Float32Array(HEAPF32.buffer,base,end);"
-        "for(var i=begin;i<end;i++)v[i]=v[i]*10.0;"
-        "})";
+    std::string const src = "(function(begin,end,base){"
+                            "var v=new Float32Array(HEAPF32.buffer,base,end);"
+                            "for(var i=begin;i<end;i++)v[i]=v[i]*10.0;"
+                            "})";
 
     auto const base = reinterpret_cast<std::uintptr_t>(arr.data());
 
@@ -62,7 +60,10 @@ int main() {
                     fn = g.__k[src] = eval(src);
                 fn($1, $2, $3);
             },
-            src.c_str(), static_cast<int>(b), static_cast<int>(e), static_cast<int>(base));
+            src.c_str(),
+            static_cast<int>(b),
+            static_cast<int>(e),
+            static_cast<int>(base));
         tids[b * lanes / N] = reinterpret_cast<std::uintptr_t>(pthread_self());
     });
 
@@ -75,9 +76,10 @@ int main() {
         }
     std::set<std::uintptr_t> const distinct(tids.begin(), tids.end());
     bool const pass = ok && distinct.size() >= 2;
-    std::printf("%s: %zu elements x10 via worker-eval'd JS kernels across %zu thread(s)\n",
-                pass ? "PASS" : "FAIL",
-                N,
-                distinct.size());
+    std::printf(
+        "%s: %zu elements x10 via worker-eval'd JS kernels across %zu thread(s)\n",
+        pass ? "PASS" : "FAIL",
+        N,
+        distinct.size());
     return pass ? 0 : 1;
 }

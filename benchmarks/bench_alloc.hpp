@@ -15,16 +15,17 @@ inline std::atomic<long> g_allocs {0};
 // Allocations counted while `fn()` runs, divided by `per`.
 template <class Fn>
 double count_allocs(double const per, Fn&& fn) {
-  long const a0 = g_allocs.load(std::memory_order_relaxed);
-  fn();
-  return double(g_allocs.load(std::memory_order_relaxed) - a0) / per;
+    long const a0 = g_allocs.load(std::memory_order_relaxed);
+    fn();
+    return double(g_allocs.load(std::memory_order_relaxed) - a0) / per;
 }
 } // namespace bench
 
 void* operator new(std::size_t n) {
-  bench::g_allocs.fetch_add(1, std::memory_order_relaxed);
-  if (void* p = std::malloc(n ? n : 1)) return p;
-  throw std::bad_alloc {};
+    bench::g_allocs.fetch_add(1, std::memory_order_relaxed);
+    if (void* p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc {};
 }
 void* operator new[](std::size_t n) { return operator new(n); }
 void operator delete(void* p) noexcept { std::free(p); }

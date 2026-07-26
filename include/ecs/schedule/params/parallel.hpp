@@ -1,7 +1,8 @@
 #pragma once
 
-#include <ecs/schedule/system.hpp>
 #include <ecs/schedule/params/state.hpp>
+#include <ecs/schedule/system.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <span>

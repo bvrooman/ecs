@@ -4,12 +4,12 @@
 // *mechanism* (events().add / notification order / multiplicity) is tested
 // separately in test_schedule.cpp.
 
-#include "check.hpp"
 #include <ecs/diag/schedule_report.hpp>
 #include <ecs/diag/schedule_trace.hpp>
-#include "setup.hpp"
 #include <ecs/diag/sink.hpp>
 
+#include "check.hpp"
+#include "setup.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <functional> // std::ref
@@ -112,18 +112,18 @@ static void trace_writes_one_row_per_system_per_tick() {
     {
         std::vector<std::string> f;
         std::size_t pos = 0;
-        for (std::size_t c = rows[1].find(','); ;
+        for (std::size_t c = rows[1].find(',');;
              pos = c + 1, c = rows[1].find(',', pos)) {
             f.emplace_back(rows[1].substr(pos, c - pos));
             if (c == std::string::npos)
                 break;
         }
         CHECK(f.size() == 13);
-        CHECK(std::stod(f[3]) > 0.0);               // busy was measured
-        CHECK(std::stod(f[7]) >= std::stod(f[3]));  // wave wall >= lone busy
-        CHECK(std::stod(f[9]) >= std::stod(f[7]));  // tick >= wave
-        CHECK(std::stod(f[6]) >= 1.0);              // items
-        CHECK(std::stod(f[10]) == 0.0);             // no commands -> no cmd flush
+        CHECK(std::stod(f[3]) > 0.0);              // busy was measured
+        CHECK(std::stod(f[7]) >= std::stod(f[3])); // wave wall >= lone busy
+        CHECK(std::stod(f[9]) >= std::stod(f[7])); // tick >= wave
+        CHECK(std::stod(f[6]) >= 1.0);             // items
+        CHECK(std::stod(f[10]) == 0.0);            // no commands -> no cmd flush
         // build_us (flatten) and sort_us are DISJOINT build phases, both inside
         // the wave, so the wave wall covers their sum.
         CHECK(std::stod(f[7]) >= std::stod(f[11]) + std::stod(f[12]));
@@ -142,9 +142,8 @@ static void fanned_wave_reports_real_busy_time() {
     });
     Schedule sched;
     // Disjoint access -> one wave, two systems, flattened items.
-    sched.add_kernel("move", [](Query<Position> q) {
-        q.for_each([](auto& p) { p.x += 0.5f; });
-    });
+    sched.add_kernel("move",
+                     [](Query<Position> q) { q.for_each([](auto& p) { p.x += 0.5f; }); });
     sched.add_kernel("drag", [](Query<Velocity> q) {
         q.for_each([](auto& v) { v.dx *= 0.999f; });
     });
@@ -196,7 +195,7 @@ static void report_and_trace_compose() {
     bool tick_line = false;
     for (auto const& l : report_out)
         tick_line |= l.find("sim tick") != std::string::npos;
-    CHECK(tick_line);                                // report produced output
+    CHECK(tick_line);                                  // report produced output
     CHECK(trace_out.size() == 1 + std::size_t(3) * 2); // trace produced rows
 }
 
@@ -211,8 +210,7 @@ static void trace_records_every_cadence_system() {
     int ran        = 0;
     // Own phase so it is alone in its wave; that wave is present only every 3rd
     // tick and skipped (no rows) otherwise.
-    sched.add(
-        "beat", [&](Query<Position const>) { ++ran; }, phase<1> {}, /*every=*/3);
+    sched.add("beat", [&](Query<Position const>) { ++ran; }, phase<1> {}, /*every=*/3);
 
     std::vector<std::string> rows;
     diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });
@@ -269,9 +267,9 @@ static void flush_attributed_per_system() {
     WorkerPool pool {4};
     s.run(w, pool);
 
-    CHECK(w.size() == 20'001);         // both systems' spawns applied
-    CHECK(heavy_flush > 0.0);          // heavy's commands were timed
-    CHECK(heavy_flush > cheap_flush);  // and charged more than the cheap system
+    CHECK(w.size() == 20'001);        // both systems' spawns applied
+    CHECK(heavy_flush > 0.0);         // heavy's commands were timed
+    CHECK(heavy_flush > cheap_flush); // and charged more than the cheap system
 }
 
 int main() {

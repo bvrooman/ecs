@@ -8,6 +8,7 @@
 #pragma once
 
 #include <ecs/strong_id.hpp> // StrongId
+
 #include <cstdint>
 
 namespace ecs {

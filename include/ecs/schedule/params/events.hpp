@@ -25,12 +25,13 @@
 
 #include <ecs/schedule/params/parallel.hpp> // detail::slot_array
 #include <ecs/schedule/params/protocol.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <span>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace ecs {
 

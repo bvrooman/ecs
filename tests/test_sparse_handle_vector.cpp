@@ -1,6 +1,6 @@
-#include "check.hpp"
 #include <ecs/detail/container/sparse_handle_vector.hpp>
 
+#include "check.hpp"
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -76,7 +76,7 @@ static void destroy_does_not_disturb_other_slots() {
 static void create_accepts_lvalue_and_args() {
     auto i        = Strings {};
     std::string s = "lvalue";
-    auto const h0 = i.create(s);            // copy
+    auto const h0 = i.create(s); // copy
     CHECK(s == "lvalue");
     auto const h1 = i.create(std::move(s)); // move
     auto const h2 = i.create(3, 'x');       // in-place std::string(3, 'x')

@@ -17,11 +17,13 @@
 // for_each / for_each_chunk), defined at the end of this header.
 #include <ecs/chunk.hpp>
 #include <ecs/detail/for_each_row.hpp>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -31,7 +33,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <cstddef>
 
 namespace ecs {
 
@@ -589,7 +590,9 @@ void World::for_each_chunk(F&& fn) const {
         std::span<Entity const> entities = std::span(arch.entities);
         fn(entities,
            chunk<std::remove_const_t<Cs> const>(
-               arch.column<std::remove_const_t<Cs>>().store, 0, arch.size())...);
+               arch.column<std::remove_const_t<Cs>>().store,
+               0,
+               arch.size())...);
     }
 }
 

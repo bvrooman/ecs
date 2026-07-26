@@ -2,10 +2,10 @@
 // overloaded, the observer() partial-visitor factory, and Emitter add/emit/remove.
 // No engine dependency beyond the header.
 
-#include "check.hpp"
 #include <ecs/event/emitter.hpp>
 #include <ecs/event/observer.hpp>
 
+#include "check.hpp"
 #include <functional>
 #include <string>
 #include <utility>
@@ -44,8 +44,8 @@ static void observer_ignores_unhandled() {
     int hellos = 0, pings = 0;
     auto obs = observer([&](Hello const& h) { hellos += h.n; },
                         [&](Ping const& p) { pings += int(p.msg.size()); });
-    obs(Event {Hello {3}}); // handled
-    obs(Event {Bye {}});    // no handler -> ignored by the catch-all
+    obs(Event {Hello {3}});   // handled
+    obs(Event {Bye {}});      // no handler -> ignored by the catch-all
     obs(Event {Ping {"ab"}}); // handled
     CHECK(hellos == 3);
     CHECK(pings == 2);
@@ -88,9 +88,9 @@ static void remove_detaches_one() {
     bus.emit(Bye {});
     CHECK((a == 1 && b == 2)); // a detached, b still notified
 
-    CHECK(!bus.remove(ta));                            // already gone
-    CHECK(!bus.remove(Emitter<Event>::Token {9999}));  // never issued
-    CHECK(bus.add(Emitter<Event>::Observer {}) == 0);  // empty observer ignored
+    CHECK(!bus.remove(ta));                           // already gone
+    CHECK(!bus.remove(Emitter<Event>::Token {9999})); // never issued
+    CHECK(bus.add(Emitter<Event>::Observer {}) == 0); // empty observer ignored
     CHECK(bus.observer_count() == 1);
 }
 
@@ -141,7 +141,7 @@ static void subscription_removes_on_scope_exit() {
 // A Subscription is move-only; release() hands back the token without removing.
 static void subscription_moves_and_releases() {
     Emitter<Event> bus;
-    int a = 0;
+    int a      = 0;
     auto sub   = bus.subscribe(observer([&](Bye const&) { ++a; }));
     auto moved = std::move(sub);
     CHECK(!sub); // moved-from is empty (removes nothing on destruction)

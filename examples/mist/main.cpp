@@ -21,6 +21,7 @@
 // Build (needs GLFW: `brew install glfw`); see examples/CMakeLists.txt.
 
 #include <ecs/ecs.hpp>
+
 #include "gl_util.hpp" // reused from examples/particles (identical GL/text helpers)
 #include "mist.hpp"
 #include "simulation.hpp"
@@ -42,6 +43,7 @@
 #include <ecs/diag/schedule_report.hpp>
 #include <ecs/diag/schedule_trace.hpp>
 #include <ecs/diag/sink.hpp>
+
 #include <fstream>
 #include <functional> // std::ref
 #include <iostream>
@@ -117,7 +119,7 @@ int main() {
     world.emplace_resource<Clock>(Clock {0.0f});
     world.emplace_resource<Cursor>(Cursor {});
     world.emplace_resource<Goal>(Goal {0.0f, 0.0f, 0.0f}); // wandering flock attractor
-    world.emplace_resource<FlockGrid>(); // per-cell flock aggregates, rebuilt per tick
+    world.emplace_resource<FlockGrid>();  // per-cell flock aggregates, rebuilt per tick
     world.emplace_resource<FlockStats>(); // whole-flock sums for ECS_METRICS
     auto& snap_channel = world.emplace_resource<TripleBuffer<RenderSnapshot>>();
     // The extract kernel's target: forwards to the channel's back buffer

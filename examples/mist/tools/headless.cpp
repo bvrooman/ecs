@@ -30,10 +30,11 @@
 // The schedule registers its own sort-rows sort-rows system (every 64 ticks,
 // see simulation.cpp), so the bitwise checks below also prove determinism
 // composes with row sorting.
-#include "bench.hpp"
-#include <ecs/ecs.hpp>
-#include "mist.hpp"
 #include <ecs/diag/schedule_trace.hpp>
+#include <ecs/ecs.hpp>
+
+#include "bench.hpp"
+#include "mist.hpp"
 #include "simulation.hpp"
 #include <chrono>
 #include <cstdio>
@@ -116,9 +117,8 @@ RunResult run(unsigned const lanes, int const ticks, int const count) {
         trace->flush(); // drain the buffered tail before trace_file closes
 
     RunResult r;
-    r.levels = s.level_count();
-    r.ms_per_tick =
-        std::chrono::duration<double, std::milli>(t1 - t0).count() / ticks;
+    r.levels      = s.level_count();
+    r.ms_per_tick = std::chrono::duration<double, std::milli>(t1 - t0).count() / ticks;
     w.for_each<Position const, Velocity const>([&](auto& p, auto& v) {
         r.state.insert(r.state.end(), {p.x, p.y, p.z, v.x, v.y, v.z});
     });
@@ -139,12 +139,23 @@ int main() {
     auto const again    = run(4, ticks, count);
 
     auto const n = std::size_t(count), t = std::size_t(ticks - 1);
-    bench::emit("flock", "us_per_tick", serial.ms_per_tick * 1e3, "us", "lower",
-                n, 1, t);
-    bench::emit("flock", "us_per_tick", parallel.ms_per_tick * 1e3, "us",
-                "lower", n, 4, t);
-    bench::emit("flock", "pool_speedup",
-                serial.ms_per_tick / parallel.ms_per_tick, "x", "higher", n, 4, t);
+    bench::emit("flock", "us_per_tick", serial.ms_per_tick * 1e3, "us", "lower", n, 1, t);
+    bench::emit("flock",
+                "us_per_tick",
+                parallel.ms_per_tick * 1e3,
+                "us",
+                "lower",
+                n,
+                4,
+                t);
+    bench::emit("flock",
+                "pool_speedup",
+                serial.ms_per_tick / parallel.ms_per_tick,
+                "x",
+                "higher",
+                n,
+                4,
+                t);
 
     std::printf("mist-headless: %d birds, %d ticks, %zu schedule levels\n",
                 count,
@@ -157,8 +168,8 @@ int main() {
 
     bool const state_ok = serial.state == parallel.state && !serial.state.empty();
     bool const rerun_ok = parallel.state == again.state;
-    bool frame_ok = serial.frame.size() == parallel.frame.size() &&
-                    serial.frame.size() == std::size_t(count);
+    bool frame_ok       = serial.frame.size() == parallel.frame.size() &&
+                          serial.frame.size() == std::size_t(count);
     for (std::size_t i = 0; frame_ok && i < serial.frame.size(); ++i)
         frame_ok = serial.frame[i].x == parallel.frame[i].x &&
                    serial.frame[i].y == parallel.frame[i].y &&

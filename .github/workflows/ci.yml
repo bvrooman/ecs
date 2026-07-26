@@ -7,6 +7,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Formatting is checked, not applied. The version comes from
+  # .clang-format-version, which tools/format.sh also enforces -- one source of
+  # truth, so a local run and CI cannot drift apart. Output is not stable across
+  # clang-format majors, so an unpinned check would flap. Installed from PyPI
+  # because the pinned version is not in the runner's apt.
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: pip install "clang-format==$(cat .clang-format-version)"
+      - name: Check formatting
+        run: ./tools/format.sh --check
+
   # Portable-reflection builds on stock compilers, Debug (assert paths) and
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.

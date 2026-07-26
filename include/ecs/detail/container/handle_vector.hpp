@@ -46,7 +46,7 @@ namespace ecs::detail {
 template <class Payload, class Tag>
 class HandleVector {
 public:
-    using handle_type = Handle<Tag>;
+    using handle_type                       = Handle<Tag>;
     static constexpr uint32_t invalid_index = handle_type::invalid_index;
 
     // --- concurrent phase (safe during a wave) -------------------------------
@@ -121,7 +121,9 @@ public:
 
     // Number of live records.
     [[nodiscard]]
-    std::size_t size() const noexcept { return records_.size(); }
+    std::size_t size() const noexcept {
+        return records_.size();
+    }
 
     // Pre-size the dense storage for n live records (a capacity hint for bulk
     // setup). Single-threaded.

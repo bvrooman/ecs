@@ -48,9 +48,10 @@
 
 #pragma once
 
+#include <ecs/diag/sink.hpp>      // ecs::diag::Sink
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
-#include <ecs/schedule.hpp>        // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
-#include <ecs/diag/sink.hpp>                // ecs::diag::Sink
+#include <ecs/schedule.hpp>       // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -82,61 +83,60 @@ public:
 
     void operator()(ScheduleEvent const& e) {
         using namespace sched_event;
-        std::visit(
-            event::overloaded {
-                [this](TickBegin const&) {
-                    tick_first_row_ = rows_.size();
-                    t_tick_         = clock::now();
-                },
-                [this](WaveBegin const& ev) {
-                    cur_wave_       = ev.level;
-                    wave_first_row_ = rows_.size();
-                    t_wave_         = clock::now();
-                },
-                [this](SystemWork const& ev) {
-                    auto& name_slot = names_[ev.id];
-                    if (name_slot.empty())
-                        name_slot.assign(ev.name);
-                    rows_.push_back(Row {tick_no_,
-                                         cur_wave_,
-                                         ev.id,
-                                         ev.busy_us,
-                                         ev.prepare_us,
-                                         ev.finish_us,
-                                         ev.items,
-                                         0.0,
-                                         0.0,
-                                         0.0,
-                                         ev.flush_us,
-                                         0.0,
-                                         0.0});
-                },
-                [this](WaveEnd const& ev) {
-                    double const us = elapsed_us(t_wave_);
-                    for (auto i = wave_first_row_; i < rows_.size(); ++i) {
-                        rows_[i].wave_us  = us;
-                        rows_[i].flush_us = ev.flush_us;
-                        rows_[i].build_us = ev.build_us;
-                        rows_[i].sort_us  = ev.sort_us;
-                    }
-                },
-                [this](TickEnd const&) {
-                    double const us = elapsed_us(t_tick_);
-                    for (auto i = tick_first_row_; i < rows_.size(); ++i)
-                        rows_[i].tick_us = us;
-                    ++tick_no_;
-                    if (clock::now() - last_flush_ >= period_) {
-                        flush();
-                        last_flush_ = clock::now();
-                    }
-                },
-                [this](TickAbort const&) {
-                    // Drop the aborted tick's partial rows: a truncated tick
-                    // would skew every downstream distribution.
-                    rows_.resize(tick_first_row_);
-                },
-            },
-            e);
+        std::visit(event::overloaded {
+                       [this](TickBegin const&) {
+                           tick_first_row_ = rows_.size();
+                           t_tick_         = clock::now();
+                       },
+                       [this](WaveBegin const& ev) {
+                           cur_wave_       = ev.level;
+                           wave_first_row_ = rows_.size();
+                           t_wave_         = clock::now();
+                       },
+                       [this](SystemWork const& ev) {
+                           auto& name_slot = names_[ev.id];
+                           if (name_slot.empty())
+                               name_slot.assign(ev.name);
+                           rows_.push_back(Row {tick_no_,
+                                                cur_wave_,
+                                                ev.id,
+                                                ev.busy_us,
+                                                ev.prepare_us,
+                                                ev.finish_us,
+                                                ev.items,
+                                                0.0,
+                                                0.0,
+                                                0.0,
+                                                ev.flush_us,
+                                                0.0,
+                                                0.0});
+                       },
+                       [this](WaveEnd const& ev) {
+                           double const us = elapsed_us(t_wave_);
+                           for (auto i = wave_first_row_; i < rows_.size(); ++i) {
+                               rows_[i].wave_us  = us;
+                               rows_[i].flush_us = ev.flush_us;
+                               rows_[i].build_us = ev.build_us;
+                               rows_[i].sort_us  = ev.sort_us;
+                           }
+                       },
+                       [this](TickEnd const&) {
+                           double const us = elapsed_us(t_tick_);
+                           for (auto i = tick_first_row_; i < rows_.size(); ++i)
+                               rows_[i].tick_us = us;
+                           ++tick_no_;
+                           if (clock::now() - last_flush_ >= period_) {
+                               flush();
+                               last_flush_ = clock::now();
+                           }
+                       },
+                       [this](TickAbort const&) {
+                           // Drop the aborted tick's partial rows: a truncated tick
+                           // would skew every downstream distribution.
+                           rows_.resize(tick_first_row_);
+                       },
+                   },
+                   e);
     }
 
     // Format and emit every buffered row now (e.g. at shutdown). No-op if empty.
@@ -145,7 +145,7 @@ public:
         for (Row const& r : rows_) {
             auto const it  = names_.find(r.id);
             char const* nm = it != names_.end() ? it->second.c_str() : "?";
-            int const k = std::snprintf(
+            int const k    = std::snprintf(
                 buf,
                 sizeof(buf),
                 "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f,%.2f,%.2f",

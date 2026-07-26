@@ -1,20 +1,21 @@
 #pragma once
 
 #include <ecs/detail/container/id_vector.hpp>
-#include <ecs/strong_id.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/work_item.hpp>
+#include <ecs/strong_id.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
-#include <chrono>
-#include <cstddef>
 
 namespace ecs {
 using WaveId = StrongId<struct WaveIdTag, uint32_t>;
@@ -253,10 +254,10 @@ public:
     // prepare() to have populated due_ this tick.
     Wave& build(SystemVector& systems, World const& world, std::uint64_t const tick) {
         wave_.reset(systems.size());
-        wave_.id      = wave_id;
-        auto& items   = wave_.items_;
-        auto& prepare = wave_.prepare_;
-        auto& finish  = wave_.finish_;
+        wave_.id           = wave_id;
+        auto& items        = wave_.items_;
+        auto& prepare      = wave_.prepare_;
+        auto& finish       = wave_.finish_;
         auto const t_build = detail::sched_clock::now();
         for (auto const id : due_) {
             auto& s = systems[id];
@@ -310,8 +311,8 @@ private:
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();
             for (auto b = 0uz; b < n; b += grain) {
-                auto const e    = std::min(n, b + grain);
-                auto units = detail::SmallVector<detail::Unit, 1> {};
+                auto const e = std::min(n, b + grain);
+                auto units   = detail::SmallVector<detail::Unit, 1> {};
                 units.push_back(detail::Unit {
                     ai,
                     static_cast<std::uint32_t>(b),

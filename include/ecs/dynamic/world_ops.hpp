@@ -13,9 +13,11 @@
 
 #pragma once
 
-#include <ecs/world.hpp>
 #include <ecs/dynamic/dynamic_column.hpp>
 #include <ecs/dynamic/registry.hpp>
+#include <ecs/world.hpp>
+
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <ranges>
@@ -23,7 +25,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <cstddef>
 
 namespace ecs::dynamic {
 

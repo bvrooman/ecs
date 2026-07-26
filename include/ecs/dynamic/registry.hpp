@@ -7,13 +7,14 @@
 
 #pragma once
 
-#include <ecs/entity.hpp> // ComponentId
 #include <ecs/dynamic/component_desc.hpp>
+#include <ecs/entity.hpp> // ComponentId
+
+#include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <utility>
-#include <cstddef>
-#include <string>
 #include <vector>
 
 namespace ecs::dynamic {
@@ -36,13 +37,15 @@ public:
     // id throws -- every existing DynamicColumn holds a pointer to the current
     // desc and sized its field buffers from it, so mutating it in place would
     // corrupt them all.
-    ComponentId define_with_id(ComponentId id, std::string name,
-                               std::vector<std::pair<std::string, FieldType>> const& fields,
-                               StorageKind kind = StorageKind::dynamic_column) {
+    ComponentId define_with_id(
+        ComponentId id,
+        std::string name,
+        std::vector<std::pair<std::string, FieldType>> const& fields,
+        StorageKind kind = StorageKind::dynamic_column) {
         ComponentDesc d;
-        d.id   = id;
-        d.name = std::move(name);
-        d.kind = kind;
+        d.id            = id;
+        d.name          = std::move(name);
+        d.kind          = kind;
         std::size_t off = 0;
         for (auto const& [fname, ftype] : fields) {
             auto const sz = field_size(ftype);

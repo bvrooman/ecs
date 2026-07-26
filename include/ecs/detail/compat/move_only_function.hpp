@@ -27,11 +27,11 @@ using std::move_only_function;
 
 #else
 
+#include <cstddef>
 #include <functional> // std::invoke
 #include <memory>
 #include <type_traits>
 #include <utility>
-#include <cstddef>
 
 namespace ecs::detail {
 
@@ -49,8 +49,8 @@ public:
 
     template <class F,
               class DF = std::decay_t<F>,
-              class    = std::enable_if_t<!std::is_same_v<DF, move_only_function>
-                                          && std::is_invocable_r_v<R, DF&, Args...>>>
+              class    = std::enable_if_t<!std::is_same_v<DF, move_only_function> &&
+                                          std::is_invocable_r_v<R, DF&, Args...>>>
     move_only_function(F&& f)
         : target_(std::make_unique<Model<DF>>(std::forward<F>(f))) {}
 
@@ -66,9 +66,7 @@ public:
 
     explicit operator bool() const noexcept { return target_ != nullptr; }
 
-    R operator()(Args... args) {
-        return target_->call(std::forward<Args>(args)...);
-    }
+    R operator()(Args... args) { return target_->call(std::forward<Args>(args)...); }
 
 private:
     struct Concept {
@@ -78,8 +76,10 @@ private:
     template <class F>
     struct Model final : Concept {
         F f;
-        explicit Model(F&& fn) : f(std::move(fn)) {}
-        explicit Model(F const& fn) : f(fn) {}
+        explicit Model(F&& fn)
+            : f(std::move(fn)) {}
+        explicit Model(F const& fn)
+            : f(fn) {}
         R call(Args... args) override {
             return std::invoke(f, std::forward<Args>(args)...);
         }

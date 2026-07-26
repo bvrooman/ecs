@@ -1,7 +1,8 @@
 // Reflection + AoS->SoA storage tests.
-#include "check.hpp"
 #include <ecs/reflection/reflect.hpp>
 #include <ecs/soa.hpp>
+
+#include "check.hpp"
 #include <stdexcept>
 
 using namespace ecs;
@@ -109,7 +110,7 @@ static void tag_component_has_no_columns() {
 // push_back is transactional (a mid-scatter throw must not leave the columns
 // at different lengths, which would silently corrupt every later row).
 struct Fickle {
-    static inline bool arm = false;
+    inline static bool arm = false;
     int v                  = 0;
     Fickle()               = default;
     explicit Fickle(int x)

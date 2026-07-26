@@ -9,6 +9,7 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+
 #include "graph.hpp"
 #include "name_table.hpp"
 #include "node_view.hpp"
@@ -152,7 +153,7 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
                 num(tx) + " " + num(ty);
         else {
             double bowX = (sx <= centerX ? leftLane : rightLane);
-            d           = "M" + num(sx) + " " + num(sy) + " C" + num(bowX) + " " +
+            d = "M" + num(sx) + " " + num(sy) + " C" + num(bowX) + " " +
                 num(sy + dy * 0.3) + " " + num(bowX) + " " + num(ty - dy * 0.3) + " " +
                 num(tx) + " " + num(ty);
         }

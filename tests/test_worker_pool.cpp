@@ -1,8 +1,9 @@
 // WorkerPool tests: correctness of the data-parallel dispatch -- exact disjoint
 // partition, dispatch across idle gaps (the fixed-timestep pattern), the 1-lane
 // inline path, and exception propagation from a lane back to the caller.
-#include "check.hpp"
 #include <ecs/parallel/worker_pool.hpp>
+
+#include "check.hpp"
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
