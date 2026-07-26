@@ -7,6 +7,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Formatting is checked, not applied. Pinned to an exact clang-format --
+  # output is not stable across major versions, so an unpinned check would
+  # flap as runners upgrade. Installed from PyPI because the version needed
+  # (>= 20, for BinPackParameters: OnePerLine) is not in the runner's apt.
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: pip install clang-format==20.1.7
+      - name: Check formatting
+        run: ./tools/format.sh --check
+
   # Portable-reflection builds on stock compilers, Debug (assert paths) and
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.

@@ -83,6 +83,25 @@ Four conventions hold across the tree:
   specialization interleave nests `detail` inside `ecs`, rather than closing and
   reopening the outer namespace around each one.
 
+Formatting is `clang-format`, checked in CI:
+
+```
+tools/format.sh            # reformat in place
+tools/format.sh --check    # what CI runs
+```
+
+**This needs clang-format >= 20**, which is *not* the same version as the C++
+toolchain (clang-18). `.clang-format` uses `BinPackParameters: OnePerLine`, an
+enum only from 20 — an older binary refuses to read the config at all rather
+than formatting differently, so `tools/format.sh` checks the version first and
+says so. `pip install clang-format==20.1.7` if your distro's is older.
+
+Two spots opt out with `// clang-format off`: the structured-bindings ladder in
+`reflection/reflect_portable.hpp`, and the `EM_ASM` bodies in `web/`, which are
+JavaScript — clang-format rewrites `!==` into `!= =` there. The marker must be
+**exactly** `// clang-format off`; clang-format ignores it if any prose trails
+on the same line, which silently unprotects the region.
+
 ## 1. Components are structs
 
 A component is any aggregate struct. No base class, no macros, no registration:
