@@ -14,4 +14,5 @@
 
 #include <ecs/world/commands.hpp>
 #include <ecs/world/res.hpp>
+#include <ecs/world/view.hpp>
 #include <ecs/world/world.hpp>
