@@ -104,9 +104,7 @@ void apply_inputs(App& a) {
             [](Query<Position const> q, Commands& cmd) {
                 q.for_each([&](Entity en, auto&) { cmd.destroy(en); });
             },
-            {},
-            /*every=*/1,
-            /*times=*/1);
+            times {1});
         clear.run(a.world);
     }
 }

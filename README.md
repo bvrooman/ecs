@@ -20,7 +20,7 @@ int main() {
   init.add_serial("populate", [](Commands& cmd) {
     for (int i = 0; i < 100'000; ++i)             // an entity is whatever
       cmd.spawn(Position{}, Velocity{1, 0, 0});   // components you give it
-  }, {}, /*every=*/1, /*times=*/1);               // times=1: runs once, then drops out
+  }, times{1});                                   // runs once, then drops out
   init.run(world);                                // serial (a 1-lane pool)
 
   Schedule schedule;
@@ -59,7 +59,7 @@ int main() {
 | System parameters | a system's access comes from its params: `Query<const A, B>` (read A, write B), `Res<T>`/`ResMut<T>` (read/write resource), `Commands&` (deferred mutation), `WorldView` (ad-hoc **read-only** access → runs with readers, after writers). No raw `World&` — unanalyzable access is not a system parameter. No separate `reads<>/writes<>` tags |
 | Resources (singletons) | `emplace_resource`/`resource<T>()` for engine services; `Res<T>`/`ResMut<T>` system params track read/write access to them |
 | Mutation via `Commands` | `cmd.spawn/destroy/add/remove/set` only record, applied at each schedule wave barrier. `Commands` only exists inside a run (mutation-outside-a-system is a *compile* error) and is non-copyable/non-movable. `spawn` returns a usable handle immediately. Mid-iteration edits are always safe. Commands record into a per-thread monotonic arena, so a steady-state tick records and flushes them **without touching the heap** (zero allocation per tick) |
-| Systems: one-shot, removable, phased | `Schedule::add_serial` returns a `SystemId`; `remove(id)` unschedules; a `times` argument retires a system after N runs (`times=1` is one-shot); a `phase<N>` tag orders systems across barriers (e.g. `phase<-1>` startup before normal systems) |
+| Systems: one-shot, removable, phased | `Schedule::add_serial` returns a `SystemId`; `remove(id)` unschedules; registration options follow the body in any order -- `times{1}` is one-shot, `every{n}` sets a cadence, and `phase{n}` orders systems across barriers (e.g. `phase{-1}` startup before normal systems) |
 | Snapshot handoff | generic lock-free SPSC `TripleBuffer<T>`, plus `SnapshotChannel<T>` for multi-consumer fan-out, to hand extracted snapshots to consumer threads (renderer/audio/anything) with no tearing or blocking |
 
 ## Build

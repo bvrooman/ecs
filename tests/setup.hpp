@@ -13,7 +13,7 @@
 template <class Fn>
 void run_system(ecs::World& world, Fn fn) {
     ecs::Schedule s;
-    s.add_serial("system", std::move(fn), {}, /*every=*/1, /*times=*/1);
+    s.add_serial("system", std::move(fn), ecs::times {1});
     s.run(world); // inline: no thread pool needed
 }
 

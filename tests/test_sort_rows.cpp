@@ -230,7 +230,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         World w;
         Schedule s;
         w.emplace_resource<int>(0);
-        s.add_serial("count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
+        s.add_serial("count", [&](Res<int>) { ++fired; }, phase {0}, every {3});
         for (int t = 0; t < 9; ++t)
             s.run(w);
     }
@@ -251,8 +251,8 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
             [](Commands& c) {
                 c.sort<Position>([](Position const& p) { return int(p.x); });
             },
-            phase<-1> {},
-            /*every=*/4);
+            phase {-1},
+            every {4});
         // Churn: cull a band each tick (swap-and-pop disorders the tail)...
         s.add_parallel("cull", [](Query<Health const> q, Commands& cmd) {
             q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {

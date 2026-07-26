@@ -211,11 +211,7 @@ static void trace_records_every_cadence_system() {
     int ran        = 0;
     // Own phase so it is alone in its wave; that wave is present only every 3rd
     // tick and skipped (no rows) otherwise.
-    sched.add_serial(
-        "beat",
-        [&](Query<Position const>) { ++ran; },
-        phase<1> {},
-        /*every=*/3);
+    sched.add_serial("beat", [&](Query<Position const>) { ++ran; }, phase {1}, every {3});
 
     std::vector<std::string> rows;
     diag::ScheduleTrace trace([&](std::string_view s) { rows.emplace_back(s); });

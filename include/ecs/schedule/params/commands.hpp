@@ -3,7 +3,7 @@
 // Commands& in a PARALLEL system: per-item command recording with canonical
 // replay order.
 //
-// An serial system's Commands records into the world's thread-sharded
+// A serial system's Commands records into the world's thread-sharded
 // buffer -- safe, but the replay order across shards follows item-to-lane
 // timing, so structural edits recorded from a parallel dispatch land in a
 // different order run to run. Here each work item instead records into its

@@ -45,9 +45,7 @@ int main() {
                 for (int i = 0; i < 50'000; ++i)
                     cmd.spawn(Position {0, 0}, Velocity {1, 1}, Health {100});
             },
-            {},
-            /*every=*/1,
-            /*times=*/1);
+            times {1});
         setup.run(world);
     }
 

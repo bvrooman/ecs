@@ -156,9 +156,7 @@ inline void populate(ecs::World& w, std::size_t n) {
                           Small<7> {1},
                           Heavy {1});
         },
-        {},
-        /*every=*/1,
-        /*times=*/1);
+        times {1});
     init.run(w);
 }
 } // namespace shape

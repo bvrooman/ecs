@@ -30,7 +30,7 @@ include/ecs/
     res.hpp              Res<T> / ResMut<T> resource parameters
     view.hpp             WorldView -- the read-only ad-hoc read parameter
   schedule/            conflict analysis + the WorkerPool executor
-    access.hpp           phase<N>, SystemAccess, conflicts()
+    access.hpp           phase/every/times options, SystemAccess, conflicts()
     system.hpp           SystemRecord + system_param, the per-parameter
                          binding protocol both system kinds route through
     validate.hpp         the consteval checks registration is gated on
@@ -241,7 +241,7 @@ executor's job, not the query's -- an `add_parallel` system slices its matched r
 into work items across the worker pool's lanes, and each item binds a `Query`
 restricted to its own `[begin, end)` slice (so a lane physically cannot reach
 another's rows: the split is data-parallel and race-free). The same `for_each` /
-`for_each_chunk` body then runs over that slice. An serial `add` system is one
+`for_each_chunk` body then runs over that slice. A serial `add_serial` system is one
 opaque work item, so its query iterates every matched row serially.
 
 The set of archetypes a query matches is **cached** per required-component
@@ -279,7 +279,8 @@ The system parameters are:
 | `Commands&` | none (deferred side channel) | record structural edits |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
-A trailing `phase<N>` tag is the only non-parameter argument (ordering). A raw
+Trailing `phase{n}`/`every{n}`/`times{n}` options are the only non-parameter
+arguments. A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through
@@ -314,7 +315,7 @@ a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
 resource, `Scratch<T>` private workspace, `Random` deterministic
 per-item streams) bind per item and fold into the derived access, so a
 components-plus-resources system (read the clock, chase a goal, record
-spawns, jitter an emitter) keeps slicing — and an serial system with
+spawns, jitter an emitter) keeps slicing — and a serial system with
 independent per-row work becomes a parallel system by changing one word:
 
 ```cpp
@@ -337,7 +338,7 @@ persisting across ticks, do reductions or ordered work)
 contributes itself as a single item; its queries are pure iterators that always
 walk their matched rows serially on whichever lane claims the item (a
 single-system wave runs inline on the caller). Parallelism within a wave comes
-only from parallel items -- an serial system never fans its own rows across
+only from parallel items -- a serial system never fans its own rows across
 lanes. Items are
 sorted longest-first (greedy LPT — the biggest work cannot become the join's
 straggler) and claimed by the lanes from an atomic cursor, so a heavy parallel system
@@ -370,7 +371,7 @@ idle-core cost it saves (so spinning stays). A dispatch is allocation-free (the
 kernel is referenced via a static trampoline, not stored) and **not
 re-entrant**: there is one job slot, so a nested `parallel_for` on the same pool
 throws rather than corrupting the in-flight dispatch (parallel systems cannot
-reach this by construction; an serial system that iterates one pool-bound
+reach this by construction; a serial system that iterates one pool-bound
 query inside another's kernel can). The first exception from any lane is
 rethrown on the caller, so a throwing system escapes `run()` as it would
 serially. Commands flush at each level barrier. (An earlier
@@ -505,18 +506,18 @@ should populate the world once and then stop:
 
 ```cpp
 Schedule sched;
-sched.add_serial("startup", setup_fn, phase<-1>{}, /*every=*/1, /*times=*/1);
+sched.add_serial("startup", setup_fn, phase{-1}, times{1});
 sched.add("gameplay", gameplay_fn, ...);           // default phase 0
 sched.run(world, pool);   // startup runs (and flushes) first, then gameplay
 sched.run(world, pool);   // only gameplay from here on
 ```
 
-**Phases** give coarse ordering independent of access conflicts. A `phase<N>`
+**Phases** give coarse ordering independent of access conflicts. A `phase{n}`
 tag puts a system in phase `N` (default 0); the schedule runs phases in
 ascending order with a barrier between them, and within a phase the usual
-conflict-based wavefront leveling applies. So a `times=1` system at `phase<-1>` is a
+conflict-based wavefront leveling applies. So a `times{1}` system at `phase{-1}` is a
 startup phase guaranteed to run -- and have its spawns flushed -- before any
-phase-0 system observes the world; `phase<1>` is a teardown/late phase. Without
+phase-0 system observes the world; `phase{1}` is a teardown/late phase. Without
 a phase tag, a one-shot system is leveled by conflicts like any other, which is
 often enough but does not guarantee it precedes an unrelated system.
 

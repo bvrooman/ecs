@@ -21,7 +21,7 @@
 // Conflicting systems (one writes what another reads or writes) are assigned
 // wavefront *levels*; each wave is conflict-free and executed by the work-item
 // executor (wave.hpp) with a single pool dispatch. Recorded edits flush at
-// each wave barrier. A `phase<N>` tag gives coarse ordering across barriers
+// each wave barrier. A `phase{n}` option gives coarse ordering across barriers
 // independent of conflicts.
 
 #pragma once
@@ -58,36 +58,33 @@ public:
     using System = detail::SystemRecord;
     using Wave   = std::vector<SystemId>;
 
-    // Register an serial system. Its access is derived from its parameter
-    // types; an optional trailing phase<N> tag gives coarse ordering (default
-    // phase 0), and an optional trailing `every` runs the system only on ticks
-    // where tick % every == 0 (default 1 = every tick -- e.g. re-sort the flock
-    // every 64 ticks). Returns a handle remove() can unschedule. Example:
-    //   sched.add("integrate", [](Query<Position, const Velocity> q){ ... });
-    //   sched.add("startup",   setup_fn, phase<-1>{});
-    //   sched.add("resort", [](Commands& c){ c.sort<Position>(cell); },
-    //             phase<-1>{}, /*every=*/64);
+    // Register a serial system. Its access is derived from its parameter
+    // types. Registration options follow the body as an optional pack -- each may
+    // be given at most once, in any order (see schedule/access.hpp):
     //
-    // `times` retires the system after it has been due that many times (0 =
-    // never retires). times == 1 is the one-shot/setup case -- it runs on the
-    // next run() and is then removed:
-    //   sched.add("setup", setup_fn, {}, /*every=*/1, /*times=*/1);
-    template <class Fn, int P = 0>
-    SystemId add_serial(std::string name,
-                        Fn&& fn,
-                        phase<P>            = {},
-                        std::uint64_t every = 1,
-                        std::uint64_t times = 0) {
-        return emplace(std::move(name), std::forward<Fn>(fn), times, P, every);
+    //   phase{n}  coarse ordering across barriers (default 0)
+    //   every{n}  run only on ticks where tick % n == 0 (default 1)
+    //   times{n}  retire after being due n times (default 0 = never)
+    //
+    //   sched.add_serial("integrate", [](Query<Position, Velocity const> q){ ... });
+    //   sched.add_serial("startup",   setup_fn, phase{-1}, times{1});
+    //   sched.add_serial("resort",    [](Commands& c){ c.sort<Position>(cell); },
+    //                    phase{-1}, every{64});
+    //
+    // Returns a handle remove() can unschedule.
+    template <class Fn, class... Opts>
+    SystemId add_serial(std::string name, Fn&& fn, Opts... opts) {
+        auto const o = detail::resolve_options(opts...);
+        return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.phase, o.every);
     }
 
-    // Register a PARALLEL system. Same signature rules as add() -- the system's
+    // Register a PARALLEL system. Same signature rules as add_serial() -- the system's
     // parameter types declare its access -- with one structural requirement:
     // exactly ONE Query<Cs...> parameter. That query is the iteration the
     // executor slices: the system body is invoked once per work item with the
     // Query restricted to that item's rows, so `q.for_each_chunk(...)` /
     // `q.for_each(...)` inside iterate just the slice, inline on the
-    // claiming lane. An serial add() system with independent per-row work
+    // claiming lane. A serial add_serial() system with independent per-row work
     // becomes a parallel system by changing one word:
     //
     //   sched.add_parallel("steer",
@@ -95,7 +92,7 @@ public:
     //           q.for_each([&](auto& p, auto& v) { ... });
     //       });
     //
-    // Unlike an serial system (an opaque callable the executor must run
+    // Unlike a serial system (an opaque callable the executor must run
     // whole), a parallel system's iteration is VISIBLE to the scheduler: its
     // matched rows are sliced into work items and overlapped with the rest of
     // the wave's items across the pool's lanes (see run()). Items of one
@@ -114,15 +111,17 @@ public:
     // EventWriter<T>/EventReader<T> (double-buffered Events<T> channel),
     // Bin<V> (group-by into contiguous per-bucket spans),
     // Scratch<T> (private workspace), Random (deterministic per-item stream).
-    // Ordered iteration and effects still belong in add() systems. The sliced
+    // Ordered iteration and effects still belong in add_serial() systems. The sliced
     // Query is bound to the shared 1-lane pool, so nothing a parallel body does
     // can reach a nested dispatch.
-    template <class Fn, int P = 0>
-    SystemId add_parallel(std::string name,
-                          Fn&& fn,
-                          phase<P>            = {},
-                          std::uint64_t every = 1) {
-        return emplace_parallel(std::move(name), std::forward<Fn>(fn), P, every);
+    template <class Fn, class... Opts>
+    SystemId add_parallel(std::string name, Fn&& fn, Opts... opts) {
+        auto const o = detail::resolve_options(opts...);
+        return emplace_parallel(std::move(name),
+                                std::forward<Fn>(fn),
+                                o.phase,
+                                o.every,
+                                o.times);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -136,18 +135,19 @@ public:
     // per tick and must iterate every matching archetype itself. The WorkItem it
     // is handed carries no row slice (a serial system has no query_sig for the
     // wave to build one from), so `run` ignores it.
-    template <class Run>
+    template <class Run, class... Opts>
     SystemId add_dynamic_serial(std::string name,
                                 SystemAccess access,
                                 Run&& run,
-                                int phase           = 0,
-                                std::uint64_t times = 0) {
+                                Opts... opts) {
+        auto const o = detail::resolve_options(opts...);
         return emplace_dynamic(std::move(name),
                                std::move(access),
                                Signature::null(),
                                std::forward<Run>(run),
-                               phase,
-                               times,
+                               o.phase,
+                               o.every,
+                               o.times,
                                /*is_parallel=*/false);
     }
 
@@ -159,19 +159,20 @@ public:
     // self-dispatch -- the pool is already fanned, and a nested parallel_for on
     // it would throw. `query_sig` is REQUIRED (a null signature matches nothing,
     // so the scheduler would build zero items and never call `run`).
-    template <class Run>
+    template <class Run, class... Opts>
     SystemId add_dynamic_parallel(std::string name,
                                   SystemAccess access,
                                   Signature query_sig,
                                   Run&& run,
-                                  int phase           = 0,
-                                  std::uint64_t times = 0) {
+                                  Opts... opts) {
+        auto const o = detail::resolve_options(opts...);
         return emplace_dynamic(std::move(name),
                                std::move(access),
                                std::move(query_sig),
                                std::forward<Run>(run),
-                               phase,
-                               times,
+                               o.phase,
+                               o.every,
+                               o.times,
                                /*is_parallel=*/true);
     }
 
@@ -315,6 +316,7 @@ private:
                              Signature query_sig,
                              Run&& run,
                              int phase,
+                             std::uint64_t every,
                              std::uint64_t times,
                              bool is_parallel) {
         System sys;
@@ -322,6 +324,7 @@ private:
         sys.access      = std::move(access); // caller-supplied ids: normalized below
         sys.query_sig   = std::move(query_sig);
         sys.phase       = phase;
+        sys.every       = every;
         sys.times       = times;
         sys.is_parallel = is_parallel;
         sys.run         = std::forward<Run>(run);
@@ -331,8 +334,7 @@ private:
     // The bodies behind add_serial and add_parallel. Each states its parameter
     // requirements as a flat list of static_asserts, then one build guard hands
     // the shared core to build_system<Param> below; serial and parallel differ
-    // only in the parameter policy (ParamS vs ParamP), the is_parallel flag, and
-    // whether a one-shot `once` is possible.
+    // only in the parameter policy (ParamS vs ParamP) and the is_parallel flag.
     //
     // The requirements are phrased as self-gating predicates (params_allowed /
     // at_most_one_query / has_res_mut), not inline conditions -- load-bearing, because a
@@ -354,8 +356,8 @@ private:
 
     // Build and register a system under parameter policy `Param` (ParamS or
     // ParamP). Passing the policy as a template-template parameter is what lets
-    // ONE core serve both add() and add_parallel(): a local `using Param = ParamS;`
-    // cannot work -- ParamS is a TEMPLATE, not a type, and a template crosses a
+    // ONE core serve both add_serial() and add_parallel(): a local `using Param =
+    // ParamS;` cannot work -- ParamS is a TEMPLATE, not a type, and a template crosses a
     // function boundary only as a template argument. Only ever called from a
     // validated `if constexpr` branch, so it never instantiates on a rejected
     // parameter list (keeping each static_assert the lone diagnostic; see above).
@@ -444,7 +446,8 @@ private:
     SystemId emplace_parallel(std::string name,
                               Fn&& fn,
                               int const phase,
-                              std::uint64_t const every) {
+                              std::uint64_t const every,
+                              std::uint64_t const times) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -464,7 +467,7 @@ private:
             "work items, so a query-less system has no rows to parallelize "
             "and would never run. The per-item primitives (Reduce/Extract/"
             "Collect/EventWriter/...) are per-row too, so they need the query "
-            "as well. For resource-only or effect-only work use add(), whose "
+            "as well. For resource-only or effect-only work use add_serial(), whose "
             "one work item still runs concurrently with the wave's others");
         static_assert(!detail::has_res_mut<Fn>(),
                       "add_parallel: ResMut<T> is not allowed in a parallel system -- "
@@ -487,7 +490,7 @@ private:
                       !detail::has_res_mut<Fn>() && detail::params_allowed<ParamP, Fn>())
             return build_system<ParamP>(std::move(name),
                                         std::forward<Fn>(fn),
-                                        /*times=*/0,
+                                        times,
                                         phase,
                                         every,
                                         /*is_parallel=*/true);
