@@ -48,7 +48,7 @@ namespace detail {
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 
-    // The kernel-parameter protocol (schedule/params/protocol.hpp), forward-
+    // The kernel-parameter policy (schedule/params/kernel.hpp), forward-
     // declared so Commands can befriend its Commands& specialization (per-item
     // command recording for kernel systems).
     template <class P>

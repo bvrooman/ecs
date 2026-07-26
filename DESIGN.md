@@ -31,16 +31,20 @@ include/ecs/
     view.hpp             WorldView -- the read-only ad-hoc read parameter
   schedule/            conflict analysis + the WorkerPool executor
     access.hpp           phase<N>, SystemAccess, conflicts()
-    system.hpp           SystemRecord + the parameter/kernel protocols
+    system.hpp           SystemRecord + system_param, the per-parameter
+                         binding protocol both system kinds route through
     validate.hpp         the consteval checks registration is gated on
     work_item.hpp        WorkItem/Unit -- one claimable slice of a wave
     wave.hpp             the work-item executor (build + dispatch)
     graph.hpp            systems -> wavefront levels -> wave plans
     schedule.hpp         the Schedule class (registration, run loop)
     events.hpp           sched_event::*, ScheduleEvent
-    kernel_params.hpp    umbrella over params/
+    params.hpp           umbrella over params/
     params/              one header per system parameter (Bin, Collect,
                          Extract, Local, Random, Reduce, Scratch, Events, ...)
+                         plus the two policies: kernel.hpp (kernel_param, for
+                         add_kernel) and imperative.hpp (imperative_param, for
+                         add/add_once), over shared protocol.hpp drivers
   dynamic/             runtime-described components         (namespace ecs::dynamic)
   reflection/          reusable, ECS-agnostic reflection     (namespace ecs::reflect)
   parallel/            the data-parallel runtime            (namespace ecs::parallel)

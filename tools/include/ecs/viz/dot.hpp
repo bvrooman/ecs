@@ -8,11 +8,11 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+#include <ecs/viz/graph.hpp>
+#include <ecs/viz/name_table.hpp>
+#include <ecs/viz/node_view.hpp>
+#include <ecs/viz/text.hpp>
 
-#include "graph.hpp"
-#include "name_table.hpp"
-#include "node_view.hpp"
-#include "text.hpp"
 #include <cstddef>
 #include <map>
 #include <optional>

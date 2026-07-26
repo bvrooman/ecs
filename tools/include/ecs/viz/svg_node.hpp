@@ -7,8 +7,9 @@
 
 #pragma once
 
-#include "node_view.hpp"
-#include "text.hpp"
+#include <ecs/viz/node_view.hpp>
+#include <ecs/viz/text.hpp>
+
 #include <algorithm>
 #include <string>
 

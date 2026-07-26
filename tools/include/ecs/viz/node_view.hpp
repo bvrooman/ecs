@@ -8,8 +8,8 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+#include <ecs/viz/name_table.hpp>
 
-#include "name_table.hpp"
 #include <string>
 #include <utility>
 #include <vector>

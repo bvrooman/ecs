@@ -33,8 +33,7 @@
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/events.hpp>
 #include <ecs/schedule/graph.hpp>
-#include <ecs/schedule/kernel_params.hpp>
-#include <ecs/schedule/params/imperative.hpp>
+#include <ecs/schedule/params.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/validate.hpp>
 #include <ecs/schedule/wave.hpp>
@@ -264,8 +263,8 @@ public:
         return self.events_;
     }
 
-    // Pre-pay the first tick's one-time kernel-param initialization. For every
-    // kernel system, this sizes the per-item slot state and runs the prepare
+    // Pre-pay the first tick's one-time parameter initialization. For every
+    // stateful system, this sizes the per-item slot state and runs the prepare
     // hooks (reduce targets reset, extract/collect/bin targets pre-size)
     // against the CURRENT, already-populated world -- so the first real run()
     // allocates nothing and its per-system busy times are steady from tick 0
@@ -422,7 +421,7 @@ private:
                       "and Local<T> (spelled exactly so -- e.g. Query by "
                       "value, Commands by reference); raw World& is "
                       "deliberately not a system parameter, and the per-item "
-                      "primitives (Reduce/Extract/Collect/EventWriter/"
+                      "primitives (Reduce/Extract/Collect/Bin/EventWriter/"
                       "EventReader/Scratch/Random) are kernel-only (register "
                       "with add_kernel)");
         if constexpr (detail::IntrospectableSystem<Fn> &&

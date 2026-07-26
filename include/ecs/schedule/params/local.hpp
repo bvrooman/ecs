@@ -1,8 +1,9 @@
 // ecs/schedule/params/local.hpp
 //
 // Local<T>: per-SYSTEM state that persists across ticks, for imperative
-// (add/add_once) systems -- plus the imperative-parameter protocol behind it,
-// the serial-side mirror of the kernel_param protocol in protocol.hpp.
+// (add/add_once) systems. The protocol it plugs into, imperative_param, lives
+// in params/imperative.hpp -- the serial-side mirror of kernel_param in
+// params/kernel.hpp.
 //
 // An imperative system runs as ONE opaque work item, so a single private T
 // per system is race-free by construction. A kernel system's items run
@@ -22,7 +23,7 @@ namespace ecs {
 
 namespace detail {
     template <class P>
-    struct imperative_param; // defined below; forward for friending
+    struct imperative_param; // params/imperative.hpp; forward for friending
 }
 
 // Per-system state across ticks: `*state` / `state->field` reaches this

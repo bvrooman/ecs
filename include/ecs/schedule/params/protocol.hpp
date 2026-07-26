@@ -1,8 +1,14 @@
 // ecs/schedule/params/protocol.hpp
 //
-// The kernel-parameter protocol: how each parameter type of a kernel system
-// declares access, owns per-item state, participates in the prepare/finish
-// barrier hooks, and binds for one work item.
+// The whole-parameter-list drivers: how a system's parameter pack declares
+// access, owns per-item state, participates in the prepare/finish barrier
+// hooks, and binds for one work item.
+//
+// Everything here is generic over the parameter policy `Param`, so one set of
+// drivers serves both system kinds -- Schedule instantiates them with
+// imperative_param for add()/add_once() and with kernel_param for
+// add_kernel(). The policies themselves live in params/imperative.hpp and
+// params/kernel.hpp.
 //
 // A kernel system's work items run concurrently, so any cross-item state must
 // be either read-only or privately owned per item. The substrate: for each

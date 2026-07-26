@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <ecs/schedule/params/parallel.hpp> // detail::slot_array
+#include <ecs/schedule/params/kernel.hpp> // detail::slot_array
 #include <ecs/schedule/params/protocol.hpp>
 
 #include <cstdint>

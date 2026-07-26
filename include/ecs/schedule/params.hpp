@@ -1,12 +1,16 @@
-// ecs/schedule/kernel_params.hpp
+// ecs/schedule/params.hpp
 //
-// Umbrella for the kernel-only system parameters -- the parallel-primitives
-// suite -- and the slot substrate behind them.
+// Umbrella for the system parameters, both kinds, and the protocol substrate
+// behind them. The two policies are params/kernel.hpp (kernel_param, for
+// add_kernel systems) and params/imperative.hpp (imperative_param, for
+// add/add_once); params/protocol.hpp holds the whole-parameter-list drivers,
+// which are generic over the policy and serve both.
 //
+// Most of the parameters are kernel-only -- the parallel-primitives suite.
 // One mechanism wears every face: per-item private SLOTS (indexed by the
 // item's ordinal in canonical generation order) plus optional deterministic
-// barrier-time prepare/finish hooks. See params/protocol.hpp for the
-// substrate and the per-primitive headers for each face:
+// barrier-time prepare/finish hooks. params/kernel.hpp holds that substrate;
+// the per-primitive headers hold each face:
 //
 //   Reduce<T, Op>   fold-shaped state (sums, bounds, grids): private partials
 //                   folded into the T resource in ordinal order at the barrier
@@ -28,9 +32,8 @@
 // results are bitwise identical at 1 lane and N lanes -- including float
 // reductions.
 //
-// params/local.hpp is the one non-kernel face here: Local<T> per-system state
-// for imperative add()/add_once() systems, plus the imperative-parameter
-// protocol Schedule::add compiles against.
+// The imperative side is smaller: Local<T> (params/local.hpp) is per-system
+// state for add()/add_once(), and is the only parameter exclusive to it.
 
 #pragma once
 
@@ -39,8 +42,11 @@
 #include <ecs/schedule/params/commands.hpp>
 #include <ecs/schedule/params/events.hpp>
 #include <ecs/schedule/params/extract.hpp>
+#include <ecs/schedule/params/imperative.hpp>
+#include <ecs/schedule/params/kernel.hpp>
 #include <ecs/schedule/params/local.hpp>
 #include <ecs/schedule/params/protocol.hpp>
 #include <ecs/schedule/params/random.hpp>
 #include <ecs/schedule/params/reduce.hpp>
 #include <ecs/schedule/params/scratch.hpp>
+#include <ecs/schedule/params/state.hpp>

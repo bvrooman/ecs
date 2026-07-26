@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <ecs/schedule/params/parallel.hpp>
+#include <ecs/schedule/params/kernel.hpp>
 #include <ecs/schedule/params/protocol.hpp>
 
 #include <cstddef>

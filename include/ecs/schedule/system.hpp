@@ -17,8 +17,7 @@
 #include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/work_item.hpp>
-#include <ecs/world.hpp>
-#include <ecs/world/view.hpp> // WorldView
+#include <ecs/world.hpp> // World, Commands, WorldView
 
 #include <chrono>
 #include <cstddef>
@@ -200,9 +199,10 @@ struct query_info<std::tuple<A...>> {
     static constexpr bool has_query = index != ~std::size_t {0};
 };
 
-// The whole-parameter-list declare/invoke drivers live with the parameter
-// protocols: schedule/params/local.hpp for imperative systems (which adds the
-// stateful Local<T> face), schedule/params/protocol.hpp for kernel systems.
+// The whole-parameter-list declare/invoke drivers live in
+// schedule/params/protocol.hpp. They are generic over the parameter policy, so
+// one set serves both kinds -- instantiated with imperative_param for add() and
+// with kernel_param for add_kernel().
 
 // Timing shorthand shared by the schedule/executor instrumentation.
 using sched_clock = std::chrono::steady_clock;

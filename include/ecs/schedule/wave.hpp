@@ -20,7 +20,9 @@
 namespace ecs {
 using WaveId = StrongId<struct WaveIdTag, uint32_t>;
 
-// A kernel system's barrier prepare hook, bound to one system for one tick.
+// A system's barrier prepare hook, bound to one system for one tick. Built
+// for every due system -- an imperative one taking Local<T> is stateful too;
+// a system with no state carries a null fn and the hook no-ops.
 // Holds only a pointer + ids, so the vector of these refills each tick (clear +
 // push_back) without per-element allocation; the row-count scratch it fills is
 // owned by the Wave and shared across contexts -- one reused buffer, not one
@@ -61,7 +63,8 @@ private:
     uint64_t tick_;
 };
 
-// A kernel system's barrier finish hook, bound to one system.
+// A system's barrier finish hook, bound to one system. Built for every due
+// system, like PrepareContext above.
 class FinishContext {
     using Fn = detail::FinishItemsFn;
 
