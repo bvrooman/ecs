@@ -28,6 +28,7 @@ include/ecs/
     world.hpp            the World itself
     commands.hpp         Commands -- the deferred mutation API systems see
     res.hpp              Res<T> / ResMut<T> resource parameters
+    view.hpp             WorldView -- the read-only ad-hoc read parameter
   schedule/            conflict analysis + the WorkerPool executor
     access.hpp           phase<N>, SystemAccess, conflicts()
     system.hpp           SystemRecord + the parameter/kernel protocols

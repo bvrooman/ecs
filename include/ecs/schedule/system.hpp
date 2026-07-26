@@ -14,10 +14,11 @@
 #pragma once
 
 #include <ecs/detail/compat/move_only_function.hpp>
-#include <ecs/query.hpp> // WorldView
+#include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/work_item.hpp>
 #include <ecs/world.hpp>
+#include <ecs/world/view.hpp> // WorldView
 
 #include <chrono>
 #include <cstddef>
