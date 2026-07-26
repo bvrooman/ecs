@@ -5,13 +5,13 @@
 // it buy at hw lanes? Each case is the primitive's canonical shape:
 //
 //   * reduce   -- Reduce<Sum>: fold a float per row into one resource
-//                 vs an serial ResMut serial accumulation
+//                 vs a serial ResMut serial accumulation
 //   * extract  -- Extract<Snapshot>: disjoint-span gather of one field
-//                 vs an serial resize + serial write
+//                 vs a serial resize + serial write
 //   * collect  -- Collect<Hits>: filtered gather (~half the rows pass)
-//                 vs an serial clear + push_back walk
+//                 vs a serial clear + push_back walk
 //   * bin      -- Bin<float>: group rows into 64 buckets (counting sort at
-//                 the barrier) vs an serial bucket-vector rebuild
+//                 the barrier) vs a serial bucket-vector rebuild
 //   * events   -- EventWriter/Reader roundtrip (K events/tick) vs a ResMut
 //                 vector rebuilt each tick
 //
@@ -63,9 +63,7 @@ void populate(World& w, std::size_t n) {
             for (std::size_t i = 0; i < n; ++i)
                 cmd.spawn(P {float(i % 977), float(i % 313), float(i)});
         },
-        {},
-        /*every=*/1,
-        /*times=*/1);
+        times {1});
     s.run(w);
 }
 

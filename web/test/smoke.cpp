@@ -80,9 +80,7 @@ int main() {
                               Mass {1.0f + 0.001f * f});
                 }
             },
-            {},
-            /*every=*/1,
-            /*times=*/1);
+            times {1});
         init.run(world); // inline: builds WorkerPool{1}, spawns no thread
     }
     std::printf("spawned %zu entities\n", world.size());

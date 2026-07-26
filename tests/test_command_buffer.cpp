@@ -185,7 +185,7 @@ static void schedule_flushes_between_levels() {
     sched.add_serial(
         "consumer",
         [&](Query<Position const> q) { seen_by_consumer.store(int(q.count())); },
-        phase<1> {});
+        phase {1});
 
     CHECK(sched.level_count() == 2); // phase 0 producer, phase 1 consumer
     WorkerPool pool {4};
@@ -227,9 +227,7 @@ static void times_one_runs_once_then_removed() {
             cmd.spawn(Position {1, 1});
             cmd.spawn(Position {2, 2});
         },
-        {},
-        /*every=*/1,
-        /*times=*/1);
+        times {1});
     CHECK(sched.size() == 1);
 
     WorkerPool pool {2};
@@ -254,9 +252,8 @@ static void times_budget_counts_due_ticks_only() {
         sched.add_serial(
             "thrice",
             [&](Commands&) { runs.fetch_add(1, std::memory_order_relaxed); },
-            {},
-            /*every=*/1,
-            /*times=*/3);
+            every {1},
+            times {3});
         sched.prewarm(w); // must not count as a run
         for (int i = 0; i < 10; ++i)
             sched.run(w, pool);
@@ -284,9 +281,8 @@ static void times_budget_counts_due_ticks_only() {
         sched.add_serial(
             "cadence",
             [&](Commands&) { runs.fetch_add(1, std::memory_order_relaxed); },
-            {},
-            /*every=*/3,
-            /*times=*/2);
+            every {3},
+            times {2});
         for (int i = 0; i < 12; ++i)
             sched.run(w, pool);
         CHECK(runs.load() == 2);
@@ -301,15 +297,14 @@ static void phase_orders_startup_before_update() {
     sched.add_serial(
         "startup",
         [](Commands& cmd) { cmd.spawn(Position {0, 0}); },
-        phase<-1> {},
-        /*every=*/1,
-        /*times=*/1);
+        phase {-1},
+        times {1});
     sched.add_serial(
         "update",
         [&](Query<Position const> q) {
             seen.store(int(q.count()), std::memory_order_relaxed);
         },
-        phase<0> {});
+        phase {0});
 
     CHECK(sched.level_count() == 2); // wave 0 startup, wave 1 update
     WorkerPool pool {4};

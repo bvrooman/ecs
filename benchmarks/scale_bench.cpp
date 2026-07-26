@@ -102,9 +102,7 @@ static void spawn_n(World& w, int n) {
                           Color {1, 0.7f, 0.3f},
                           Age {0.0f, 1e9f}); // effectively immortal for the run
         },
-        {},
-        /*every=*/1,
-        /*times=*/1);
+        times {1});
     init.run(w);
 }
 

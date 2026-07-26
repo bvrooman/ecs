@@ -48,7 +48,7 @@ using clk = std::chrono::steady_clock;
 template <class Fn>
 void populate(World& w, Fn fn) {
     Schedule s;
-    s.add_serial("seed", std::move(fn), {}, /*every=*/1, /*times=*/1);
+    s.add_serial("seed", std::move(fn), times {1});
     s.run(w);
 }
 // Timing uses the shared bench::min_ns_per (bench.hpp) -- same estimator

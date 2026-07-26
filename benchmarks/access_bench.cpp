@@ -38,7 +38,7 @@ namespace {
 
 void run_setup(World& w, auto fn) {
     Schedule s;
-    s.add_serial("setup", std::move(fn), {}, /*every=*/1, /*times=*/1);
+    s.add_serial("setup", std::move(fn), times {1});
     s.run(w);
 }
 

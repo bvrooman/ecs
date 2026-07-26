@@ -264,9 +264,8 @@ static void native_component_runtime_access() {
             for (int i = 0; i < 4; ++i)
                 cmd.spawn(NPos {float(i), 0.f});
         },
-        phase<-1> {},
-        /*every=*/1,
-        /*times=*/1);
+        phase {-1},
+        times {1});
     SystemAccess acc;
     acc.writes = {component_id<NPos>};
     sched.add_dynamic_serial(

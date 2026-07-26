@@ -32,12 +32,7 @@ int main(int argc, char** argv) {
     Schedule sched;
 
     // startup: spawn the world (Commands = untracked side channel) -- phase<-1>
-    sched.add_serial(
-        "spawn_world",
-        [](Commands&) {},
-        phase<-1> {},
-        /*every=*/1,
-        /*times=*/1);
+    sched.add_serial("spawn_world", [](Commands&) {}, phase {-1}, times {1});
 
     // gameplay (phase 0)
     sched.add_serial("apply_gravity", [](Query<Velocity, Mass const>, Res<Gravity>) {});
@@ -47,7 +42,7 @@ int main(int argc, char** argv) {
     sched.add_serial("render", [](WorldView) {}); // reads-all -> after writers
 
     // teardown (phase 1)
-    sched.add_serial("reap_dead", [](Commands&) {}, phase<1> {});
+    sched.add_serial("reap_dead", [](Commands&) {}, phase {1});
     // A declared-exclusive system (raw World& is not a system parameter; a
     // genuinely unanalyzable system says so explicitly via add_dynamic_serial).
     ecs::SystemAccess excl;
@@ -56,7 +51,7 @@ int main(int argc, char** argv) {
         "debug_overlay",
         excl,
         [](ecs::World&, ecs::Commands&, ecs::detail::WorkItem const&) {},
-        /*phase=*/1); // exclusive -> runs alone
+        ecs::phase {1}); // exclusive -> runs alone
 
     // Component/resource names come from reflection at build time (this target
     // is compiled with ECS_REFLECT_NAMES=1) -- no manual name table. Pass a

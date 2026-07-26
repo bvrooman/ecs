@@ -238,7 +238,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    covers them (`event::Emitter` is a synchronous instrumentation bus, not
    this).
 4. `run_if` conditions and explicit `before/after` ordering (today only
-   registration order and `phase<N>`).
+   registration order and `phase{n}`).
 5. Immediate edits for exclusive systems — an `ExclusiveWorld` param exposing
    the `*_now` primitives. (The raw `World&` parameter has since been removed
    outright — unanalyzable access is not a system parameter; `ExclusiveWorld`
@@ -374,7 +374,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
      ticks where `tick % every == 0`; a wave emptied by skips runs no barrier),
      and `Commands::sort<C>(key)` — a deferred `World::sort_rows` that applies
      at the barrier (world-quiescent, single-threaded) like every other
-     command. So a re-sort cadence is just a `phase<-1>` system that records a
+     command. So a re-sort cadence is just a `phase{-1}` system that records a
      sort command every N ticks: it inherits the schedule's timing, reporting,
      and exception handling with no maintenance-specific path. (The sort's cost
      lands in that wave's `flush_us`; commands are tagged with their recording

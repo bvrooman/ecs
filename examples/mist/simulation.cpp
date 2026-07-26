@@ -229,9 +229,7 @@ void seed_flock(World& world, int const count) {
     s.add_serial(
         "seed_flock",
         [count](Commands& cmd, ResMut<Rng> rng) { scatter_flock(cmd, *rng, count); },
-        {},
-        /*every=*/1,
-        /*times=*/1);
+        times {1});
     s.run(world); // one flush spawns the birds into their archetype
     // Sort by grid cell now, so the flock starts as row-coherent as the
     // sort-rows system keeps it. Spawn order is uncorrelated with cell, so
@@ -310,8 +308,8 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
     schedule.add_serial(
         "sort-rows",
         [](Commands& c) { c.sort<Position>(flock_cell); },
-        phase<-1> {},
-        /*every=*/64);
+        phase {-1},
+        every {64});
 
     // grid: reduce every bird into the spatial grid (per-cell count + position
     // and velocity sums). A KERNEL whose Reduce partial is a sparse

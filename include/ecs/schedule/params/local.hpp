@@ -5,7 +5,7 @@
 // in params/serial.hpp -- the serial-side mirror of parallel_param in
 // params/parallel.hpp.
 //
-// An serial system runs as ONE opaque work item, so a single private T
+// A serial system runs as ONE opaque work item, so a single private T
 // per system is race-free by construction. A parallel system's items run
 // concurrently and their count varies with the world, so "the system's one T"
 // has no safe, deterministic meaning there: Local is rejected in add_parallel

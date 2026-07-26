@@ -1,6 +1,6 @@
 // ecs/schedule/access.hpp
 //
-// The scheduling vocabulary: system identity, coarse ordering (phase), the
+// The scheduling vocabulary: system identity, the registration options, the
 // derived access sets (SystemAccess), and the conflict predicate over them.
 // This is the data the wavefront leveling consumes and the visualizer in
 // tools/ rebuilds its dependency graph from -- no execution machinery here.
@@ -12,15 +12,89 @@
 #include <ecs/system_id.hpp>    // SystemId
 
 #include <algorithm>
+#include <cassert>
+#include <concepts>
+#include <cstdint>
 #include <vector>
 
 namespace ecs {
 
-// Coarse ordering tag: systems run in ascending phase order with a barrier
-// between phases; within a phase they are leveled by conflicts. Default 0, so
-// phase<-1> is a startup phase, phase<1> a teardown/late phase.
-template <int>
-struct phase {};
+// Registration options. Every add_* form takes these as a trailing pack: each
+// is optional, they may appear in any order, and giving one twice is a compile
+// error. Options carry their value, so a runtime one works:
+//
+//   sched.add_serial("integrate", fn);
+//   sched.add_serial("setup",     fn, times {1});
+//   sched.add_serial("resort",    fn, phase {-1}, every {64});
+//   sched.add_serial("from_cfg",  fn, every {cfg.rate});
+
+// Coarse ordering: systems run in ascending phase order with a barrier between
+// phases; within a phase they are leveled by conflicts. Default 0, so
+// phase{-1} is a startup phase, phase{1} a teardown/late phase.
+struct phase {
+    int n = 0;
+};
+
+// Cadence: the system is due only on ticks where tick % n == 0. Must be >= 1.
+struct every {
+    std::uint64_t n = 1;
+};
+
+// Run budget: the system retires after it has been due n times. 0 never
+// retires; 1 is the one-shot/setup case.
+struct times {
+    std::uint64_t n = 0;
+};
+
+namespace detail {
+
+    // The resolved option set an add_* hands to its emplace.
+    struct AddOptions {
+        int p               = 0;
+        std::uint64_t every = 1;
+        std::uint64_t times = 0;
+    };
+
+    template <class T>
+    concept AddOption = std::same_as<T, ecs::phase> || std::same_as<T, ecs::every> ||
+                        std::same_as<T, ecs::times>;
+
+    template <class Want, class... Opts>
+    consteval bool at_most_one() {
+        return (std::size_t(std::same_as<Opts, Want>) + ... + 0) <= 1;
+    }
+
+    // Fold a registration option pack into AddOptions. Unknown or repeated options
+    // are rejected here rather than deeper in the registration machinery, so the
+    // diagnostic names the call site.
+    template <class... Opts>
+    constexpr AddOptions resolve_options(Opts... opts) {
+        static_assert(
+            (AddOption<Opts> && ...),
+            "unsupported registration option -- a system may be registered with "
+            "phase{n}, every{n} and times{n}");
+        static_assert(at_most_one<ecs::phase, Opts...>() &&
+                          at_most_one<ecs::every, Opts...>() &&
+                          at_most_one<ecs::times, Opts...>(),
+                      "each registration option may be given at most once");
+        AddOptions out;
+        auto pick = [&out](auto opt) {
+            if constexpr (std::same_as<decltype(opt), ecs::phase>)
+                out.p = opt.n;
+            else if constexpr (std::same_as<decltype(opt), ecs::every>)
+                out.every = opt.n;
+            else if constexpr (std::same_as<decltype(opt), ecs::times>)
+                out.times = opt.n;
+            // anything else already failed the static_assert above; do nothing here
+            // so that assert is the only diagnostic the caller sees.
+        };
+        (pick(opts), ...);
+        // tick % every: a cadence of 0 would divide by zero in WavePlan::prepare.
+        assert(out.every >= 1 && "every{n} must be >= 1");
+        return out;
+    }
+
+} // namespace detail
 
 // A system's derived component/resource access (id sets). `exclusive` means the
 // system has unanalyzable access (it took a raw World&) and conflicts with

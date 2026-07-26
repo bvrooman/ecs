@@ -3,7 +3,7 @@
 // Umbrella for the access-analyzed, data-parallel system scheduler. The pieces
 // live in schedule/ (mirroring event/, parallel/, sync/):
 //
-//   schedule/access.hpp    phase<N>, SystemId, SystemAccess, conflicts()
+//   schedule/access.hpp    phase/every/times options, SystemAccess, conflicts()
 //   schedule/events.hpp    sched_event::*, ScheduleEvent
 //   schedule/system.hpp    SystemRecord + system_param, the per-parameter
 //                          binding protocol both system kinds route through

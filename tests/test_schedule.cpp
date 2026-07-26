@@ -131,7 +131,7 @@ static void worldview_sees_writers_flush_in_prior_wave() {
         [&](WorldView view) {
             observed.store(int(view.size()), std::memory_order_relaxed);
         },
-        phase<1> {});
+        phase {1});
 
     WorkerPool pool {4};
     sched.run(w, pool);
@@ -180,9 +180,59 @@ static void aborted_run_discards_recorded_commands() {
     // A subsequent clean run on the same world must not replay the discarded
     // spawn.
     Schedule ok;
-    ok.add_serial("noop", [](Commands&) {}, {}, /*every=*/1, /*times=*/1);
+    ok.add_serial("noop", [](Commands&) {}, times {1});
     ok.run(w);
     CHECK(w.size() == 0);
+}
+
+// Registration options are an order-independent pack: each add_* form accepts
+// phase/every/times in any order, and omitting one uses its default. A parallel
+// system takes them too -- it can be one-shot like a serial one.
+static void registration_options_are_order_independent() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 4; ++i)
+            cmd.spawn(Position {0, 0}, Velocity {1, 0});
+    });
+    WorkerPool pool {2};
+
+    { // the two orderings must produce the same schedule shape
+        Schedule a, b;
+        a.add_serial("x", [](Commands&) {}, phase {-1}, every {2});
+        b.add_serial("x", [](Commands&) {}, every {2}, phase {-1});
+        CHECK(a.level_count() == b.level_count());
+        CHECK(a.size() == b.size());
+    }
+    { // times on a PARALLEL system -- previously impossible
+        Schedule s;
+        std::atomic<int> ran {0};
+        s.add_parallel(
+            "bump",
+            [&](Query<Position> q) {
+                q.for_each([](auto& p) { p.x += 1.f; });
+                ran.fetch_add(1, std::memory_order_relaxed);
+            },
+            times {1});
+        for (int i = 0; i < 5; ++i)
+            s.run(w, pool);
+        CHECK(ran.load() == 1);
+        CHECK(s.size() == 0); // retired after its single run
+    }
+    { // phase alone still orders, with every/times left at their defaults
+        Schedule s;
+        std::atomic<int> seen {-1};
+        s.add_serial(
+            "late",
+            [&](Query<Position const> q) { seen.store(int(q.count())); },
+            phase {1});
+        s.add_serial(
+            "early",
+            [](Commands& cmd) { cmd.spawn(Position {9, 9}); },
+            phase {-1});
+        CHECK(s.level_count() == 2);
+        s.run(w, pool);
+        CHECK(seen.load() == 5); // 4 seeded + 1 spawned by the earlier phase
+    }
 }
 
 // The observer hook is a general, always-available core feature -- an observer is
@@ -262,6 +312,7 @@ int main() {
     RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
     RUN_SUITE(system_exception_propagates);
     RUN_SUITE(aborted_run_discards_recorded_commands);
+    RUN_SUITE(registration_options_are_order_independent);
     RUN_SUITE(multiple_observers_notified_in_order);
     return REPORT();
 }
