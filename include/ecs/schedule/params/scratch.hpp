@@ -6,11 +6,10 @@
 
 #pragma once
 
-#include "protocol.hpp"
-#include <cstddef>
+#include <ecs/schedule/params/parallel.hpp> // detail::slot_array
+#include <ecs/schedule/params/protocol.hpp>
 #include <cstdint>
 #include <span>
-#include <vector>
 
 namespace ecs {
 

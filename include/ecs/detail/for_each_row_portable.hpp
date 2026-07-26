@@ -9,13 +9,14 @@
 
 #pragma once
 
-#include "../chunk.hpp"
-#include "../entity.hpp"             // Entity
-#include "../reflection/reflect.hpp" // reflect::for_each_field
+#include <ecs/chunk.hpp>
+#include <ecs/entity.hpp>             // Entity
+#include <ecs/reflection/reflect.hpp> // reflect::for_each_field
 #include <span>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <cstddef>
 
 namespace ecs::detail {
 

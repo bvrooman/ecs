@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include "detail/strong_id.hpp" // StrongId
+#include <ecs/detail/strong_id.hpp> // StrongId
 #include <cstdint>
 
 namespace ecs {

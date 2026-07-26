@@ -31,6 +31,7 @@ using std::move_only_function;
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <cstddef>
 
 namespace ecs::detail {
 

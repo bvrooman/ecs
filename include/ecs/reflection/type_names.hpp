@@ -19,13 +19,12 @@
 #define ECS_REFLECT_NAMES 0
 #endif
 
-#include "../component_id.hpp" // ComponentId
-#include "../resource_id.hpp"  // ResourceId
-#include <cstdint>
+#include <ecs/component_id.hpp> // ComponentId
+#include <ecs/resource_id.hpp>  // ResourceId
 #include <string_view>
 
 #if ECS_REFLECT_NAMES
-#include "reflect.hpp"
+#include <ecs/reflection/reflect.hpp>
 #include <unordered_map>
 #endif
 

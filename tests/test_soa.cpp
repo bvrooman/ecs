@@ -1,7 +1,7 @@
 // Reflection + AoS->SoA storage tests.
 #include "check.hpp"
-#include "ecs/reflection/reflect.hpp"
-#include "ecs/soa.hpp"
+#include <ecs/reflection/reflect.hpp>
+#include <ecs/soa.hpp>
 #include <stdexcept>
 
 using namespace ecs;

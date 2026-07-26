@@ -53,7 +53,7 @@
 // read as *flight* rather than drifting. Commands flush at each wave barrier.
 #include "simulation.hpp"
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "mist.hpp"
 #include <cmath>
 #include <cstddef>

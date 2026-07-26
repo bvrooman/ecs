@@ -19,7 +19,7 @@
 // `add` and iterate serially. Commands flush at each wave barrier.
 #include "simulation.hpp"
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include <cmath>
 #include <cstddef>

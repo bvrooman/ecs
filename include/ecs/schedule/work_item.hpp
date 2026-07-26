@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../archetype_id.hpp"
-#include "../detail/small_vector.hpp"
-#include "../system_id.hpp"
+#include <ecs/archetype_id.hpp>
+#include <ecs/detail/small_vector.hpp>
+#include <ecs/system_id.hpp>
 #include <cstdint>
 
 namespace ecs::detail {

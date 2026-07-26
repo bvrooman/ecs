@@ -9,8 +9,7 @@
 
 #pragma once
 
-#include "ecs/schedule.hpp"
-#include <algorithm>
+#include <ecs/schedule.hpp>
 #include <cstddef>
 #include <unordered_map>
 #include <utility>

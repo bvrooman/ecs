@@ -13,7 +13,7 @@
 //
 // Build Release for meaningful timing: cmake -DCMAKE_BUILD_TYPE=Release
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include <atomic>
 #include <chrono>
 #include <cstdio>

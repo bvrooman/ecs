@@ -16,7 +16,7 @@
 //   ECS_ENTITIES (200000), ECS_REPEATS (5)
 
 #include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <optional>

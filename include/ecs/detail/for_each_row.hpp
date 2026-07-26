@@ -14,10 +14,10 @@
 
 #pragma once
 
-#include "../reflection/reflect.hpp" // ECS_USE_P2996
+#include <ecs/reflection/reflect.hpp> // ECS_USE_P2996
 
 #if ECS_USE_P2996
-#include "for_each_row_p2996.hpp"
+#include <ecs/detail/for_each_row_p2996.hpp>
 #else
-#include "for_each_row_portable.hpp"
+#include <ecs/detail/for_each_row_portable.hpp>
 #endif

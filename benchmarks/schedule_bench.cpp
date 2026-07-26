@@ -9,7 +9,7 @@
 //   schedule_bench [measured_ticks]      (default 5000)
 #include "bench.hpp"
 #include "bench_alloc.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include "simulation.hpp"
 #include <algorithm>

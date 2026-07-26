@@ -4,9 +4,9 @@
 
 #pragma once
 
-#include "component_id.hpp" // ComponentId
-#include "detail/handle.hpp"
-#include "reflection/type_names.hpp"
+#include <ecs/component_id.hpp> // ComponentId
+#include <ecs/detail/handle.hpp>
+#include <ecs/reflection/type_names.hpp>
 
 namespace ecs {
 

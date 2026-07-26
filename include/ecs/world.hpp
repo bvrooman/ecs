@@ -6,17 +6,17 @@
 
 #pragma once
 
-#include "archetype.hpp"
-#include "command_buffer.hpp"
-#include "detail/id_vector.hpp"
-#include "detail/sparse_handle_vector.hpp"
-#include "entity.hpp"
-#include "resource.hpp"
-#include "world_id.hpp"
+#include <ecs/archetype.hpp>
+#include <ecs/command_buffer.hpp>
+#include <ecs/detail/id_vector.hpp>
+#include <ecs/detail/sparse_handle_vector.hpp>
+#include <ecs/entity.hpp>
+#include <ecs/resource.hpp>
+#include <ecs/world_id.hpp>
 // chunk / for_each_row power World's ad-hoc read-only iteration (count /
 // for_each / for_each_chunk), defined at the end of this header.
-#include "chunk.hpp"
-#include "detail/for_each_row.hpp"
+#include <ecs/chunk.hpp>
+#include <ecs/detail/for_each_row.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -26,12 +26,12 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
-#include <ranges>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cstddef>
 
 namespace ecs {
 

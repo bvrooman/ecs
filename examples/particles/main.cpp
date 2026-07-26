@@ -20,7 +20,7 @@
 //
 // Build (needs GLFW: `brew install glfw`); see examples/CMakeLists.txt.
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"

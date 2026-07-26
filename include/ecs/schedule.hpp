@@ -14,4 +14,4 @@
 
 #pragma once
 
-#include "schedule/schedule.hpp"
+#include <ecs/schedule/schedule.hpp>

@@ -26,26 +26,26 @@
 
 #pragma once
 
-#include "../detail/id_vector.hpp"
-#include "../event/emitter.hpp"
-#include "../parallel/worker_pool.hpp"
-#include "../query.hpp"
-#include "../world.hpp"
-#include "access.hpp"
-#include "events.hpp"
-#include "kernel_params.hpp"
-#include "params/imperative.hpp"
-#include "system.hpp"
-#include "wave.hpp"
+#include <ecs/detail/id_vector.hpp>
+#include <ecs/event/emitter.hpp>
+#include <ecs/parallel/worker_pool.hpp>
+#include <ecs/query.hpp>
+#include <ecs/world.hpp>
+#include <ecs/schedule/access.hpp>
+#include <ecs/schedule/events.hpp>
+#include <ecs/schedule/kernel_params.hpp>
+#include <ecs/schedule/params/imperative.hpp>
+#include <ecs/schedule/system.hpp>
+#include <ecs/schedule/wave.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <span>
 #include <string>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 #include <vector>
+#include <iterator>
 
 namespace ecs {
 

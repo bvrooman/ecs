@@ -1,6 +1,6 @@
 // std::execution scheduler tests. Access is derived from system parameters.
 #include "check.hpp"
-#include "ecs/event/observer.hpp" // ecs::event::overloaded
+#include <ecs/event/observer.hpp> // ecs::event::overloaded
 #include "setup.hpp"
 #include <atomic>
 #include <functional>

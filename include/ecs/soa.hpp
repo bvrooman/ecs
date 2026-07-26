@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "reflection/reflect.hpp"
+#include <ecs/reflection/reflect.hpp>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -25,6 +25,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <type_traits>
 
 namespace ecs {
 

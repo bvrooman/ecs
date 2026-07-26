@@ -1,5 +1,5 @@
 #include "check.hpp"
-#include "ecs/detail/handle_vector.hpp"
+#include <ecs/detail/handle_vector.hpp>
 
 #include <cstdint>
 #include <string>

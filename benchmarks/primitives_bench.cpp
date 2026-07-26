@@ -24,7 +24,7 @@
 //   ECS_ENTITIES (200000), ECS_TICKS (300), ECS_LANES ("1,2,4,8")
 
 #include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <vector>

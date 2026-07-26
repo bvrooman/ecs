@@ -11,11 +11,12 @@
 
 #pragma once
 
-#include "access.hpp" // SystemId
+#include <ecs/schedule/access.hpp> // SystemId
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <variant>
+#include <ecs/system_id.hpp>
 
 namespace ecs {
 

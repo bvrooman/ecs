@@ -32,6 +32,7 @@ using atomic_shared_ptr = std::atomic<std::shared_ptr<T>>;
 
 #include <atomic> // std::memory_order
 #include <mutex>
+#include <utility>
 
 namespace ecs::detail {
 

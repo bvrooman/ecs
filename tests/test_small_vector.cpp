@@ -7,7 +7,7 @@
 // scope, a stolen heap buffer wrongly shared would be a use-after-free.
 
 #include "check.hpp"
-#include "ecs/detail/small_vector.hpp"
+#include <ecs/detail/small_vector.hpp>
 #include <utility>
 
 using ecs::detail::SmallVector;

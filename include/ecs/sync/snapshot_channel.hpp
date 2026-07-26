@@ -24,7 +24,7 @@
 
 #pragma once
 
-#include "../detail/atomic_shared_ptr.hpp"
+#include <ecs/detail/atomic_shared_ptr.hpp>
 #include <atomic>
 #include <memory>
 #include <utility>

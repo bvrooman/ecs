@@ -3,7 +3,7 @@
 // and the add/remove archetype transitions.
 
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include <unordered_map>
 #include <vector>
 

@@ -2,12 +2,11 @@
 // spine -- DynamicColumn + WorldOps -- directly in C++, independent of the wasm
 // binding, so storage bugs surface natively in milliseconds.
 #include "check.hpp"
-#include "ecs/dynamic/native.hpp"
-#include "ecs/dynamic/registry.hpp"
-#include "ecs/dynamic/world_ops.hpp"
-#include "ecs/schedule.hpp"
-#include "ecs/world.hpp"
-#include <algorithm>
+#include <ecs/dynamic/native.hpp>
+#include <ecs/dynamic/registry.hpp>
+#include <ecs/dynamic/world_ops.hpp>
+#include <ecs/schedule.hpp>
+#include <ecs/world.hpp>
 #include <array>
 #include <cstdint>
 

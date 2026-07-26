@@ -7,11 +7,10 @@
 
 #pragma once
 
-#include "../component_id.hpp" // ComponentId
-#include "../resource_id.hpp"  // ResourceId
-#include "../system_id.hpp"    // SystemId
+#include <ecs/component_id.hpp> // ComponentId
+#include <ecs/resource_id.hpp>  // ResourceId
+#include <ecs/system_id.hpp>    // SystemId
 #include <algorithm>
-#include <cstdint>
 #include <vector>
 
 namespace ecs {

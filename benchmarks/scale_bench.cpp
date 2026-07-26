@@ -12,7 +12,7 @@
 //
 //   scale_bench            (ECS_LANES="1,2,4,8" overrides the lane set)
 #include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include <algorithm>
 #include <cstdio>

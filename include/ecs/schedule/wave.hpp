@@ -1,10 +1,10 @@
 #pragma once
 
-#include "../detail/id_vector.hpp"
-#include "../detail/strong_id.hpp"
-#include "../parallel/worker_pool.hpp"
-#include "system.hpp"
-#include "work_item.hpp"
+#include <ecs/detail/id_vector.hpp>
+#include <ecs/detail/strong_id.hpp>
+#include <ecs/parallel/worker_pool.hpp>
+#include <ecs/schedule/system.hpp>
+#include <ecs/schedule/work_item.hpp>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -13,6 +13,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <chrono>
+#include <cstddef>
 
 namespace ecs {
 using WaveId = StrongId<struct WaveIdTag, uint32_t>;

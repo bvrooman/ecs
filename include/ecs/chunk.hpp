@@ -18,8 +18,8 @@
 
 #pragma once
 
-#include "detail/chunk_fields.hpp"
-#include "soa.hpp"
+#include <ecs/detail/chunk_fields.hpp>
+#include <ecs/soa.hpp>
 #include <cassert>
 #include <cstddef>
 #include <type_traits>

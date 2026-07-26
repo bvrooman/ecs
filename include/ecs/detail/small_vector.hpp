@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <variant>
 #include <vector>
+#include <cstddef>
+#include <utility>
 
 namespace ecs::detail {
 

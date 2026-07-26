@@ -16,11 +16,11 @@
 
 #pragma once
 
-#include "archetype_id.hpp"
-#include "column_id.hpp"
-#include "detail/id_vector.hpp"
-#include "entity.hpp"
-#include "soa.hpp"
+#include <ecs/archetype_id.hpp>
+#include <ecs/column_id.hpp>
+#include <ecs/detail/id_vector.hpp>
+#include <ecs/entity.hpp>
+#include <ecs/soa.hpp>
 #include <algorithm>
 #include <cassert>
 #include <concepts>
@@ -34,6 +34,8 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+#include <cstddef>
+#include <utility>
 
 namespace ecs {
 

@@ -3,7 +3,7 @@
 // lock-free allocate() path is covered under TSan by the schedule/churn tests.
 
 #include "check.hpp"
-#include "ecs/detail/index_recycler.hpp"
+#include <ecs/detail/index_recycler.hpp>
 
 using ecs::detail::IndexRecycler;
 

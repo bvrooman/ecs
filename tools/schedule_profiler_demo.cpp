@@ -10,7 +10,7 @@
 //
 //   ./schedule-profiler
 //   head profiler_trace.csv
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "schedule_report.hpp"
 #include "schedule_trace.hpp"
 #include "sink.hpp"

@@ -32,8 +32,8 @@
 
 #pragma once
 
-#include "handle.hpp"
-#include "index_recycler.hpp"
+#include <ecs/detail/handle.hpp>
+#include <ecs/detail/index_recycler.hpp>
 
 #include <cassert>
 #include <cstddef>

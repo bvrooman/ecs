@@ -24,8 +24,8 @@
 
 #include "../../dynamic/js_system.hpp"
 #include "../gl_util.hpp"
-#include "ecs/dynamic/native.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/dynamic/native.hpp>
+#include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include "simulation.hpp"
 #include "stats.hpp" // ecs::diag::TickStats (tools/, via the ecs::diag include path)
