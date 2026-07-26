@@ -7,17 +7,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Formatting is checked, not applied. Pinned to an exact clang-format --
-  # output is not stable across major versions, so an unpinned check would
-  # flap as runners upgrade. Installed from PyPI because the version needed
-  # (>= 20, for BinPackParameters: OnePerLine) is not in the runner's apt.
+  # Formatting is checked, not applied. The version comes from
+  # .clang-format-version, which tools/format.sh also enforces -- one source of
+  # truth, so a local run and CI cannot drift apart. Output is not stable across
+  # clang-format majors, so an unpinned check would flap. Installed from PyPI
+  # because the pinned version is not in the runner's apt.
   format:
     name: clang-format
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install clang-format
-        run: pip install clang-format==20.1.7
+        run: pip install "clang-format==$(cat .clang-format-version)"
       - name: Check formatting
         run: ./tools/format.sh --check
 

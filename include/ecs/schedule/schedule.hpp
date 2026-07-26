@@ -381,7 +381,7 @@ private:
         }
 
         auto states = std::make_shared<typename Info::states>();
-        sys.run     = [fn = std::forward<Fn>(fn),
+        sys.run = [fn = std::forward<Fn>(fn),
                    states](World& w, Commands& c, detail::WorkItem const& item) mutable {
             detail::invoke<Param, Args>(fn, *states, w, c, item, Seq {});
         };

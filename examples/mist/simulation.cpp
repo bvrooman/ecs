@@ -573,7 +573,7 @@ void build_mist_schedule(Schedule& schedule, MistInput in) {
                          float const ferr = std::sqrt((csx - gsx) * (csx - gsx) +
                                                       (csy - gsy) * (csy - gsy));
                          double const mv  = std::sqrt(st->vx * st->vx + st->vy * st->vy +
-                                                     st->vz * st->vz);
+                                                      st->vz * st->vz);
                          float const coh  = mspd > 1e-5 ? float(mv * inv / mspd) : 0.0f;
                          *out << clk->t << ',' << csx << ',' << csy << ',' << float(mcz)
                               << ',' << gsx << ',' << gsy << ',' << ferr << ',' << spread

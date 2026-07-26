@@ -169,7 +169,7 @@ int main() {
     bool const state_ok = serial.state == parallel.state && !serial.state.empty();
     bool const rerun_ok = parallel.state == again.state;
     bool frame_ok       = serial.frame.size() == parallel.frame.size() &&
-                    serial.frame.size() == std::size_t(count);
+                          serial.frame.size() == std::size_t(count);
     for (std::size_t i = 0; frame_ok && i < serial.frame.size(); ++i)
         frame_ok = serial.frame[i].x == parallel.frame[i].x &&
                    serial.frame[i].y == parallel.frame[i].y &&

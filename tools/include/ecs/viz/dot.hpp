@@ -38,7 +38,7 @@ inline std::string dot_label(NodeView const& v) {
                     esc(ln.label) + "</font></td></tr>";
         else {
             std::string nm  = ln.resource ? "<i>" + esc(ln.label) +
-                                               "</i> <font color=\"#9a9a9a\" "
+                                                "</i> <font color=\"#9a9a9a\" "
                                                 "point-size=\"8\">res</font>"
                                           : esc(ln.label);
             char const* col = ln.tag == 'W' ? kWrite : kRead;

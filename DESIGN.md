@@ -90,11 +90,20 @@ tools/format.sh            # reformat in place
 tools/format.sh --check    # what CI runs
 ```
 
-**This needs clang-format >= 20**, which is *not* the same version as the C++
-toolchain (clang-18). `.clang-format` uses `BinPackParameters: OnePerLine`, an
-enum only from 20 — an older binary refuses to read the config at all rather
-than formatting differently, so `tools/format.sh` checks the version first and
-says so. `pip install clang-format==20.1.7` if your distro's is older.
+The version is pinned in `.clang-format-version`, which CI installs and
+`tools/format.sh` enforces — one source of truth, so a local run and CI cannot
+drift apart. `pip install clang-format==$(cat .clang-format-version)`.
+
+The pin is load-bearing in two directions. Too old and the config does not load
+at all: `.clang-format` uses `BinPackParameters: OnePerLine`, an enum only from
+clang-format 20, and an older binary fails with a confusing `invalid boolean`
+rather than formatting differently. A *different major* simply formats
+differently — 20 and 22 disagree about `AlignConsecutiveAssignments` when a
+right-hand side wraps, for example. `tools/format.sh` rejects a mismatched major
+and tells you which way it is wrong.
+
+Note the formatter and the compiler are deliberately different versions: the
+tree builds with clang-18 and formats with the pinned clang-format.
 
 Two spots opt out with `// clang-format off`: the structured-bindings ladder in
 `reflection/reflect_portable.hpp`, and the `EM_ASM` bodies in `web/`, which are

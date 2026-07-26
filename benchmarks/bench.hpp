@@ -305,7 +305,7 @@ double min_ns_per(std::size_t n, int repeats, Body&& body) {
         auto const t0 = clock_type::now();
         body();
         auto const t1 = clock_type::now();
-        best          = std::min(best,
+        best = std::min(best,
                         std::chrono::duration<double, std::nano>(t1 - t0).count() /
                             static_cast<double>(n));
     }
@@ -324,7 +324,7 @@ double best_ns_of(std::size_t n, int repeats, Setup&& setup, Op&& op) {
         auto const t0 = clock_type::now();
         op();
         auto const t1 = clock_type::now();
-        best          = std::min(best,
+        best = std::min(best,
                         std::chrono::duration<double, std::nano>(t1 - t0).count() /
                             static_cast<double>(n));
     }
