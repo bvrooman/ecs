@@ -75,7 +75,7 @@ public:
     template <class Fn, class... Opts>
     SystemId add_serial(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
-        return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.p, o.every);
+        return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.phase, o.every);
     }
 
     // Register a PARALLEL system. Same signature rules as add_serial() -- the system's
@@ -119,7 +119,7 @@ public:
         auto const o = detail::resolve_options(opts...);
         return emplace_parallel(std::move(name),
                                 std::forward<Fn>(fn),
-                                o.p,
+                                o.phase,
                                 o.every,
                                 o.times);
     }
@@ -145,7 +145,7 @@ public:
                                std::move(access),
                                Signature::null(),
                                std::forward<Run>(run),
-                               o.p,
+                               o.phase,
                                o.every,
                                o.times,
                                /*is_parallel=*/false);
@@ -170,7 +170,7 @@ public:
                                std::move(access),
                                std::move(query_sig),
                                std::forward<Run>(run),
-                               o.p,
+                               o.phase,
                                o.every,
                                o.times,
                                /*is_parallel=*/true);

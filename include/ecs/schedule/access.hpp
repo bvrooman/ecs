@@ -50,7 +50,7 @@ namespace detail {
 
     // The resolved option set an add_* hands to its emplace.
     struct AddOptions {
-        int p               = 0;
+        int phase           = 0;
         std::uint64_t every = 1;
         std::uint64_t times = 0;
     };
@@ -80,7 +80,7 @@ namespace detail {
         AddOptions out;
         auto pick = [&out](auto opt) {
             if constexpr (std::same_as<decltype(opt), ecs::phase>)
-                out.p = opt.n;
+                out.phase = opt.n;
             else if constexpr (std::same_as<decltype(opt), ecs::every>)
                 out.every = opt.n;
             else if constexpr (std::same_as<decltype(opt), ecs::times>)
