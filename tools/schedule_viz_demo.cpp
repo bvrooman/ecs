@@ -2,8 +2,8 @@
 // Emits standalone SVG by default (no Graphviz needed); pass --dot for DOT.
 //   ./schedule-viz          > schedule.svg
 //   ./schedule-viz --dot | dot -Tsvg > schedule.svg
-#include "ecs/ecs.hpp"
-#include "schedule_viz.hpp"
+#include <ecs/ecs.hpp>
+#include <ecs/viz/schedule_viz.hpp>
 #include <iostream>
 #include <string_view>
 

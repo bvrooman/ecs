@@ -17,8 +17,8 @@
 //     command buffer, and automatic ordering across parallel levels
 //     (gravity writes Velocity -> integrate reads it on a later level)
 
-#include "ecs/ecs.hpp"
-#include "ecs/reflection/reflect.hpp"
+#include <ecs/ecs.hpp>
+#include <ecs/reflection/reflect.hpp>
 #include <cstdio>
 #include <vector>
 

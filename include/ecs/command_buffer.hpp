@@ -30,20 +30,20 @@
 
 #pragma once
 
-#include "system_id.hpp" // SystemId (the recording-source tag)
+#include <ecs/system_id.hpp> // SystemId (the recording-source tag)
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <new>
 
 namespace ecs {
 namespace detail {

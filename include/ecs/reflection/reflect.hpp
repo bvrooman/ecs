@@ -52,9 +52,9 @@
 //  get_field, field_type_t, field_name, type_name -- into namespace ecs::reflect.
 // ===========================================================================
 #if ECS_USE_P2996
-#include "reflect_p2996.hpp"
+#include <ecs/reflection/reflect_p2996.hpp>
 #else
-#include "reflect_portable.hpp"
+#include <ecs/reflection/reflect_portable.hpp>
 #endif
 
 // ===========================================================================

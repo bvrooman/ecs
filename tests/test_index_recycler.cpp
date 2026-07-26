@@ -1,9 +1,9 @@
 // tests/test_index_recycler.cpp -- the recycling index allocator
-// (ecs/detail/index_recycler.hpp). Exercises its single-threaded semantics; the
+// (ecs/detail/container/index_recycler.hpp). Exercises its single-threaded semantics; the
 // lock-free allocate() path is covered under TSan by the schedule/churn tests.
 
 #include "check.hpp"
-#include "ecs/detail/index_recycler.hpp"
+#include <ecs/detail/container/index_recycler.hpp>
 
 using ecs::detail::IndexRecycler;
 

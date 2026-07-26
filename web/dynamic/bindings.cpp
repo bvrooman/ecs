@@ -8,13 +8,13 @@
 // order); fieldView() hands back a zero-copy typed-array view aliasing a
 // component's SoA field buffer -- the Phase B per-chunk kernel foundation.
 
-#include "ecs/dynamic/dynamic_column.hpp"
-#include "ecs/dynamic/registry.hpp"
-#include "ecs/dynamic/world_ops.hpp"
-#include "ecs/schedule.hpp"
-#include "ecs/world.hpp"
+#include <ecs/dynamic/dynamic_column.hpp>
+#include <ecs/dynamic/registry.hpp>
+#include <ecs/dynamic/world_ops.hpp>
+#include <ecs/schedule.hpp>
+#include <ecs/world.hpp>
 #include "js_system.hpp"
-#include "stats.hpp" // ecs::diag::TickStats (tools/, via the ecs::diag include path)
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

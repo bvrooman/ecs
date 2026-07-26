@@ -13,7 +13,9 @@
 
 #pragma once
 
-#include "protocol.hpp"
+#include <ecs/schedule/params/protocol.hpp>
+#include <cstdint>
+#include <span>
 
 namespace ecs {
 

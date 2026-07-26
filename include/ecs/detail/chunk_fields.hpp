@@ -11,14 +11,14 @@
 
 #pragma once
 
-#include "../reflection/reflect.hpp" // ECS_USE_P2996, reflect::field_count_v
+#include <ecs/reflection/reflect.hpp> // ECS_USE_P2996, reflect::field_count_v
 #include <cstddef>
 #include <type_traits>
 #include <utility>
 
 #if ECS_USE_P2996
 
-#include "../reflection/field_view.hpp" // field_view<C>, field_name_collides_with_chunk
+#include <ecs/reflection/field_view.hpp> // field_view<C>, field_name_collides_with_chunk
 
 namespace ecs::detail {
 

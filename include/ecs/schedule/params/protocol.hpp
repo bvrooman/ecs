@@ -30,16 +30,15 @@
 
 #pragma once
 
-#include "../../world.hpp" // World, Commands, Res/ResMut, resource_id
-#include "../system.hpp"   // system_param, SystemParam, is_res_mut_v, KernelWaveContext
-#include "state.hpp"
+#include <ecs/world.hpp> // World, Commands, Res/ResMut, resource_id
+#include <ecs/schedule/system.hpp>   // system_param, SystemParam, is_res_mut_v, KernelWaveContext
+#include <ecs/schedule/params/state.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace ecs::detail {
 

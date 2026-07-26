@@ -1,4 +1,4 @@
-// tools/schedule_viz/svg.hpp
+// ecs/viz/svg.hpp
 //
 // Direct-SVG back-end: viz::to_svg() lays out the wave DAG with no Graphviz. The
 // scheduler has already assigned each system a (phase, level) -- the hard part
@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "ecs/schedule.hpp"
+#include <ecs/schedule.hpp>
 #include "graph.hpp"
 #include "name_table.hpp"
 #include "node_view.hpp"
@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace viz {
+namespace ecs::viz {
 
 inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     using namespace detail;
@@ -174,4 +174,4 @@ inline std::string to_svg(ecs::Schedule& sched, NameTable const& names = {}) {
     return svg;
 }
 
-} // namespace viz
+} // namespace ecs::viz

@@ -15,7 +15,7 @@
 #pragma once
 
 #include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 
 template <class Sys>
 void bench_system(char const* name, std::size_t n, ecs::World& world, Sys sys) {

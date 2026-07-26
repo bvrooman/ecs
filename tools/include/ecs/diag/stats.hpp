@@ -1,4 +1,4 @@
-// tools/stats.hpp
+// ecs/diag/stats.hpp
 //
 // Header-only timing diagnostics: collect per-tick durations and periodically
 // report the distribution -- mean, standard deviation, p50, p99, max. The

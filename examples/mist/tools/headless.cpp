@@ -31,9 +31,9 @@
 // see simulation.cpp), so the bitwise checks below also prove determinism
 // composes with row sorting.
 #include "bench.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "mist.hpp"
-#include "schedule_trace.hpp"
+#include <ecs/diag/schedule_trace.hpp>
 #include "simulation.hpp"
 #include <chrono>
 #include <cstdio>

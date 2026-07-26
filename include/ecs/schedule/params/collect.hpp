@@ -9,13 +9,12 @@
 
 #pragma once
 
-#include "parallel.hpp"
-#include "protocol.hpp"
+#include <ecs/schedule/params/parallel.hpp>
+#include <ecs/schedule/params/protocol.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <span>
-#include <vector>
 
 namespace ecs {
 

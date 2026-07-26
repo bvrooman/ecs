@@ -4,7 +4,7 @@
 // case), the nested-dispatch error (a query inside a chunk kernel), and the
 // opt-in concurrent-systems run policy.
 #include "check.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "setup.hpp"
 #include <array>
 #include <atomic>

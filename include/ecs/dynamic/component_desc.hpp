@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "../entity.hpp" // ComponentId
+#include <ecs/entity.hpp> // ComponentId
 #include <cstddef>
 #include <cstdint>
 #include <string>

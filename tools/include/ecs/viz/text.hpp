@@ -1,4 +1,4 @@
-// tools/schedule_viz/text.hpp
+// ecs/viz/text.hpp
 //
 // Generic text/number helpers shared by both back-ends: XML escaping, a
 // glyph-count width estimate (no font engine is available), and a compact
@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-namespace viz::detail {
+namespace ecs::viz::detail {
 
 inline std::string esc(std::string_view s) {
     std::string o;
@@ -45,4 +45,4 @@ inline double approx(std::string_view s, double fs, bool bold = false) {
 }
 inline std::string num(double v) { return std::to_string(std::lround(v)); }
 
-} // namespace viz::detail
+} // namespace ecs::viz::detail

@@ -15,7 +15,7 @@
 // This proves the mechanism: a WorkerPool dispatch where each lane runs an
 // eval'd JS kernel over its slice of a shared array. Built -pthread, run on node.
 
-#include "ecs/parallel/worker_pool.hpp"
+#include <ecs/parallel/worker_pool.hpp>
 
 #include <emscripten.h>
 #include <pthread.h>

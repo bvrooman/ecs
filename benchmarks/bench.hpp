@@ -15,7 +15,7 @@
 //
 // `better` says which direction improves ("lower"/"higher") so comparison
 // tools need no metric knowledge. The envelope repeats on every row
-// (denormalized, same convention as tools/schedule_trace.hpp) so offline
+// (denormalized, same convention as ecs/diag/schedule_trace.hpp) so offline
 // tools need no joins. Append mode: several suites can share one file, and
 // the header is written only when the file starts empty. `commit` comes from
 // the ECS_GIT_COMMIT env var (or GITHUB_SHA) -- the process cannot know its

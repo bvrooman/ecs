@@ -4,8 +4,8 @@
 // iteration must come out in key order, the sort must be stable, and a
 // schedule run over the sorted layout must stay lane-count-invariant.
 #include "check.hpp"
-#include "ecs/dynamic/dynamic_column.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/dynamic/dynamic_column.hpp>
+#include <ecs/ecs.hpp>
 #include "setup.hpp"
 #include <cstdint>
 #include <cstring>

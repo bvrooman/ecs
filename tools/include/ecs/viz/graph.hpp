@@ -1,4 +1,4 @@
-// tools/schedule_viz/graph.hpp
+// ecs/viz/graph.hpp
 //
 // Graph algorithms over a schedule, independent of rendering:
 //   reduced_dependencies() -- transitively-reduced conflict edges, built from
@@ -9,14 +9,13 @@
 
 #pragma once
 
-#include "ecs/schedule.hpp"
-#include <algorithm>
+#include <ecs/schedule.hpp>
 #include <cstddef>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace viz::detail {
+namespace ecs::viz::detail {
 
 // systems() is an IdVector keyed by SystemId; turn a raw position into that id.
 inline ecs::SystemId sid(std::size_t const i) {
@@ -158,4 +157,4 @@ inline void order_phase(std::vector<std::vector<std::size_t>>& layers,
     layers = best;
 }
 
-} // namespace viz::detail
+} // namespace ecs::viz::detail

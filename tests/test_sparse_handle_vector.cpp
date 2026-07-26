@@ -1,5 +1,5 @@
 #include "check.hpp"
-#include "ecs/detail/sparse_handle_vector.hpp"
+#include <ecs/detail/container/sparse_handle_vector.hpp>
 
 #include <cstdint>
 #include <string>

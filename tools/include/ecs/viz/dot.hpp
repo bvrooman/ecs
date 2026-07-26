@@ -1,4 +1,4 @@
-// tools/schedule_viz/dot.hpp
+// ecs/viz/dot.hpp
 //
 // Graphviz-DOT back-end. dot_label() renders one NodeView as an HTML-like table
 // label; viz::to_dot() assembles the phase/level-clustered digraph (pipe through
@@ -7,18 +7,18 @@
 
 #pragma once
 
-#include "ecs/schedule.hpp"
+#include <ecs/schedule.hpp>
 #include "graph.hpp"
 #include "name_table.hpp"
 #include "node_view.hpp"
 #include "text.hpp"
-#include <cstdlib>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
+#include <cstddef>
 
-namespace viz::detail {
+namespace ecs::viz::detail {
 
 inline std::string dot_label(NodeView const& v) {
     auto [body, head] = palette(v.kind);
@@ -55,9 +55,9 @@ inline std::string dot_label(NodeView const& v) {
            std::string(body) + "\" color=\"#b9c2cf\">" + header + rows + "</table>";
 }
 
-} // namespace viz::detail
+} // namespace ecs::viz::detail
 
-namespace viz {
+namespace ecs::viz {
 
 inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
     static_cast<void>(sched.level_count()); // force (phase, level) assignment
@@ -111,4 +111,4 @@ inline std::string to_dot(ecs::Schedule& sched, NameTable const& names = {}) {
     return dot;
 }
 
-} // namespace viz
+} // namespace ecs::viz

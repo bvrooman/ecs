@@ -1,7 +1,9 @@
 #pragma once
 
-#include "../system.hpp"
-#include "state.hpp"
+#include <ecs/schedule/system.hpp>
+#include <ecs/schedule/params/state.hpp>
+#include <cstdint>
+#include <span>
 
 namespace ecs::detail {
 // The imperative-parameter protocol: how each parameter type of an

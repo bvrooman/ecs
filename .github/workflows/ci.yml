@@ -49,6 +49,12 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      # Every header must compile on its own. A header that only works because
+      # something else was included first breaks the moment an include list is
+      # reordered or a consumer includes it directly.
+      - name: Headers are self-contained
+        if: matrix.build_type == 'Debug'
+        run: ./tools/check_self_contained.sh ${{ matrix.cxx }}
       # Tiny-size run of every suite: catches bit-rot in the benchmarks and
       # the ECS_BENCH_OUT emit paths. Numbers from shared runners are NOT
       # gated -- only that every suite runs and emits its rows.

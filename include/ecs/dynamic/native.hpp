@@ -13,15 +13,16 @@
 
 #pragma once
 
-#include "../entity.hpp" // component_id<T>
-#include "../reflection/reflect.hpp"
-#include "component_desc.hpp"
-#include "registry.hpp"
+#include <ecs/entity.hpp> // component_id<T>
+#include <ecs/reflection/reflect.hpp>
+#include <ecs/dynamic/component_desc.hpp>
+#include <ecs/dynamic/registry.hpp>
 #include <cstdint>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <cstddef>
 
 namespace ecs::dynamic {
 

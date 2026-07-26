@@ -1,7 +1,11 @@
 #pragma once
 
-#include "../system.hpp"
-#include "state.hpp"
+#include <ecs/schedule/system.hpp>
+#include <ecs/schedule/params/state.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <vector>
 
 namespace ecs::detail {
 

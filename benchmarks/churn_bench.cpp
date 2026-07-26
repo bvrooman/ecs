@@ -17,7 +17,7 @@
 
 #include "bench.hpp"
 #include "bench_alloc.hpp"
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include <cstdio>
 #include <deque>
 #include <optional>

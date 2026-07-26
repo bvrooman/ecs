@@ -20,14 +20,14 @@
 //
 // Build (needs GLFW: `brew install glfw`); see examples/CMakeLists.txt.
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 #include "gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
-#include "stats.hpp" // ecs::diag::TickStats -- per-tick timing distribution
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats -- per-tick timing distribution
 
 #if PARTICLES_DEV_TOOLING
-#include "schedule_viz.hpp" // dev profile: render the assembled schedule to SVG
+#include <ecs/viz/schedule_viz.hpp> // dev profile: render the assembled schedule to SVG
 #include <fstream>
 #endif
 #include <algorithm>

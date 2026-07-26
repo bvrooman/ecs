@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ecs LANGUAGES CXX)
+project(ecs VERSION 0.1.0 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
 # Options
@@ -71,30 +71,34 @@ if (ECS_DEV_TOOLING)
 endif ()
 
 # ---------------------------------------------------------------------------
-# Header-only schedule visualizer (tools/schedule_viz*). Kept out of the core
+# Header-only schedule visualizer (tools/include/ecs/viz/, namespace ecs::viz). Kept out of the core
 # 'ecs' library so the engine carries no visualization code; examples and apps
 # that want to dump a schedule's wave DAG link this instead.
 # ---------------------------------------------------------------------------
 add_library(schedule_viz INTERFACE)
 add_library(ecs::schedule_viz ALIAS schedule_viz)
-target_include_directories(schedule_viz INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(schedule_viz INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
-# Header-only timing diagnostics (tools/stats.hpp -> ecs::diag::TickStats):
+# Header-only timing diagnostics (ecs/diag/stats.hpp -> ecs::diag::TickStats):
 # periodic per-tick timing distributions (mean/p50/p99/max). No engine
 # dependency; like the visualizer it lives in tools/, not the core 'ecs' headers,
 # so examples (native + web) link this to log their stats.
 # ---------------------------------------------------------------------------
 add_library(diag INTERFACE)
 add_library(ecs::diag ALIAS diag)
-target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(diag INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 
 # ---------------------------------------------------------------------------
 # Header-only schedule profiler: two ScheduleObserver timing tools in tools/ --
-# ecs::diag::ScheduleReport (schedule_report.hpp, rolling per-system/wave/tick
+# ecs::diag::ScheduleReport (ecs/diag/schedule_report.hpp, rolling per-system/wave/tick
 # distributions) and ecs::diag::ScheduleTrace (schedule_trace.hpp, per-tick CSV
-# trace), both feeding a configurable ecs::diag::Sink (sink.hpp). They build on
+# trace), both feeding a configurable ecs::diag::Sink (ecs/diag/sink.hpp). They build on
 # the core observer hook (Schedule::add_observer), which is always available;
 # the tools carry no compile gate of their own -- an app links this target and
 # decides when to construct/attach them at runtime (e.g. the mist demo does so on
@@ -102,7 +106,9 @@ target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 # ---------------------------------------------------------------------------
 add_library(profiler INTERFACE)
 add_library(ecs::profiler ALIAS profiler)
-target_include_directories(profiler INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(profiler INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 target_link_libraries(profiler INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
@@ -143,4 +149,49 @@ endif ()
 # Emscripten toolchain -- native builds skip this entirely.
 if (EMSCRIPTEN)
     add_subdirectory(web)
+endif ()
+
+# ---------------------------------------------------------------------------
+# Install / export
+#
+# All four targets are INTERFACE (header-only), so installing is just headers
+# plus the usage requirements CMake records for them. Two header roots ship:
+# include/ (the library) and tools/include/ (ecs/diag/, ecs/viz/), both landing
+# under the same ecs/ prefix so an installed consumer spells every header the
+# same way an in-tree one does.
+#
+# Skipped when ecs is pulled in with add_subdirectory/FetchContent -- a
+# subproject has no business adding install rules to its parent.
+# ---------------------------------------------------------------------------
+if (PROJECT_IS_TOP_LEVEL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS ecs schedule_viz diag profiler EXPORT ecsTargets)
+    install(DIRECTORY include/ tools/include/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp")
+
+    install(EXPORT ecsTargets
+            FILE ecsTargets.cmake
+            NAMESPACE ecs::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
+
+    # Header-only and compiler-version-independent, so any consumer version
+    # works with any newer library version.
+    write_basic_package_version_file(
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfigVersion.cmake"
+            VERSION ${PROJECT_VERSION}
+            COMPATIBILITY SameMajorVersion
+            ARCH_INDEPENDENT)
+
+    configure_package_config_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ecsConfig.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfig.cmake"
+            INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
+
+    install(FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfig.cmake"
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfigVersion.cmake"
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
 endif ()

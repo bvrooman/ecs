@@ -1,4 +1,4 @@
-// tools/sink.hpp
+// ecs/diag/sink.hpp
 //
 // The output seam shared by the schedule diagnostics observers
 // (schedule_report.hpp, schedule_trace.hpp): a line sink they hand formatted

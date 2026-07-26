@@ -15,7 +15,7 @@
 
 #pragma once
 
-#include "reflect_common.hpp" // Reflectable, detail::unqualified
+#include <ecs/reflection/reflect_common.hpp> // Reflectable, detail::unqualified
 #include <cstddef>
 #include <meta>
 #include <string_view>

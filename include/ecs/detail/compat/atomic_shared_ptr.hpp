@@ -1,4 +1,4 @@
-// ecs/detail/atomic_shared_ptr.hpp
+// ecs/detail/compat/atomic_shared_ptr.hpp
 //
 // Portability shim for std::atomic<std::shared_ptr<T>> (C++20, P0718).
 //
@@ -32,6 +32,7 @@ using atomic_shared_ptr = std::atomic<std::shared_ptr<T>>;
 
 #include <atomic> // std::memory_order
 #include <mutex>
+#include <utility>
 
 namespace ecs::detail {
 

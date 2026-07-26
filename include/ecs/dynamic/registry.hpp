@@ -7,11 +7,14 @@
 
 #pragma once
 
-#include "../entity.hpp" // ComponentId
-#include "component_desc.hpp"
+#include <ecs/entity.hpp> // ComponentId
+#include <ecs/dynamic/component_desc.hpp>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <cstddef>
+#include <string>
+#include <vector>
 
 namespace ecs::dynamic {
 

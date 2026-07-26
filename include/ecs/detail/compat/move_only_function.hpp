@@ -1,4 +1,4 @@
-// ecs/detail/move_only_function.hpp
+// ecs/detail/compat/move_only_function.hpp
 //
 // Portability shim for std::move_only_function (C++23, P0288).
 //
@@ -31,6 +31,7 @@ using std::move_only_function;
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <cstddef>
 
 namespace ecs::detail {
 

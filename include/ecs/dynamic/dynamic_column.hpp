@@ -9,14 +9,16 @@
 
 #pragma once
 
-#include "../archetype.hpp" // ecs::IColumn
-#include "component_desc.hpp"
+#include <ecs/archetype.hpp> // ecs::IColumn
+#include <ecs/dynamic/component_desc.hpp>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 #include <span>
 #include <vector>
+#include <cstdint>
+#include <utility>
 
 namespace ecs::dynamic {
 

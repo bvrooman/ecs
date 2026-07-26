@@ -20,7 +20,7 @@
 
 #pragma once
 
-#include "reflect.hpp" // selects a backend and defines ECS_USE_P2996
+#include <ecs/reflection/reflect.hpp> // selects a backend and defines ECS_USE_P2996
 
 #if ECS_USE_P2996
 

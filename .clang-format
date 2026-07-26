@@ -27,7 +27,7 @@ FixNamespaceComments: false
 
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: 'tov'
+  - Regex: '^<ecs/'
     Priority: 1
   - Regex: '.*'
     Priority: 2

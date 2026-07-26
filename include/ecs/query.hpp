@@ -31,15 +31,15 @@
 
 #pragma once
 
-#include "chunk.hpp"
-#include "detail/for_each_row.hpp"
-#include "schedule/work_item.hpp"
-#include "world.hpp"
-#include <algorithm>
+#include <ecs/chunk.hpp>
+#include <ecs/detail/for_each_row.hpp>
+#include <ecs/schedule/work_item.hpp>
+#include <ecs/world.hpp>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 #include <type_traits>
+#include <ecs/archetype.hpp>
+#include <ecs/entity.hpp>
 
 namespace ecs {
 

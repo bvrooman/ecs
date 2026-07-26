@@ -8,7 +8,7 @@
 //                       so writes go through a system's declared-write Query).
 #pragma once
 
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 
 template <class Fn>
 void run_system(ecs::World& world, Fn fn) {

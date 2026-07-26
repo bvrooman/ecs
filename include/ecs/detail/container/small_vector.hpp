@@ -1,4 +1,4 @@
-// ecs/detail/small_vector.hpp
+// ecs/detail/container/small_vector.hpp
 //
 // A vector with inline storage for its first N elements, spilling to the heap
 // only beyond N. Purpose-built for WorkItem::units: a work item's unit list is
@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <variant>
 #include <vector>
+#include <cstddef>
+#include <utility>
 
 namespace ecs::detail {
 

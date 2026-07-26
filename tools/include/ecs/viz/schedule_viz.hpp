@@ -1,11 +1,11 @@
-// tools/schedule_viz.hpp
+// ecs/viz/schedule_viz.hpp
 //
 // Standalone visualizer for an ecs::Schedule's wave DAG -- free functions built
 // entirely on the *public* Schedule API (systems(), level_count(), and the
 // Schedule::conflicts() predicate); the core scheduler carries no visualization
 // code.
 //
-//   #include "schedule_viz.hpp"
+//   #include <ecs/viz/schedule_viz.hpp>
 //   viz::NameTable nt;
 //   nt.component<Position>("Position").resource<Gravity>("Gravity");
 //   std::cout << viz::to_svg(sched, nt);   // standalone SVG, no Graphviz
@@ -17,7 +17,7 @@
 // are transitively reduced; the SVG back-end also runs a barycenter pass to cut
 // crossings.
 //
-// This umbrella just aggregates the pieces under schedule_viz/:
+// This umbrella just aggregates the pieces under  ecs/viz/:
 //   text.hpp        XML-escape / width-estimate / number helpers
 //   name_table.hpp  viz::NameTable (id -> display name)         [public]
 //   node_view.hpp   backend-neutral per-system content model
@@ -28,6 +28,6 @@
 
 #pragma once
 
-#include "schedule_viz/dot.hpp"
-#include "schedule_viz/name_table.hpp"
-#include "schedule_viz/svg.hpp"
+#include <ecs/viz/dot.hpp>
+#include <ecs/viz/name_table.hpp>
+#include <ecs/viz/svg.hpp>
