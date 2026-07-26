@@ -1,4 +1,4 @@
-// ecs/detail/strong_id.hpp
+// ecs/strong_id.hpp
 //
 // A strongly-typed integer id: StrongId<Tag, Rep> wraps an integer `Rep`
 // tagged with a distinct `Tag` type, so ids of different kinds never

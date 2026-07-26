@@ -5,7 +5,7 @@
 #pragma once
 
 #include <ecs/component_id.hpp> // ComponentId
-#include <ecs/detail/handle.hpp>
+#include <ecs/detail/container/handle.hpp>
 #include <ecs/reflection/type_names.hpp>
 
 namespace ecs {

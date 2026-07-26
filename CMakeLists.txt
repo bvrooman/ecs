@@ -71,30 +71,34 @@ if (ECS_DEV_TOOLING)
 endif ()
 
 # ---------------------------------------------------------------------------
-# Header-only schedule visualizer (tools/schedule_viz*). Kept out of the core
+# Header-only schedule visualizer (tools/include/ecs/viz/, namespace ecs::viz). Kept out of the core
 # 'ecs' library so the engine carries no visualization code; examples and apps
 # that want to dump a schedule's wave DAG link this instead.
 # ---------------------------------------------------------------------------
 add_library(schedule_viz INTERFACE)
 add_library(ecs::schedule_viz ALIAS schedule_viz)
-target_include_directories(schedule_viz INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(schedule_viz INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 target_link_libraries(schedule_viz INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------
-# Header-only timing diagnostics (tools/stats.hpp -> ecs::diag::TickStats):
+# Header-only timing diagnostics (ecs/diag/stats.hpp -> ecs::diag::TickStats):
 # periodic per-tick timing distributions (mean/p50/p99/max). No engine
 # dependency; like the visualizer it lives in tools/, not the core 'ecs' headers,
 # so examples (native + web) link this to log their stats.
 # ---------------------------------------------------------------------------
 add_library(diag INTERFACE)
 add_library(ecs::diag ALIAS diag)
-target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(diag INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 
 # ---------------------------------------------------------------------------
 # Header-only schedule profiler: two ScheduleObserver timing tools in tools/ --
-# ecs::diag::ScheduleReport (schedule_report.hpp, rolling per-system/wave/tick
+# ecs::diag::ScheduleReport (ecs/diag/schedule_report.hpp, rolling per-system/wave/tick
 # distributions) and ecs::diag::ScheduleTrace (schedule_trace.hpp, per-tick CSV
-# trace), both feeding a configurable ecs::diag::Sink (sink.hpp). They build on
+# trace), both feeding a configurable ecs::diag::Sink (ecs/diag/sink.hpp). They build on
 # the core observer hook (Schedule::add_observer), which is always available;
 # the tools carry no compile gate of their own -- an app links this target and
 # decides when to construct/attach them at runtime (e.g. the mist demo does so on
@@ -102,7 +106,9 @@ target_include_directories(diag INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 # ---------------------------------------------------------------------------
 add_library(profiler INTERFACE)
 add_library(ecs::profiler ALIAS profiler)
-target_include_directories(profiler INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_include_directories(profiler INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>)
 target_link_libraries(profiler INTERFACE ecs::ecs)
 
 # ---------------------------------------------------------------------------

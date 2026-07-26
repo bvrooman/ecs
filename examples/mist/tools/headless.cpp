@@ -33,7 +33,7 @@
 #include "bench.hpp"
 #include <ecs/ecs.hpp>
 #include "mist.hpp"
-#include "schedule_trace.hpp"
+#include <ecs/diag/schedule_trace.hpp>
 #include "simulation.hpp"
 #include <chrono>
 #include <cstdio>

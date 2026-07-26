@@ -8,8 +8,8 @@
 
 #include <ecs/archetype.hpp>
 #include <ecs/command_buffer.hpp>
-#include <ecs/detail/id_vector.hpp>
-#include <ecs/detail/sparse_handle_vector.hpp>
+#include <ecs/detail/container/id_vector.hpp>
+#include <ecs/detail/container/sparse_handle_vector.hpp>
 #include <ecs/entity.hpp>
 #include <ecs/resource.hpp>
 #include <ecs/world_id.hpp>

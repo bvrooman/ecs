@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ecs/detail/id_vector.hpp>
-#include <ecs/detail/strong_id.hpp>
+#include <ecs/detail/container/id_vector.hpp>
+#include <ecs/strong_id.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/work_item.hpp>

@@ -26,7 +26,7 @@
 
 #pragma once
 
-#include <ecs/detail/id_vector.hpp>
+#include <ecs/detail/container/id_vector.hpp>
 #include <ecs/event/emitter.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/query.hpp>

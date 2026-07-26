@@ -1,4 +1,4 @@
-// ecs/detail/move_only_function.hpp
+// ecs/detail/compat/move_only_function.hpp
 //
 // Portability shim for std::move_only_function (C++23, P0288).
 //

@@ -1,4 +1,4 @@
-// tools/schedule_trace.hpp
+// ecs/diag/schedule_trace.hpp
 //
 // A schedule observer that writes a per-tick timing trace: one CSV row per
 // system per tick, buffered and flushed to a Sink. Feed it to a file for
@@ -50,7 +50,7 @@
 
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
 #include <ecs/schedule.hpp>        // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
-#include "sink.hpp"                // ecs::diag::Sink
+#include <ecs/diag/sink.hpp>                // ecs::diag::Sink
 #include <chrono>
 #include <cstdint>
 #include <cstdio>

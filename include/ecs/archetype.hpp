@@ -18,7 +18,7 @@
 
 #include <ecs/archetype_id.hpp>
 #include <ecs/column_id.hpp>
-#include <ecs/detail/id_vector.hpp>
+#include <ecs/detail/container/id_vector.hpp>
 #include <ecs/entity.hpp>
 #include <ecs/soa.hpp>
 #include <algorithm>

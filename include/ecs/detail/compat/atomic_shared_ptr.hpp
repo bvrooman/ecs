@@ -1,4 +1,4 @@
-// ecs/detail/atomic_shared_ptr.hpp
+// ecs/detail/compat/atomic_shared_ptr.hpp
 //
 // Portability shim for std::atomic<std::shared_ptr<T>> (C++20, P0718).
 //

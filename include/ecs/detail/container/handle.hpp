@@ -1,4 +1,4 @@
-// ecs/detail/handle.hpp
+// ecs/detail/container/handle.hpp
 //
 // A generational handle: {index, generation}, tagged by a phantom Tag type so
 // handles from different containers are distinct types (Handle<EntityTag> cannot

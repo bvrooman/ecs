@@ -1,4 +1,4 @@
-// tools/schedule_viz/svg_node.hpp
+// ecs/viz/svg_node.hpp
 //
 // SVG rendering of a single system box: size estimation (box_w/box_h from the
 // NodeView) and the box itself (svg_node), plus a small svg_text helper. The
@@ -12,7 +12,7 @@
 #include <algorithm>
 #include <string>
 
-namespace viz::detail {
+namespace ecs::viz::detail {
 
 inline constexpr double kHeaderH = 24, kLineH = 18, kBotPad = 6, kPadX = 12;
 
@@ -111,4 +111,4 @@ inline std::string svg_node(NodeView const& v, double x, double y, double w, dou
     return s;
 }
 
-} // namespace viz::detail
+} // namespace ecs::viz::detail

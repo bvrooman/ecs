@@ -13,7 +13,7 @@
 
 #pragma once
 
-#include <ecs/detail/move_only_function.hpp>
+#include <ecs/detail/compat/move_only_function.hpp>
 #include <ecs/query.hpp> // WorldView
 #include <ecs/world.hpp>
 #include <ecs/schedule/access.hpp>

@@ -1,4 +1,4 @@
-// ecs/detail/sparse_handle_vector.hpp
+// ecs/detail/container/sparse_handle_vector.hpp
 //
 // A sparse generational handle map -- the sibling of HandleVector. It stores the
 // payload IN the sparse slot, indexed directly by the handle, instead of in a
@@ -32,8 +32,8 @@
 
 #pragma once
 
-#include <ecs/detail/handle.hpp>
-#include <ecs/detail/index_recycler.hpp>
+#include <ecs/detail/container/handle.hpp>
+#include <ecs/detail/container/index_recycler.hpp>
 
 #include <cassert>
 #include <cstddef>

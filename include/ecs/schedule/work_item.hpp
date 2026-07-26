@@ -1,7 +1,7 @@
 #pragma once
 
 #include <ecs/archetype_id.hpp>
-#include <ecs/detail/small_vector.hpp>
+#include <ecs/detail/container/small_vector.hpp>
 #include <ecs/system_id.hpp>
 #include <cstdint>
 

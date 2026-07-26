@@ -1,4 +1,4 @@
-// tools/schedule_viz/name_table.hpp
+// ecs/viz/name_table.hpp
 //
 // viz::NameTable -- optional component/resource id -> display-name override map.
 // Besides the to_dot/to_svg entry points, this is the only public-facing helper.
@@ -16,7 +16,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace viz {
+namespace ecs::viz {
 
 struct NameTable {
     std::unordered_map<ecs::ComponentId, std::string> comp;
@@ -48,4 +48,4 @@ struct NameTable {
     }
 };
 
-} // namespace viz
+} // namespace ecs::viz

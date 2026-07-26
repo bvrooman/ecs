@@ -11,9 +11,9 @@
 //   ./schedule-profiler
 //   head profiler_trace.csv
 #include <ecs/ecs.hpp>
-#include "schedule_report.hpp"
-#include "schedule_trace.hpp"
-#include "sink.hpp"
+#include <ecs/diag/schedule_report.hpp>
+#include <ecs/diag/schedule_trace.hpp>
+#include <ecs/diag/sink.hpp>
 
 #include <cmath>
 #include <cstdio>

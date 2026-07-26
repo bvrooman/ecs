@@ -1,4 +1,4 @@
-// tools/schedule_report.hpp
+// ecs/diag/schedule_report.hpp
 //
 // A schedule observer that reports rolling timing distributions: for the whole
 // tick, each wave, and each system it collects durations and periodically prints
@@ -24,8 +24,8 @@
 
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
 #include <ecs/schedule.hpp>        // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
-#include "sink.hpp"                // ecs::diag::Sink
-#include "stats.hpp"               // ecs::diag::TickStats
+#include <ecs/diag/sink.hpp>                // ecs::diag::Sink
+#include <ecs/diag/stats.hpp>               // ecs::diag::TickStats
 
 #include <chrono>
 #include <string>

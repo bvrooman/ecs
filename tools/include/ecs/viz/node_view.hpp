@@ -1,4 +1,4 @@
-// tools/schedule_viz/node_view.hpp
+// ecs/viz/node_view.hpp
 //
 // Backend-neutral content model for a system box. A NodeView captures *what* to
 // draw -- the box kind plus a list of access lines -- independent of DOT vs SVG;
@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace viz::detail {
+namespace ecs::viz::detail {
 
 enum class Kind { Normal, ReadsAll, Exclusive, Structural };
 
@@ -78,4 +78,4 @@ inline std::pair<char const*, char const*> palette(Kind k) {
 inline constexpr char kRead[]  = "#1f7a4d"; // green
 inline constexpr char kWrite[] = "#c0561f"; // orange
 
-} // namespace viz::detail
+} // namespace ecs::viz::detail

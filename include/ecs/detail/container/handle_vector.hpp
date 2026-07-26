@@ -1,4 +1,4 @@
-// ecs/detail/handle_vector.hpp
+// ecs/detail/container/handle_vector.hpp
 //
 // A generational handle container: hands out stable Handles {index, generation}
 // while storing the payload contiguously (dense) for cache-friendly iteration.
@@ -32,8 +32,8 @@
 
 #pragma once
 
-#include <ecs/detail/handle.hpp>
-#include <ecs/detail/index_recycler.hpp>
+#include <ecs/detail/container/handle.hpp>
+#include <ecs/detail/container/index_recycler.hpp>
 
 #include <cassert>
 #include <cstddef>

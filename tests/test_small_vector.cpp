@@ -1,5 +1,5 @@
 // tests/test_small_vector.cpp -- the inline-storage vector
-// (ecs/detail/small_vector.hpp) that backs WorkItem::units. Covers the inline
+// (ecs/detail/container/small_vector.hpp) that backs WorkItem::units. Covers the inline
 // case, the heap spill past N, and -- the reason it is a variant rather than a
 // hand-rolled inline buffer -- that a move never dangles. The move tests scope
 // the source so it is destroyed before the moved-to value is read, giving ASan
@@ -7,7 +7,7 @@
 // scope, a stolen heap buffer wrongly shared would be a use-after-free.
 
 #include "check.hpp"
-#include <ecs/detail/small_vector.hpp>
+#include <ecs/detail/container/small_vector.hpp>
 #include <utility>
 
 using ecs::detail::SmallVector;

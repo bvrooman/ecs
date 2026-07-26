@@ -5,10 +5,10 @@
 // separately in test_schedule.cpp.
 
 #include "check.hpp"
-#include "schedule_report.hpp"
-#include "schedule_trace.hpp"
+#include <ecs/diag/schedule_report.hpp>
+#include <ecs/diag/schedule_trace.hpp>
 #include "setup.hpp"
-#include "sink.hpp"
+#include <ecs/diag/sink.hpp>
 
 #include <algorithm>
 #include <cstdint>

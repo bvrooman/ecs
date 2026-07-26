@@ -1,4 +1,4 @@
-// ecs/detail/index_recycler.hpp
+// ecs/detail/container/index_recycler.hpp
 //
 // A lock-free recycler for dense-array indices: hands out uint32_t slot indices,
 // reusing freed ones before minting brand-new ones, with no lock on the hot

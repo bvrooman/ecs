@@ -1,7 +1,7 @@
 // tests/test_stats.cpp -- the timing-diagnostics utility (tools/stats.hpp).
 
 #include "check.hpp"
-#include "stats.hpp"
+#include <ecs/diag/stats.hpp>
 
 using ecs::diag::TickStats;
 

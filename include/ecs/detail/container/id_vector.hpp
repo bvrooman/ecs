@@ -1,4 +1,4 @@
-// ecs/detail/id_vector.hpp
+// ecs/detail/container/id_vector.hpp
 //
 // A std::vector indexed by a strong id (a StrongId over an integer position)
 // instead of a raw integer. operator[] accepts ONLY that id type, so the
