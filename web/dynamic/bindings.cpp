@@ -112,7 +112,11 @@ public:
         // ?stats in the page URL -> time each tick() so JS can poll the per-tick
         // distribution via pollStats() (no env var in a browser). Guarded so the
         // node smoke modules, where `location` is undefined, just see it off.
-        // clang-format off -- EM_ASM body is JS; clang-format splits `!==` into `!= =`.
+        // The marker below must stay bare: clang-format only honours a comment
+        // whose text is exactly "clang-format off", so trailing prose silently
+        // disables it -- and this EM_ASM body is JS, which clang-format mangles
+        // (`!==` becomes `!= =`).
+        // clang-format off
         stats_on_ = EM_ASM_INT(
             { return (typeof location !== 'undefined'
                       && location.search.indexOf('stats') >= 0) ? 1 : 0; });
