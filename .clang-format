@@ -32,7 +32,7 @@ IncludeCategories:
   - Regex: '.*'
     Priority: 2
 IndentAccessModifiers: false
-IndentRequiresClause: false
+IndentRequiresClause: true
 IndentWidth: 4
 
 MaxEmptyLinesToKeep: 1

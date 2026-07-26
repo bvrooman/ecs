@@ -158,7 +158,7 @@ public:
     // mutable callers -- the span's element constness follows that of `self`.
     // Constrained to lvalues: a span into a temporary storage would dangle.
     template <std::size_t I, class Self>
-    requires std::is_lvalue_reference_v<Self>
+        requires std::is_lvalue_reference_v<Self>
     auto column(this Self&& self) noexcept {
         auto& c = std::get<I>(self.columns_);
         return std::span(c.data(), c.size());
@@ -224,7 +224,7 @@ private:
 // A component with zero data members (a "tag"). It still needs a row count but
 // stores nothing -- handled as a degenerate SoA with no columns.
 template <reflect::Reflectable T>
-requires (reflect::field_count_v<T> == 0)
+    requires (reflect::field_count_v<T> == 0)
 class soa_storage<T> {
 public:
     using value_type                         = T;

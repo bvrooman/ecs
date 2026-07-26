@@ -127,9 +127,9 @@ public:
     // a component bundle, ...). Constrained off Signature itself so it can't
     // shadow the copy/move constructors.
     template <class R>
-    requires std::ranges::input_range<R> &&
-             std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
-             (!std::same_as<std::remove_cvref_t<R>, Signature>)
+        requires std::ranges::input_range<R> &&
+                 std::convertible_to<std::ranges::range_reference_t<R>, ComponentId> &&
+                 (!std::same_as<std::remove_cvref_t<R>, Signature>)
     explicit Signature(R&& ids) {
         if constexpr (std::ranges::sized_range<R>)
             ids_.reserve(std::ranges::size(ids));
