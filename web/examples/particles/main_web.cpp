@@ -28,7 +28,7 @@
 #include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include "simulation.hpp"
-#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (tools/, via the ecs::diag include path)
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>

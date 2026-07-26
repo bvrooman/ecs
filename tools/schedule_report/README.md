@@ -1,6 +1,6 @@
 # schedule-report
 
-Renders a `ScheduleTrace` CSV (see `tools/schedule_trace.hpp`) into a
+Renders a `ScheduleTrace` CSV (see `ecs/diag/schedule_trace.hpp`) into a
 self-contained HTML report — headline tick stats, per-wave wall/flush split, a
 stacked wave-composition chart showing how each wave's wall builds the tick,
 systems ranked by amortized busy time, and a card per system with its

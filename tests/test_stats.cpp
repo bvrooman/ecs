@@ -1,4 +1,4 @@
-// tests/test_stats.cpp -- the timing-diagnostics utility (tools/stats.hpp).
+// tests/test_stats.cpp -- the timing-diagnostics utility (ecs/diag/stats.hpp).
 
 #include "check.hpp"
 #include <ecs/diag/stats.hpp>

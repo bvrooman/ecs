@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ecs LANGUAGES CXX)
+project(ecs VERSION 0.1.0 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
 # Options
@@ -149,4 +149,49 @@ endif ()
 # Emscripten toolchain -- native builds skip this entirely.
 if (EMSCRIPTEN)
     add_subdirectory(web)
+endif ()
+
+# ---------------------------------------------------------------------------
+# Install / export
+#
+# All four targets are INTERFACE (header-only), so installing is just headers
+# plus the usage requirements CMake records for them. Two header roots ship:
+# include/ (the library) and tools/include/ (ecs/diag/, ecs/viz/), both landing
+# under the same ecs/ prefix so an installed consumer spells every header the
+# same way an in-tree one does.
+#
+# Skipped when ecs is pulled in with add_subdirectory/FetchContent -- a
+# subproject has no business adding install rules to its parent.
+# ---------------------------------------------------------------------------
+if (PROJECT_IS_TOP_LEVEL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS ecs schedule_viz diag profiler EXPORT ecsTargets)
+    install(DIRECTORY include/ tools/include/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp")
+
+    install(EXPORT ecsTargets
+            FILE ecsTargets.cmake
+            NAMESPACE ecs::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
+
+    # Header-only and compiler-version-independent, so any consumer version
+    # works with any newer library version.
+    write_basic_package_version_file(
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfigVersion.cmake"
+            VERSION ${PROJECT_VERSION}
+            COMPATIBILITY SameMajorVersion
+            ARCH_INDEPENDENT)
+
+    configure_package_config_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ecsConfig.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfig.cmake"
+            INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
+
+    install(FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfig.cmake"
+            "${CMAKE_CURRENT_BINARY_DIR}/ecsConfigVersion.cmake"
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ecs)
 endif ()

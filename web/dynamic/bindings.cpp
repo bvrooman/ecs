@@ -14,7 +14,7 @@
 #include <ecs/schedule.hpp>
 #include <ecs/world.hpp>
 #include "js_system.hpp"
-#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (tools/, via the ecs::diag include path)
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

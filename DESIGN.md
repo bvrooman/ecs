@@ -9,26 +9,50 @@ it touches.
 
 ```
 include/ecs/
-  reflection/            reusable, ECS-agnostic reflection layer  (namespace ecs::reflect)
-    reflect.hpp            field reflection facade (selects a backend + for_each_field)
-    reflect_common.hpp     shared base both backends include (Reflectable concept + helper)
-    reflect_p2996.hpp      backend A: real C++26 P2996 static reflection
-    reflect_portable.hpp   backend B: aggregate arity + structured bindings
-    type_names.hpp         optional component/resource id -> name registry (diagnostics)
-  parallel/              the data-parallel runtime                (namespace ecs::parallel)
-    worker_pool.hpp        persistent fork-join worker pool
-  sync/                  lock-free thread handoff primitives       (namespace ecs::sync)
-    triple_buffer.hpp      SPSC triple buffer (single-consumer snapshot)
-    snapshot_channel.hpp   multi-consumer snapshot fan-out
+  ecs.hpp              umbrella: the whole statically-typed surface
+  dynamic.hpp          umbrella: opt-in runtime-described components
+  world.hpp            umbrella over world/
+  schedule.hpp         umbrella over schedule/
+
   soa.hpp              soa_storage<T> : AoS API, SoA storage      (the ECS core,
-  entity.hpp           generational Entity handle, ComponentId     namespace ecs)
+  entity.hpp           generational Entity handle + component_id<T> namespace ecs)
+  strong_id.hpp        StrongId<Tag,Rep>, the base of every *Id below
+  {archetype,column,component,resource,system,world}_id.hpp  strong id aliases
   archetype.hpp        type-erased component columns grouped by signature
-  resource.hpp         type-erased singleton registry (Res / ResMut)
+  chunk.hpp            a lane's span-view of one component over a row range
+  resource.hpp         type-erased singleton registry
   command_buffer.hpp   deferred structural edits (sharded monotonic arena)
-  world.hpp            entity lifecycle + dynamic archetype transitions
-  query.hpp            iterate matching archetypes (ergonomic + data-parallel SoA path)
-  schedule.hpp         system scheduler: conflict analysis + the WorkerPool executor
-  ecs.hpp              umbrella header
+  query.hpp            iterate matching archetypes (ergonomic + SoA paths)
+
+  world/               entity lifecycle + dynamic archetype transitions
+    world.hpp            the World itself
+    commands.hpp         Commands -- the deferred mutation API systems see
+    res.hpp              Res<T> / ResMut<T> resource parameters
+  schedule/            conflict analysis + the WorkerPool executor
+    access.hpp           phase<N>, SystemAccess, conflicts()
+    system.hpp           SystemRecord + the parameter/kernel protocols
+    validate.hpp         the consteval checks registration is gated on
+    work_item.hpp        WorkItem/Unit -- one claimable slice of a wave
+    wave.hpp             the work-item executor (build + dispatch)
+    graph.hpp            systems -> wavefront levels -> wave plans
+    schedule.hpp         the Schedule class (registration, run loop)
+    events.hpp           sched_event::*, ScheduleEvent
+    kernel_params.hpp    umbrella over params/
+    params/              one header per system parameter (Bin, Collect,
+                         Extract, Local, Random, Reduce, Scratch, Events, ...)
+  dynamic/             runtime-described components         (namespace ecs::dynamic)
+  reflection/          reusable, ECS-agnostic reflection     (namespace ecs::reflect)
+  parallel/            the data-parallel runtime            (namespace ecs::parallel)
+  sync/                lock-free thread handoff primitives      (namespace ecs::sync)
+  event/               Emitter/observer                        (namespace ecs::event)
+  detail/              internals                              (namespace ecs::detail)
+    container/           generic containers, no ECS concepts
+    compat/              toolchain shims (move_only_function, atomic_shared_ptr)
+    chunk_fields.hpp, for_each_row*.hpp   ECS-specific, backend-selected
+
+tools/include/ecs/
+  diag/                timing observers + sinks                 (namespace ecs::diag)
+  viz/                 schedule DAG -> SVG/DOT                   (namespace ecs::viz)
 ```
 
 The supporting libraries -- reflection, the worker pool, and the snapshot
@@ -38,6 +62,26 @@ handoff primitives -- live in their own folders and sub-namespaces (`ecs::reflec
 from those layers (`WorkerPool`, `TripleBuffer`, `SnapshotChannel`) are also
 re-exported into `ecs` with `using`-declarations, so they remain reachable as
 `ecs::WorkerPool` etc.
+
+Four conventions hold across the tree:
+
+- **Includes are rooted.** Every header, in the library and out of it, is
+  included as `<ecs/...>` -- never a relative path. An include says what it
+  needs, not where the includer happens to sit, so files can move without
+  rewriting their dependents.
+- **Every header stands alone.** Including any one header compiles on its own;
+  none of them lean on a sibling having been included first. (The two P2996
+  backends are the exception -- they need a reflection toolchain by
+  construction.)
+- **A directory that is its own layer gets its own namespace** (`ecs::reflect`,
+  `ecs::parallel`, `ecs::sync`, `ecs::event`, `ecs::dynamic`, `ecs::diag`,
+  `ecs::viz`). Directories that are an implementation layout for one concept --
+  `world/`, `schedule/`, `schedule/params/` -- do not; their contents are the
+  core ECS vocabulary and stay in `ecs`.
+- **`detail` is spelled to match the file.** A file that is entirely internal
+  opens `namespace ecs::detail {`. A file where a public type and its private
+  specialization interleave nests `detail` inside `ecs`, rather than closing and
+  reopening the outer namespace around each one.
 
 ## 1. Components are structs
 

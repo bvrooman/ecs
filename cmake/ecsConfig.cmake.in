@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# The core target links Threads::Threads (the WorkerPool runs the schedule on
+# resident std::thread workers). Emscripten builds single-threaded and skip it,
+# so this mirrors the condition the build used.
+if (NOT EMSCRIPTEN)
+    find_dependency(Threads)
+endif ()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ecsTargets.cmake")
+
+check_required_components(ecs)
