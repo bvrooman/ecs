@@ -8,6 +8,7 @@
 #pragma once
 
 #include <ecs/schedule/params/protocol.hpp>
+
 #include <cstdint>
 #include <span>
 

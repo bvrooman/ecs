@@ -21,9 +21,11 @@
 #include <ecs/detail/container/id_vector.hpp>
 #include <ecs/entity.hpp>
 #include <ecs/soa.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -33,9 +35,8 @@
 #include <span>
 #include <type_traits>
 #include <unordered_map>
-#include <vector>
-#include <cstddef>
 #include <utility>
+#include <vector>
 
 namespace ecs {
 
@@ -120,9 +121,7 @@ public:
     // The unmatchable sentinel: a signature holding a private Dummy component id
     // that no real query carries, so it includes() no archetype (an *empty*
     // signature would match every archetype instead).
-    static Signature null() noexcept {
-        return Signature {{component_id<Dummy>}};
-    }
+    static Signature null() noexcept { return Signature {{component_id<Dummy>}}; }
 
     // Construct from any range of ComponentId (a std::vector, a views::keys of
     // a component bundle, ...). Constrained off Signature itself so it can't

@@ -12,12 +12,13 @@
 
 #include <ecs/schedule/params/parallel.hpp>
 #include <ecs/schedule/params/protocol.hpp>
+
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <utility>
 #include <vector>
-#include <algorithm>
 
 namespace ecs {
 

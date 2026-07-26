@@ -47,7 +47,7 @@ namespace ecs::detail {
 template <class Payload, class Tag>
 class SparseHandleVector {
 public:
-    using handle_type = Handle<Tag>;
+    using handle_type                       = Handle<Tag>;
     static constexpr uint32_t invalid_index = handle_type::invalid_index;
 
     // --- concurrent phase (safe during a wave) -------------------------------
@@ -112,7 +112,9 @@ public:
 
     // Number of live payloads.
     [[nodiscard]]
-    std::size_t size() const noexcept { return live_; }
+    std::size_t size() const noexcept {
+        return live_;
+    }
 
     // Pre-size the slot storage (capacity hint for bulk setup). Single-threaded.
     void reserve_capacity(std::size_t const n) { slots_.reserve(n); }

@@ -15,8 +15,9 @@
 //
 //   ECS_ENTITIES (200000), ECS_REPEATS (5)
 
-#include "bench.hpp"
 #include <ecs/ecs.hpp>
+
+#include "bench.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <optional>
@@ -37,9 +38,7 @@ namespace {
 constexpr int kCells = 32; // per axis: 32^2 buckets, mist-like density
 
 std::uint32_t cell_of(P const& p) {
-    auto const ax = [](float v) {
-        return std::uint32_t(v) & (kCells - 1);
-    };
+    auto const ax = [](float v) { return std::uint32_t(v) & (kCells - 1); };
     return ax(p.x) * kCells + ax(p.y);
 }
 
@@ -81,8 +80,7 @@ void drift(World& w, std::size_t n, double frac, unsigned seed) {
 
 void report(char const* name, std::size_t n, int repeats, double ns) {
     std::printf("  %-24s %8.2f ns/row\n", name, ns);
-    bench::emit(name, "ns_per_row", ns, "ns", "lower", n, 1,
-                std::size_t(repeats));
+    bench::emit(name, "ns_per_row", ns, "ns", "lower", n, 1, std::size_t(repeats));
 }
 
 } // namespace
@@ -93,14 +91,14 @@ int main() {
     int const R         = int(bench::env_long("ECS_REPEATS", 5));
     auto const key      = [](P const& p) { return cell_of(p); };
 
-    std::printf("sort_bench: %zu rows, %d^2 cells, best of %d\n",
-                N, kCells, R);
+    std::printf("sort_bench: %zu rows, %d^2 cells, best of %d\n", N, kCells, R);
 
     // sorted scan: second sort right after the first -- keys pass, no permute
     {
         std::optional<World> w;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 spawn_random(*w, N, 1u);
@@ -113,9 +111,10 @@ int main() {
     // shuffled sort: random layout, full counting sort + permutation
     {
         std::optional<World> w;
-        unsigned seed = 1;
+        unsigned seed   = 1;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 spawn_random(*w, N, seed++);
@@ -127,9 +126,10 @@ int main() {
     // drifted 5%: once with the threshold above the drift (skip), once at 0
     for (double const min_disorder : {0.2, 0.0}) {
         std::optional<World> w;
-        unsigned seed = 100;
+        unsigned seed   = 100;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 spawn_random(*w, N, seed);
@@ -137,8 +137,7 @@ int main() {
                 drift(*w, N, 0.05, seed++);
             },
             [&] { w->sort_rows<P>(key, min_disorder); });
-        report(min_disorder > 0 ? "5% drift, skip @0.2" : "5% drift, sort @0",
-               N, R, ns);
+        report(min_disorder > 0 ? "5% drift, skip @0.2" : "5% drift, sort @0", N, R, ns);
     }
     return 0;
 }

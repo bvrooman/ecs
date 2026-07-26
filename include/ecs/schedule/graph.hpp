@@ -12,6 +12,7 @@
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/wave.hpp>
 #include <ecs/system_id.hpp>
+
 #include <algorithm>
 #include <iterator>
 #include <ranges>

@@ -2,8 +2,9 @@
 // (ecs/detail/container/index_recycler.hpp). Exercises its single-threaded semantics; the
 // lock-free allocate() path is covered under TSan by the schedule/churn tests.
 
-#include "check.hpp"
 #include <ecs/detail/container/index_recycler.hpp>
+
+#include "check.hpp"
 
 using ecs::detail::IndexRecycler;
 
@@ -36,7 +37,7 @@ static void compact_drops_claimed_tail() {
     (void)r.allocate(); // 0
     (void)r.allocate(); // 1
     r.free(0);
-    r.free(1);              // free = [0, 1]
+    r.free(1);                // free = [0, 1]
     CHECK(r.allocate() == 1); // claims the tail; free stack still holds [0,1]
     r.compact();              // drop the claimed slot -> free = [0]
     CHECK(r.allocate() == 0); // recycles the remaining freed slot

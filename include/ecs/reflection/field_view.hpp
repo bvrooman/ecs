@@ -43,8 +43,10 @@ consteval std::vector<std::meta::info> field_span_specs() {
     std::vector<info> out;
     for (info const m : nonstatic_data_members_of(^^Bare, access_context::current())) {
         info const elem = std::is_const_v<C> ? add_const(type_of(m)) : type_of(m);
-        out.push_back(
-            data_member_spec(substitute(^^std::span, {elem}), {.name = identifier_of(m)}));
+        out.push_back(data_member_spec(substitute(^^std::span,
+                                                  {
+                                                      elem}),
+                                       {.name = identifier_of(m)}));
     }
     return out;
 }
@@ -70,8 +72,8 @@ consteval std::vector<std::meta::info> field_ref_specs() {
     std::vector<info> out;
     for (info const m : nonstatic_data_members_of(^^Bare, access_context::current())) {
         info const elem = std::is_const_v<C> ? add_const(type_of(m)) : type_of(m);
-        out.push_back(
-            data_member_spec(add_lvalue_reference(elem), {.name = identifier_of(m)}));
+        out.push_back(data_member_spec(add_lvalue_reference(elem),
+                                       {.name = identifier_of(m)}));
     }
     return out;
 }

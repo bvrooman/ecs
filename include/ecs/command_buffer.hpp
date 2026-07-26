@@ -31,6 +31,7 @@
 #pragma once
 
 #include <ecs/system_id.hpp> // SystemId (the recording-source tag)
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -39,11 +40,11 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <new>
 
 namespace ecs {
 namespace detail {

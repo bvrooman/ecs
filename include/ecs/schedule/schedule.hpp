@@ -30,7 +30,6 @@
 #include <ecs/event/emitter.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/query.hpp>
-#include <ecs/world.hpp>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/events.hpp>
 #include <ecs/schedule/graph.hpp>
@@ -39,15 +38,17 @@
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/validate.hpp>
 #include <ecs/schedule/wave.hpp>
+#include <ecs/world.hpp>
+
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
-#include <iterator>
 
 namespace ecs {
 
@@ -397,7 +398,6 @@ private:
         return register_system(std::move(sys));
     }
 
-
     template <class Fn>
     SystemId emplace(std::string name,
                      Fn&& fn,
@@ -425,7 +425,8 @@ private:
                       "primitives (Reduce/Extract/Collect/EventWriter/"
                       "EventReader/Scratch/Random) are kernel-only (register "
                       "with add_kernel)");
-        if constexpr (detail::IntrospectableSystem<Fn> && detail::at_most_one_query<Fn>() &&
+        if constexpr (detail::IntrospectableSystem<Fn> &&
+                      detail::at_most_one_query<Fn>() &&
                       detail::params_allowed<ParamI, Fn>())
             return build_system<ParamI>(std::move(name),
                                         std::forward<Fn>(fn),
@@ -476,9 +477,9 @@ private:
                       "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
                       "Random (Local<T> is imperative-only: per-system state has "
                       "no race-free meaning across a kernel's concurrent items)");
-        if constexpr (detail::IntrospectableSystem<Fn> && detail::at_most_one_query<Fn>() &&
-                      detail::has_query<Fn>() && !detail::has_res_mut<Fn>() &&
-                      detail::params_allowed<ParamK, Fn>())
+        if constexpr (detail::IntrospectableSystem<Fn> &&
+                      detail::at_most_one_query<Fn>() && detail::has_query<Fn>() &&
+                      !detail::has_res_mut<Fn>() && detail::params_allowed<ParamK, Fn>())
             return build_system<ParamK>(std::move(name),
                                         std::forward<Fn>(fn),
                                         /*once=*/false,
@@ -523,7 +524,6 @@ private:
         }
         events_.emit(WaveEnd {lvl, flush_us, plan_result.build_us, plan_result.sort_us});
     }
-
 
     void rebuild() {
         if (!dirty_)

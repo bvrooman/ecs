@@ -145,9 +145,7 @@ static void const_query_marks_read_only() {
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}, Velocity {2, 3}); });
     // Velocity read-only (const), Position the declared write.
     run_system(w, [](Query<Velocity const, Position> q) {
-        q.for_each([](auto& v, auto& p) {
-            p.x += v.dx;
-        });
+        q.for_each([](auto& v, auto& p) { p.x += v.dx; });
     });
     CHECK(w.get<Position>(e).x == 3.f);  // 1 + 2
     CHECK(w.get<Velocity>(e).dx == 2.f); // untouched
@@ -158,7 +156,7 @@ static void const_query_marks_read_only() {
     float sum_x      = 0;
     std::size_t seen = 0;
     w.for_each_chunk<Position const>([&](std::span<Entity const>,
-                                                chunk<Position const> pos) {
+                                         chunk<Position const> pos) {
         for (float x : pos.column<0>()) { // span<const float>
             sum_x += x;
             ++seen;
@@ -176,7 +174,9 @@ static void query_chunk_skips_empty_archetype() {
     Entity e = Entity::null();
     setup(w, [&](Commands& cmd) { e = cmd.spawn(Position {1, 1}); }); // -> {Position}
     setup(w, [&](Commands& cmd) {
-        cmd.add<Velocity>(e, Velocity {2, 2}); // migrate -> {Position,Velocity}, {Position} now empty
+        cmd.add<Velocity>(
+            e,
+            Velocity {2, 2}); // migrate -> {Position,Velocity}, {Position} now empty
     });
     // Query<Position> matches BOTH the emptied {Position} and {Position,Velocity}.
     std::size_t invocations = 0, rows = 0;
@@ -228,7 +228,7 @@ static void add_remove_churn_preserves_data() {
     });
 
     Schedule s;
-    auto churn = s.add("churn", [&](Query<const Position>, Commands& cmd) {
+    auto churn = s.add("churn", [&](Query<Position const>, Commands& cmd) {
         if (w.has<Velocity>(a))
             cmd.remove<Velocity>(a);
         else
@@ -264,8 +264,7 @@ static void heap_owning_component_survives_transitions() {
         cmd.add(keep, Velocity {1, 1}); // relocate {P,L} -> {P,L,V}
         cmd.destroy(dead);              // swap-remove in the old archetype
     });
-    CHECK(w.get<Label>(keep).text ==
-          "the quick brown fox jumps over strings' SSO");
+    CHECK(w.get<Label>(keep).text == "the quick brown fox jumps over strings' SSO");
     CHECK(w.get<Label>(keep).data.size() == 5);
     CHECK(!w.alive(dead));
 }

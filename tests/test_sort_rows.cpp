@@ -3,9 +3,10 @@
 // primitives section). Rows are reordered; entity handles must not notice,
 // iteration must come out in key order, the sort must be stable, and a
 // schedule run over the sorted layout must stay lane-count-invariant.
-#include "check.hpp"
 #include <ecs/dynamic/dynamic_column.hpp>
 #include <ecs/ecs.hpp>
+
+#include "check.hpp"
 #include "setup.hpp"
 #include <cstdint>
 #include <cstring>
@@ -53,8 +54,7 @@ static void sort_orders_rows_and_preserves_handles() {
     bool handles_ok = true;
     for (std::size_t i = 0; i < es.size(); ++i) {
         auto const p = w.get<Position>(es[i]);
-        if (p.x != scrambled(int(i)) || p.y != -p.x ||
-            w.get<Health>(es[i]).hp != int(i))
+        if (p.x != scrambled(int(i)) || p.y != -p.x || w.get<Health>(es[i]).hp != int(i))
             handles_ok = false;
     }
     for (std::size_t i = 0; i < plain.size(); ++i)
@@ -69,12 +69,13 @@ static void sort_orders_rows_and_preserves_handles() {
         bool ok    = true;
         // Three fixed params (not `auto const&...`): with a variadic tail the
         // row/Entity arity check in for_each_row would bind p to the Entity.
-        w.for_each<Position const, Health const, Frozen const>(
-            [&](auto const& p, auto const&, auto const&) {
-                if (p.x < prev)
-                    ok = false;
-                prev = p.x;
-            });
+        w.for_each<Position const, Health const, Frozen const>([&](auto const& p,
+                                                                   auto const&,
+                                                                   auto const&) {
+            if (p.x < prev)
+                ok = false;
+            prev = p.x;
+        });
         return ok;
     };
     CHECK(ascending(w));
@@ -95,19 +96,18 @@ static void sort_is_stable() {
     float prev_key = -1.0f;
     int prev_hp    = -1;
     bool ok        = true;
-    w.for_each<Position const, Health const>(
-        [&](auto const& p, auto const& h) {
-            if (p.x < prev_key)
-                ok = false; // keys ascend
-            if (p.x == prev_key && h.hp <= prev_hp)
-                ok = false; // within a key: spawn order preserved
-            if (p.x != prev_key)
-                prev_hp = -1;
-            prev_key = p.x;
-            if (h.hp <= prev_hp)
-                ok = false;
-            prev_hp = h.hp;
-        });
+    w.for_each<Position const, Health const>([&](auto const& p, auto const& h) {
+        if (p.x < prev_key)
+            ok = false; // keys ascend
+        if (p.x == prev_key && h.hp <= prev_hp)
+            ok = false; // within a key: spawn order preserved
+        if (p.x != prev_key)
+            prev_hp = -1;
+        prev_key = p.x;
+        if (h.hp <= prev_hp)
+            ok = false;
+        prev_hp = h.hp;
+    });
     CHECK(ok);
 }
 
@@ -131,15 +131,14 @@ static void sort_after_churn() {
     float prev = -1.0f;
     bool ok    = true;
     int seen   = 0;
-    w.for_each<Position const, Health const>(
-        [&](auto const& p, auto const& h) {
-            if (p.x < prev)
-                ok = false;
-            prev = p.x;
-            if (h.hp % 3 == 0)
-                ok = false; // destroyed rows must be gone
-            ++seen;
-        });
+    w.for_each<Position const, Health const>([&](auto const& p, auto const& h) {
+        if (p.x < prev)
+            ok = false;
+        prev = p.x;
+        if (h.hp % 3 == 0)
+            ok = false; // destroyed rows must be gone
+        ++seen;
+    });
     CHECK(ok);
     CHECK(seen == 400);
     // Survivors still read their own values through their handles.
@@ -163,19 +162,18 @@ static void integral_keys_sort_correctly_on_both_paths() {
         int prev_hp   = -1;
         bool first    = true;
         bool ok       = true;
-        w.for_each<Position const, Health const>(
-            [&](auto const& p, auto const& h) {
-                auto const k = key(p);
-                if (!first) {
-                    if (k < prev_key)
-                        ok = false; // keys ascend
-                    if (k == prev_key && h.hp <= prev_hp)
-                        ok = false; // stability within a key
-                }
-                first    = false;
-                prev_key = k;
-                prev_hp  = h.hp;
-            });
+        w.for_each<Position const, Health const>([&](auto const& p, auto const& h) {
+            auto const k = key(p);
+            if (!first) {
+                if (k < prev_key)
+                    ok = false; // keys ascend
+                if (k == prev_key && h.hp <= prev_hp)
+                    ok = false; // stability within a key
+            }
+            first    = false;
+            prev_key = k;
+            prev_hp  = h.hp;
+        });
         CHECK(ok);
     };
     // Compact range incl. negatives (range 41 << 4n): counting path.
@@ -232,8 +230,7 @@ static void every_cadence_fires_and_sort_command_stays_invariant() {
         World w;
         Schedule s;
         w.emplace_resource<int>(0);
-        s.add(
-            "count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
+        s.add("count", [&](Res<int>) { ++fired; }, phase<0> {}, /*every=*/3);
         for (int t = 0; t < 9; ++t)
             s.run(w);
     }
@@ -319,8 +316,8 @@ static void sorted_layout_stays_lane_count_invariant() {
     auto const serial   = run(1);
     auto const parallel = run(4);
     CHECK(!serial.empty());
-    CHECK(serial == parallel);              // bitwise: 1 lane == 4 lanes
-    CHECK(std::ranges::is_sorted(serial));  // and the walk sees key order
+    CHECK(serial == parallel);             // bitwise: 1 lane == 4 lanes
+    CHECK(std::ranges::is_sorted(serial)); // and the walk sees key order
 }
 
 // DynamicColumn implements the same permutation (a JS-defined component's
@@ -334,7 +331,7 @@ static void dynamic_column_applies_permutation() {
 
     DynamicColumn col(desc);
     for (int i = 0; i < 5; ++i) {
-        float const a = float(i) * 1.5f;
+        float const a        = float(i) * 1.5f;
         std::int32_t const b = 100 + i;
         std::byte blob[8];
         std::memcpy(blob, &a, 4);
@@ -380,9 +377,10 @@ static void sort_command_applies_at_barrier() {
     CHECK(descents() > 0); // scrambled to start
 
     Schedule s;
-    s.add("resort",
-          [](Commands& c) { c.sort<Position>([](Position const& p) { return int(p.x); }); });
-    s.run(w); // records the sort; applied at the wave barrier
+    s.add("resort", [](Commands& c) {
+        c.sort<Position>([](Position const& p) { return int(p.x); });
+    });
+    s.run(w);               // records the sort; applied at the wave barrier
     CHECK(descents() == 0); // sorted after the flush
 }
 

@@ -34,14 +34,13 @@
 
 #pragma once
 
-#include <ecs/schedule/params/protocol.hpp>
-
 #include <ecs/schedule/params/bin.hpp>
 #include <ecs/schedule/params/collect.hpp>
 #include <ecs/schedule/params/commands.hpp>
 #include <ecs/schedule/params/events.hpp>
 #include <ecs/schedule/params/extract.hpp>
 #include <ecs/schedule/params/local.hpp>
+#include <ecs/schedule/params/protocol.hpp>
 #include <ecs/schedule/params/random.hpp>
 #include <ecs/schedule/params/reduce.hpp>
 #include <ecs/schedule/params/scratch.hpp>

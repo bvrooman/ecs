@@ -24,6 +24,7 @@
 #pragma once
 
 #include <ecs/schedule/params/protocol.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>

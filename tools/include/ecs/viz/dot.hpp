@@ -8,15 +8,16 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+
 #include "graph.hpp"
 #include "name_table.hpp"
 #include "node_view.hpp"
 #include "text.hpp"
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
-#include <cstddef>
 
 namespace ecs::viz::detail {
 

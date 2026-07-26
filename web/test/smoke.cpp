@@ -19,6 +19,7 @@
 
 #include <ecs/ecs.hpp>
 #include <ecs/reflection/reflect.hpp>
+
 #include <cstdio>
 #include <vector>
 
@@ -123,9 +124,7 @@ int main() {
                     ResMut<SnapshotChannel<Snapshot>> ch) {
                      Snapshot& out = ch->back();
                      out.clear();
-                     q.for_each([&](auto& p, auto&) {
-                         out.push_back({p.x, p.y, p.z});
-                     });
+                     q.for_each([&](auto& p, auto&) { out.push_back({p.x, p.y, p.z}); });
                      ch->publish();
                  });
 

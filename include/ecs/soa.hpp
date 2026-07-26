@@ -17,15 +17,16 @@
 #pragma once
 
 #include <ecs/reflection/reflect.hpp>
+
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
-#include <type_traits>
 
 namespace ecs {
 
@@ -74,9 +75,8 @@ public:
     // otherwise the columns would be left at different lengths, silently and
     // permanently desynchronizing every row after this one.
     auto push_back(T const& v) {
-        return scatter_append(v, [](auto& col, auto const& field) {
-            col.push_back(field);
-        });
+        return scatter_append(v,
+                              [](auto& col, auto const& field) { col.push_back(field); });
     }
 
     // Move overload: fields are moved into their columns, so a component with
@@ -158,7 +158,7 @@ public:
     // mutable callers -- the span's element constness follows that of `self`.
     // Constrained to lvalues: a span into a temporary storage would dangle.
     template <std::size_t I, class Self>
-        requires std::is_lvalue_reference_v<Self>
+    requires std::is_lvalue_reference_v<Self>
     auto column(this Self&& self) noexcept {
         auto& c = std::get<I>(self.columns_);
         return std::span(c.data(), c.size());
@@ -173,7 +173,9 @@ public:
         static constexpr std::array<void* (*)(soa_storage&), field_count> getters =
             []<std::size_t... I>(std::index_sequence<I...>) {
                 return std::array<void* (*)(soa_storage&), field_count> {
-                    +[](soa_storage& s) -> void* { return std::get<I>(s.columns_).data(); }...};
+                    +[](soa_storage& s) -> void* {
+                        return std::get<I>(s.columns_).data();
+                    }...};
             }(std::make_index_sequence<field_count> {});
         return getters[i](*this);
     }
@@ -250,7 +252,7 @@ public:
         return --size_;
     }
     void apply_permutation(std::span<std::uint32_t const>) noexcept {} // no data
-    void* field_base(std::size_t) noexcept { return nullptr; } // no fields
+    void* field_base(std::size_t) noexcept { return nullptr; }         // no fields
 
 private:
     std::size_t size_ = 0;

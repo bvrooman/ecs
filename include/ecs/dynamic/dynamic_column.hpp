@@ -11,14 +11,15 @@
 
 #include <ecs/archetype.hpp> // ecs::IColumn
 #include <ecs/dynamic/component_desc.hpp>
+
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
-#include <vector>
-#include <cstdint>
 #include <utility>
+#include <vector>
 
 namespace ecs::dynamic {
 

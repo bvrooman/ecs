@@ -9,9 +9,10 @@
 
 #pragma once
 
-#include <ecs/entity.hpp>     // component_id
-#include <ecs/resource.hpp>   // resource_id
+#include <ecs/entity.hpp>                // component_id
 #include <ecs/reflection/type_names.hpp> // component_name / resource_name
+#include <ecs/resource.hpp>              // resource_id
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>

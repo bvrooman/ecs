@@ -1,6 +1,6 @@
-#include "check.hpp"
 #include <ecs/detail/container/handle_vector.hpp>
 
+#include "check.hpp"
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -71,7 +71,7 @@ static void test_create_destroy_create_reuses_slot() {
 }
 
 static void create_reuses_last_deleted_slots() {
-    auto i        = Strings {};
+    auto i = Strings {};
     (void)i.create("hello0");
     (void)i.create("hello1");
     (void)i.create("hello2");
@@ -90,7 +90,7 @@ static void create_accepts_lvalue_and_args() {
     auto i        = Strings {};
     std::string s = "lvalue";
     auto const h0 = i.create(s);            // copy from lvalue
-    CHECK(s == "lvalue");                    // source left intact by the copy
+    CHECK(s == "lvalue");                   // source left intact by the copy
     auto const h1 = i.create(std::move(s)); // move from rvalue
     auto const h2 = i.create(3, 'x');       // in-place: std::string(3, 'x')
     CHECK(*i.get(h0) == "lvalue");

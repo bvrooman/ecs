@@ -42,9 +42,7 @@ static void destroy_during_iteration_is_safe() {
     });
 
     setup(w, [&](WorldView view, Commands& cmd) {
-        view.for_each<Position, Doomed>([&](Entity e, auto&, auto&) {
-            cmd.destroy(e);
-        });
+        view.for_each<Position, Doomed>([&](Entity e, auto&, auto&) { cmd.destroy(e); });
         CHECK(view.size() == 10); // nothing applied yet (still recording)
     });
 
@@ -128,7 +126,7 @@ static void reserved_slot_reuse_bumps_generation() {
     setup(w, [&](Commands& cmd) { reused = cmd.spawn(Position {2, 2}); });
     CHECK(reused.index() == first.index());           // slot reused
     CHECK(reused.generation() != first.generation()); // fresh generation
-    CHECK(!w.alive(first));                       // stale handle stays dead
+    CHECK(!w.alive(first));                           // stale handle stays dead
     CHECK(w.alive(reused));
 }
 

@@ -25,6 +25,7 @@
 #pragma once
 
 #include <ecs/detail/compat/atomic_shared_ptr.hpp>
+
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -105,7 +106,7 @@ public:
         T const* get() const noexcept {
             return current_.get();
         }
-        
+
         [[nodiscard]]
         std::shared_ptr<T const> const& snapshot() const noexcept {
             return current_;

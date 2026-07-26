@@ -22,13 +22,14 @@
 // Emscripten port + WebGL2 (GLES 3.0). The on-screen FPS/count readout, drawn in
 // GL natively, is published to the surrounding page's DOM instead.
 
-#include "../../dynamic/js_system.hpp"
-#include "../gl_util.hpp"
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <ecs/dynamic/native.hpp>
 #include <ecs/ecs.hpp>
+
+#include "../../dynamic/js_system.hpp"
+#include "../gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
-#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <GLES3/gl3.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>

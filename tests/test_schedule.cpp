@@ -1,6 +1,7 @@
 // std::execution scheduler tests. Access is derived from system parameters.
-#include "check.hpp"
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
+
+#include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
 #include <functional>
@@ -62,8 +63,7 @@ static void run_on_thread_pool_executes_all_systems() {
         });
     });
     // writes Health
-    sched.add("damage",
-              [](Query<Health> q) { q.for_each([](auto& h) { h.hp -= 1; }); });
+    sched.add("damage", [](Query<Health> q) { q.for_each([](auto& h) { h.hp -= 1; }); });
     // no ECS access -- just a side effect
     sched.add("render", [&] { render_calls.fetch_add(1, std::memory_order_relaxed); });
 
@@ -102,7 +102,9 @@ static void worldview_reads_all_parallel_but_after_writers() {
         // system declares itself exclusive via add_dynamic.
         SystemAccess excl;
         excl.exclusive = true;
-        sched.add_dynamic("exclusive", excl, [](World&, Commands&, detail::WorkItem const&) {});
+        sched.add_dynamic("exclusive",
+                          excl,
+                          [](World&, Commands&, detail::WorkItem const&) {});
         CHECK(sched.level_count() == 2); // exclusive conflicts with all
     }
 }

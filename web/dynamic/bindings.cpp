@@ -8,13 +8,14 @@
 // order); fieldView() hands back a zero-copy typed-array view aliasing a
 // component's SoA field buffer -- the Phase B per-chunk kernel foundation.
 
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <ecs/dynamic/dynamic_column.hpp>
 #include <ecs/dynamic/registry.hpp>
 #include <ecs/dynamic/world_ops.hpp>
 #include <ecs/schedule.hpp>
 #include <ecs/world.hpp>
+
 #include "js_system.hpp"
-#include <ecs/diag/stats.hpp> // ecs::diag::TickStats (via the ecs::diag target)
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -279,10 +280,18 @@ public:
                 val fo = val::object();
                 fo.set("n", fld.name);
                 switch (fld.type) {
-                case FieldType::f64: fo.set("t", std::string("f64")); break;
-                case FieldType::i32: fo.set("t", std::string("i32")); break;
-                case FieldType::u32: fo.set("t", std::string("u32")); break;
-                case FieldType::f32: fo.set("t", std::string("f32")); break;
+                case FieldType::f64:
+                    fo.set("t", std::string("f64"));
+                    break;
+                case FieldType::i32:
+                    fo.set("t", std::string("i32"));
+                    break;
+                case FieldType::u32:
+                    fo.set("t", std::string("u32"));
+                    break;
+                case FieldType::f32:
+                    fo.set("t", std::string("f32"));
+                    break;
                 }
                 f.call<void>("push", fo);
             }
@@ -378,13 +387,12 @@ public:
                 // clang-format on
             }
         };
-        return static_cast<int>(
-            schedule_
-                .add_dynamic_parallel(std::move(name),
-                                      std::move(access),
-                                      Signature(query),
-                                      std::move(run))
-                .value);
+        return static_cast<int>(schedule_
+                                    .add_dynamic_parallel(std::move(name),
+                                                          std::move(access),
+                                                          Signature(query),
+                                                          std::move(run))
+                                    .value);
     }
 
     // Run the schedule once. First snapshot every parallel system's params object
@@ -452,7 +460,8 @@ private:
         return o;
     }
     static Entity from_val(val e) {
-        return Entity::from_raw(e["index"].as<unsigned>(), e["generation"].as<unsigned>());
+        return Entity::from_raw(e["index"].as<unsigned>(),
+                                e["generation"].as<unsigned>());
     }
 
     // Per parallel system: the JS params object (read each tick), its key names,

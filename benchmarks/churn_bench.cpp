@@ -15,9 +15,10 @@
 //
 //   ECS_ENTITIES (100000), ECS_REPEATS (5), ECS_TICKS (2000, steady churn)
 
+#include <ecs/ecs.hpp>
+
 #include "bench.hpp"
 #include "bench_alloc.hpp"
-#include <ecs/ecs.hpp>
 #include <cstdio>
 #include <deque>
 #include <optional>
@@ -47,17 +48,15 @@ void run_setup(World& w, auto fn) {
 std::vector<Entity> live_entities(World& w) {
     std::vector<Entity> es;
     es.reserve(w.size());
-    w.for_each_chunk<P const>(
-        [&](std::span<Entity const> ids, chunk<P const>) {
-            es.insert(es.end(), ids.begin(), ids.end());
-        });
+    w.for_each_chunk<P const>([&](std::span<Entity const> ids, chunk<P const>) {
+        es.insert(es.end(), ids.begin(), ids.end());
+    });
     return es;
 }
 
 void report(char const* name, std::size_t n, int repeats, double ns) {
     std::printf("  %-28s %8.1f ns/op\n", name, ns);
-    bench::emit(name, "ns_per_op", ns, "ns", "lower", n, 1,
-                std::size_t(repeats));
+    bench::emit(name, "ns_per_op", ns, "ns", "lower", n, 1, std::size_t(repeats));
 }
 
 } // namespace
@@ -74,7 +73,9 @@ int main() {
     {
         std::optional<World> w;
         double const ns = bench::best_ns_of(
-            N, R, [&] { w.emplace(); },
+            N,
+            R,
+            [&] { w.emplace(); },
             [&] {
                 run_setup(*w, [&](Commands& cmd) {
                     for (std::size_t i = 0; i < N; ++i)
@@ -89,7 +90,8 @@ int main() {
         std::optional<World> w;
         std::vector<Entity> es;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 run_setup(*w, [&](Commands& cmd) {
@@ -112,7 +114,8 @@ int main() {
         std::optional<World> w;
         std::vector<Entity> es;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 run_setup(*w, [&](Commands& cmd) {
@@ -135,7 +138,8 @@ int main() {
         std::optional<World> w;
         std::vector<Entity> es;
         double const ns = bench::best_ns_of(
-            N, R,
+            N,
+            R,
             [&] {
                 w.emplace();
                 run_setup(*w, [&](Commands& cmd) {
@@ -194,10 +198,20 @@ int main() {
         });
         std::printf("  steady churn (K=%zu/tick)      mean %7.1f  p50 %7.1f  "
                     "p99 %8.1f us | %5.1f alloc/tick\n",
-                    K, st.mean, st.p50, st.p99, allocs);
+                    K,
+                    st.mean,
+                    st.p50,
+                    st.p99,
+                    allocs);
         bench::emit_dist("steady_churn", 1, st, N, std::size_t(ticks));
-        bench::emit("steady_churn", "allocs_per_tick", allocs, "1", "lower", N,
-                    1, std::size_t(ticks));
+        bench::emit("steady_churn",
+                    "allocs_per_tick",
+                    allocs,
+                    "1",
+                    "lower",
+                    N,
+                    1,
+                    std::size_t(ticks));
     }
     return 0;
 }

@@ -1,12 +1,13 @@
 // Runtime (dynamic / JS-defined) component storage tests. Exercises the Phase A
 // spine -- DynamicColumn + WorldOps -- directly in C++, independent of the wasm
 // binding, so storage bugs surface natively in milliseconds.
-#include "check.hpp"
 #include <ecs/dynamic/native.hpp>
 #include <ecs/dynamic/registry.hpp>
 #include <ecs/dynamic/world_ops.hpp>
 #include <ecs/schedule.hpp>
 #include <ecs/world.hpp>
+
+#include "check.hpp"
 #include <array>
 #include <cstdint>
 
@@ -94,9 +95,13 @@ static void archetype_transitions() {
 static void multi_entity_and_view() {
     auto const Pos = define2("PositionC");
     World w;
-    constexpr int N = 6;
-    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
-                               Entity::null(), Entity::null(), Entity::null()};
+    constexpr int N          = 6;
+    std::array<Entity, N> es = {Entity::null(),
+                                Entity::null(),
+                                Entity::null(),
+                                Entity::null(),
+                                Entity::null(),
+                                Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), float(i * 2)};
@@ -125,9 +130,11 @@ static void multi_entity_and_view() {
 static void destroy_keeps_storage_consistent() {
     auto const Pos = define2("PositionD");
     World w;
-    constexpr int N = 4;
-    std::array<Entity, N> es = {Entity::null(), Entity::null(), Entity::null(),
-                               Entity::null()};
+    constexpr int N          = 4;
+    std::array<Entity, N> es = {Entity::null(),
+                                Entity::null(),
+                                Entity::null(),
+                                Entity::null()};
     for (int i = 0; i < N; ++i) {
         es[i] = WorldOps::create_entity(w);
         F2 p {float(i), 0};

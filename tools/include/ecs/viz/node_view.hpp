@@ -8,6 +8,7 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+
 #include "name_table.hpp"
 #include <string>
 #include <utility>
@@ -38,10 +39,10 @@ inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
     v.once         = s.once;
     bool const has = !a.reads.empty() || !a.writes.empty() || !a.res_reads.empty() ||
                      !a.res_writes.empty();
-    v.kind         = a.exclusive   ? Kind::Exclusive
-                     : a.reads_all ? Kind::ReadsAll
-                     : has         ? Kind::Normal
-                                   : Kind::Structural;
+    v.kind = a.exclusive   ? Kind::Exclusive
+             : a.reads_all ? Kind::ReadsAll
+             : has         ? Kind::Normal
+                           : Kind::Structural;
     for (auto id : a.writes)
         v.lines.push_back({Line::Access, nt.comp_name(id), 'W', false});
     for (auto id : a.reads)

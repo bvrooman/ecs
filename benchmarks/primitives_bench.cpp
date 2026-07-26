@@ -23,8 +23,9 @@
 //
 //   ECS_ENTITIES (200000), ECS_TICKS (300), ECS_LANES ("1,2,4,8")
 
-#include "bench.hpp"
 #include <ecs/ecs.hpp>
+
+#include "bench.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -65,16 +66,14 @@ void populate(World& w, std::size_t n) {
 
 // Run `build`'s one-system schedule at `lanes`, report mean us/tick.
 template <class Build, class Setup>
-double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup,
-                 Build&& build) {
+double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup, Build&& build) {
     World w;
     setup(w);
     populate(w, n);
     Schedule s;
     build(s);
     WorkerPool pool {lanes};
-    return bench::measure_ticks(std::max(20, ticks / 5), ticks,
-                                [&] { s.run(w, pool); })
+    return bench::measure_ticks(std::max(20, ticks / 5), ticks, [&] { s.run(w, pool); })
         .mean;
 }
 
@@ -86,9 +85,14 @@ double time_case(std::size_t n, int ticks, unsigned lanes, Setup&& setup,
 // the setups (they differ for bin/events); imp/ker build the one-system
 // schedule.
 template <class SetupI, class Imp, class SetupK, class Ker>
-void run_primitive(char const* name, std::size_t n, int ticks,
-                   std::vector<unsigned> const& lanes, SetupI&& si, Imp&& imp,
-                   SetupK&& sk, Ker&& ker) {
+void run_primitive(char const* name,
+                   std::size_t n,
+                   int ticks,
+                   std::vector<unsigned> const& lanes,
+                   SetupI&& si,
+                   Imp&& imp,
+                   SetupK&& sk,
+                   Ker&& ker) {
     auto const t      = std::size_t(ticks);
     double const base = time_case(n, ticks, 1, si, imp);
     std::printf("  %-10s imperative %8.1f us |", name, base);
@@ -107,18 +111,17 @@ void run_primitive(char const* name, std::size_t n, int ticks,
 int main() {
     bench::set_suite("primitives");
     std::size_t const N = bench::env_size("ECS_ENTITIES", 200'000);
-    int const T          = int(bench::env_long("ECS_TICKS", 300));
-    auto const lanes     = bench::lane_set();
+    int const T         = int(bench::env_long("ECS_TICKS", 300));
+    auto const lanes    = bench::lane_set();
 
-    std::printf("primitives_bench: %zu entities, %d ticks/config, lanes",
-                N, T);
+    std::printf("primitives_bench: %zu entities, %d ticks/config, lanes", N, T);
     for (unsigned L : lanes)
         std::printf(" %u", L);
     std::printf("\n");
 
     // --- reduce --------------------------------------------------------------
     {
-        auto setup = [](World& w) { w.emplace_resource<Sum>(); };
+        auto setup      = [](World& w) { w.emplace_resource<Sum>(); };
         auto imperative = [](Schedule& s) {
             s.add("sum", [](Query<P const> q, ResMut<Sum> out) {
                 out->v = 0;
@@ -145,7 +148,7 @@ int main() {
 
     // --- extract ---------------------------------------------------------------
     {
-        auto setup = [](World& w) { w.emplace_resource<Snapshot>(); };
+        auto setup      = [](World& w) { w.emplace_resource<Snapshot>(); };
         auto imperative = [](Schedule& s) {
             s.add("snap", [](Query<P const> q, ResMut<Snapshot> out) {
                 out->clear();
@@ -169,7 +172,7 @@ int main() {
 
     // --- collect ---------------------------------------------------------------
     {
-        auto setup = [](World& w) { w.emplace_resource<Hits>(); };
+        auto setup      = [](World& w) { w.emplace_resource<Hits>(); };
         auto imperative = [](Schedule& s) {
             s.add("hits", [](Query<P const> q, ResMut<Hits> out) {
                 out->clear();
@@ -197,8 +200,7 @@ int main() {
             std::vector<std::vector<float>> v;
         };
         auto setup_imp = [](World& w) {
-            w.emplace_resource<Buckets>(Buckets {
-                std::vector<std::vector<float>>(64)});
+            w.emplace_resource<Buckets>(Buckets {std::vector<std::vector<float>>(64)});
         };
         auto imperative = [](Schedule& s) {
             s.add("bin", [](Query<P const> q, ResMut<Buckets> out) {
@@ -214,9 +216,7 @@ int main() {
         };
         auto kernel = [](Schedule& s) {
             s.add_kernel("bin", [](Query<P const> q, Bin<float> out) {
-                q.for_each([&](auto& p) {
-                    out.emit(std::uint32_t(p.x) & 63, p.z);
-                });
+                q.for_each([&](auto& p) { out.emit(std::uint32_t(p.x) & 63, p.z); });
             });
         };
         run_primitive("bin", N, T, lanes, setup_imp, imperative, setup_k, kernel);
@@ -273,8 +273,7 @@ int main() {
                 sum->v = acc;
             });
         };
-        run_primitive("events", N, T, lanes, setup_imp, imperative, setup_k,
-                      kernel);
+        run_primitive("events", N, T, lanes, setup_imp, imperative, setup_k, kernel);
     }
     return 0;
 }

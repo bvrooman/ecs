@@ -7,9 +7,10 @@
 // tail predictability, and the zero-allocation goal show up together.
 //
 //   schedule_bench [measured_ticks]      (default 5000)
+#include <ecs/ecs.hpp>
+
 #include "bench.hpp"
 #include "bench_alloc.hpp"
-#include <ecs/ecs.hpp>
 #include "particles.hpp"
 #include "simulation.hpp"
 #include <algorithm>
@@ -28,12 +29,15 @@ static void setup(World& w) {
     w.emplace_resource<Rng>(Rng {std::mt19937 {12345u}}); // fixed seed: reproducible
     w.emplace_resource<TripleBuffer<RenderSnapshot>>();
     w.emplace_resource<Clock>(Clock {0.0f});
-    w.emplace_resource<Emitter>(
-        Emitter {cfg::kEmitPerTick, cfg::kOriginX, cfg::kOriginY});
+    w.emplace_resource<Emitter>(Emitter {cfg::kEmitPerTick,
+                                         cfg::kOriginX,
+                                         cfg::kOriginY});
 }
 
-static void
-report(char const* executor, unsigned lanes, Stats s, double allocs_per_tick) {
+static void report(char const* executor,
+                   unsigned lanes,
+                   Stats s,
+                   double allocs_per_tick) {
     char lbl[24];
     if (lanes)
         std::snprintf(lbl, sizeof(lbl), "%s x%u", executor, lanes);
@@ -52,12 +56,21 @@ report(char const* executor, unsigned lanes, Stats s, double allocs_per_tick) {
 
 // The machine-readable mirror of report(): the shared distribution rows plus
 // the allocation rate.
-static void emit_stats(char const* name, unsigned lanes, Stats const& s,
-                       double allocs_per_tick, std::size_t entities,
+static void emit_stats(char const* name,
+                       unsigned lanes,
+                       Stats const& s,
+                       double allocs_per_tick,
+                       std::size_t entities,
                        std::size_t ticks) {
     bench::emit_dist(name, lanes, s, entities, ticks);
-    bench::emit(name, "allocs_per_tick", allocs_per_tick, "1", "lower", entities,
-                lanes, ticks);
+    bench::emit(name,
+                "allocs_per_tick",
+                allocs_per_tick,
+                "1",
+                "lower",
+                entities,
+                lanes,
+                ticks);
 }
 
 // Warm to steady state, then time `n` ticks, returning the distribution and the
@@ -147,10 +160,10 @@ inline void populate(ecs::World& w, std::size_t n) {
 
 int main(int argc, char** argv) {
     bench::set_suite("schedule");
-    int const measured = argc > 1 ? std::atoi(argv[1])
-                                  : int(bench::env_long("ECS_TICKS", 5000));
-    int const warm     = 800;
-    unsigned const hw  = std::max(2u, std::thread::hardware_concurrency());
+    int const measured =
+        argc > 1 ? std::atoi(argv[1]) : int(bench::env_long("ECS_TICKS", 5000));
+    int const warm    = 800;
+    unsigned const hw = std::max(2u, std::thread::hardware_concurrency());
 
     std::size_t particles = 0;
     {
@@ -208,11 +221,14 @@ int main(int argc, char** argv) {
             Schedule s;
             shape::build(s, kernel);
             WorkerPool pool {t};
-            auto [st, al] =
-                measure(warm / 4, shape_ticks, [&] { s.run(w, pool); });
+            auto [st, al] = measure(warm / 4, shape_ticks, [&] { s.run(w, pool); });
             report(kernel ? "kernel" : "imperative", t, st, al);
-            emit_stats(kernel ? "shape_kernel" : "shape_imperative", t, st, al,
-                       40'000, std::size_t(shape_ticks));
+            emit_stats(kernel ? "shape_kernel" : "shape_imperative",
+                       t,
+                       st,
+                       al,
+                       40'000,
+                       std::size_t(shape_ticks));
         }
     }
     return 0;

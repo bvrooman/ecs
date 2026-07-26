@@ -3,8 +3,9 @@
 // command recording from parallel kernels (the sharded buffer's actual use
 // case), the nested-dispatch error (a query inside a chunk kernel), and the
 // opt-in concurrent-systems run policy.
-#include "check.hpp"
 #include <ecs/ecs.hpp>
+
+#include "check.hpp"
 #include "setup.hpp"
 #include <array>
 #include <atomic>
@@ -41,9 +42,10 @@ static void multi_lane_chunk_split_covers_every_row() {
 
     WorkerPool pool {4};
     Schedule s;
-    s.add_kernel("bump", [](Query<Position, const Velocity> q) {
-        q.for_each_chunk([](std::span<Entity const>, chunk<Position> p,
-                            chunk<const Velocity> v) {
+    s.add_kernel("bump", [](Query<Position, Velocity const> q) {
+        q.for_each_chunk([](std::span<Entity const>,
+                            chunk<Position> p,
+                            chunk<Velocity const> v) {
             auto px = p.column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < px.size(); ++i)
@@ -55,7 +57,7 @@ static void multi_lane_chunk_split_covers_every_row() {
         s.run(w, pool);
 
     bool all_exact = true;
-    w.for_each<const Position>([&](auto& p) {
+    w.for_each<Position const>([&](auto& p) {
         if (p.x != float(ticks))
             all_exact = false;
     });
@@ -71,13 +73,11 @@ static void multi_lane_kernel_serial_covers_every_row() {
     });
     WorkerPool pool {4};
     Schedule s;
-    s.add_kernel("inc", [](Query<Health> q) {
-        q.for_each([](auto& h) { h.hp += 1; });
-    });
+    s.add_kernel("inc", [](Query<Health> q) { q.for_each([](auto& h) { h.hp += 1; }); });
     s.run(w, pool);
-    CHECK(w.count<const Health>() == 10'000);
+    CHECK(w.count<Health const>() == 10'000);
     bool all_one = true;
-    w.for_each<const Health>([&](auto& h) {
+    w.for_each<Health const>([&](auto& h) {
         if (h.hp != 1)
             all_one = false;
     });
@@ -96,8 +96,8 @@ static void commands_recorded_from_parallel_kernel() {
 
     WorkerPool pool {4};
     Schedule s;
-    s.add("reap_and_seed", [](Query<const Health> q, Commands& cmd) {
-        q.for_each_chunk([&](std::span<Entity const> ents, chunk<const Health> h) {
+    s.add("reap_and_seed", [](Query<Health const> q, Commands& cmd) {
+        q.for_each_chunk([&](std::span<Entity const> ents, chunk<Health const> h) {
             auto hp = h.column<0>();
             for (std::size_t i = 0; i < hp.size(); ++i) {
                 if (hp[i] % 2 == 0)
@@ -110,8 +110,8 @@ static void commands_recorded_from_parallel_kernel() {
     s.run(w, pool);
 
     // 4096 even-hp entities destroyed; 4096 Positions spawned.
-    CHECK(w.count<const Health>() == 4'096);
-    CHECK(w.count<const Position>() == 4'096);
+    CHECK(w.count<Health const>() == 4'096);
+    CHECK(w.count<Position const>() == 4'096);
     CHECK(w.size() == 8'192);
 }
 
@@ -131,9 +131,10 @@ static void kernel_system_covers_every_row() {
     Schedule s;
     // Same signature rules as add(): the one Query parameter is what the
     // executor slices; the body iterates just its item's rows.
-    s.add_kernel("integrate", [](Query<Position, const Velocity> q) {
-        q.for_each_chunk([](std::span<Entity const>, chunk<Position> p,
-                            chunk<const Velocity> v) {
+    s.add_kernel("integrate", [](Query<Position, Velocity const> q) {
+        q.for_each_chunk([](std::span<Entity const>,
+                            chunk<Position> p,
+                            chunk<Velocity const> v) {
             auto px = p.column<0>();
             auto vx = v.column<0>();
             for (std::size_t i = 0; i < px.size(); ++i)
@@ -147,7 +148,7 @@ static void kernel_system_covers_every_row() {
         s.run(w, pool);
 
     bool all_exact = true;
-    w.for_each<const Position>([&](auto& p) {
+    w.for_each<Position const>([&](auto& p) {
         if (p.x != float(ticks))
             all_exact = false;
     });
@@ -178,9 +179,7 @@ static void mixed_wave_flattened_dispatch_is_exact() {
         Schedule s;
         // Kernel bodies may use the per-row ergonomic path too -- the sliced
         // Query's for_each covers just the item's rows.
-        s.add_kernel("a", [](Query<A> q) {
-            q.for_each([](auto& a) { a.v += 1; });
-        });
+        s.add_kernel("a", [](Query<A> q) { q.for_each([](auto& a) { a.v += 1; }); });
         s.add("b", [](Query<B> q) { q.for_each([](auto& b) { b.v += 2; }); });
         s.add_kernel("c", [](Query<C> q) {
             q.for_each_chunk([](std::span<Entity const>, chunk<C> c) {
@@ -197,11 +196,10 @@ static void mixed_wave_flattened_dispatch_is_exact() {
             s.run(w, pool);
 
         bool exact = true;
-        w.for_each<const A, const B, const C>(
-            [&](auto& a, auto& b, auto& c) {
-                if (a.v != float(ticks) || b.v != 2.f * ticks || c.v != 3.f * ticks)
-                    exact = false;
-            });
+        w.for_each<A const, B const, C const>([&](auto& a, auto& b, auto& c) {
+            if (a.v != float(ticks) || b.v != 2.f * ticks || c.v != 3.f * ticks)
+                exact = false;
+        });
         CHECK(exact);
         CHECK(w.size() == 5'000u + std::size_t(ticks)); // spawner ran every tick
     }
@@ -227,10 +225,13 @@ static void kernel_with_resource_and_commands_extras() {
 
     Schedule s;
     s.add_kernel("steer",
-                 [](Query<Position, const Velocity> q, Res<Clock> clk,
-                    Res<Goal> goal, Commands& cmd) {
-                     q.for_each_chunk([&](std::span<Entity const> ents, chunk<Position> p,
-                                          chunk<const Velocity> v) {
+                 [](Query<Position, Velocity const> q,
+                    Res<Clock> clk,
+                    Res<Goal> goal,
+                    Commands& cmd) {
+                     q.for_each_chunk([&](std::span<Entity const> ents,
+                                          chunk<Position> p,
+                                          chunk<Velocity const> v) {
                          auto px = p.column<0>();
                          auto vx = v.column<0>();
                          for (std::size_t i = 0; i < px.size(); ++i) {
@@ -284,7 +285,7 @@ static void reduce_is_bitwise_deterministic_across_lane_counts() {
         w.emplace_resource<FSum>();
         populate_mixed(w, 30'000);
         Schedule s;
-        s.add_kernel("sum", [](Query<const Position> q, Reduce<FSum, FAdd> sum) {
+        s.add_kernel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
             q.for_each([&](auto& p) { sum->v += p.x; });
         });
         s.add("read", [](Res<FSum>) {}); // reader of the reduce target
@@ -310,7 +311,7 @@ static void reduce_is_bitwise_deterministic_across_lane_counts() {
     {
         World w;
         populate_mixed(w, 30'000);
-        w.for_each<const Position>([&](auto& p) { expect += p.x; });
+        w.for_each<Position const>([&](auto& p) { expect += p.x; });
     }
     double const tol = expect * 1e-3;
     CHECK(double(serial1) > expect - tol && double(serial1) < expect + tol);
@@ -334,7 +335,7 @@ static void reduce_vector_partials_match_serial_collect() {
 
     Schedule s;
     s.add_kernel("collect",
-                 [](Query<const Health> q, Reduce<std::vector<int>, HpConcat> out) {
+                 [](Query<Health const> q, Reduce<std::vector<int>, HpConcat> out) {
                      q.for_each([&](auto& h) {
                          if (h.hp % 7 == 0)
                              out->push_back(h.hp);
@@ -345,7 +346,7 @@ static void reduce_vector_partials_match_serial_collect() {
         s.run(w, pool);
 
     std::vector<int> expect;
-    w.for_each<const Health>([&](auto& h) {
+    w.for_each<Health const>([&](auto& h) {
         if (h.hp % 7 == 0)
             expect.push_back(h.hp);
     });
@@ -373,12 +374,11 @@ static void reduce_sparse_partial_matches_dense_histogram() {
         w.emplace_resource<DenseHist>();
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel(
-            "hist",
-            [](Query<const Health> q,
-               Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
-                q.for_each([&](auto& hp) { ++(*h)[hp.hp % 16]; });
-            });
+        s.add_kernel("hist",
+                     [](Query<Health const> q,
+                        Reduce<DenseHist, FoldSparse, std::unordered_map<int, int>> h) {
+                         q.for_each([&](auto& hp) { ++(*h)[hp.hp % 16]; });
+                     });
         WorkerPool pool {lanes};
         for (int t = 0; t < 2; ++t) // rebuilt per run, not accumulated
             s.run(w, pool);
@@ -389,9 +389,7 @@ static void reduce_sparse_partial_matches_dense_histogram() {
     {
         World w;
         populate_mixed(w, 12'000);
-        w.for_each<const Health>([&](auto& h) {
-            ++expect[std::size_t(h.hp % 16)];
-        });
+        w.for_each<Health const>([&](auto& h) { ++expect[std::size_t(h.hp % 16)]; });
     }
     CHECK(run_hist(1) == expect);
     CHECK(run_hist(4) == expect);
@@ -406,20 +404,19 @@ static void extract_matches_serial_gather_order() {
     populate_mixed(w, 20'000);
 
     Schedule s;
-    s.add_kernel("extract",
-                 [](Query<const Position> q, Extract<std::vector<float>> out) {
-                     q.for_each_chunk([&](std::span<Entity const>, chunk<const Position> p) {
-                         auto x = p.column<0>();
-                         for (std::size_t i = 0; i < x.size(); ++i)
-                             out[i] = x[i];
-                     });
-                 });
+    s.add_kernel("extract", [](Query<Position const> q, Extract<std::vector<float>> out) {
+        q.for_each_chunk([&](std::span<Entity const>, chunk<Position const> p) {
+            auto x = p.column<0>();
+            for (std::size_t i = 0; i < x.size(); ++i)
+                out[i] = x[i];
+        });
+    });
     WorkerPool pool {4};
     for (int t = 0; t < 3; ++t)
         s.run(w, pool);
 
     std::vector<float> expect;
-    w.for_each<const Position>([&](auto& p) { expect.push_back(p.x); });
+    w.for_each<Position const>([&](auto& p) { expect.push_back(p.x); });
     CHECK(w.resource<std::vector<float>>().size() == expect.size());
     CHECK(w.resource<std::vector<float>>() == expect);
 }
@@ -435,13 +432,12 @@ static void collect_matches_serial_filter_order() {
         w.emplace_resource<std::vector<int>>();
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("cull",
-                     [](Query<const Health> q, Collect<std::vector<int>> out) {
-                         q.for_each([&](auto& h) {
-                             if (h.hp % 7 == 0)
-                                 out->push_back(h.hp);
-                         });
-                     });
+        s.add_kernel("cull", [](Query<Health const> q, Collect<std::vector<int>> out) {
+            q.for_each([&](auto& h) {
+                if (h.hp % 7 == 0)
+                    out->push_back(h.hp);
+            });
+        });
         s.add("consume", [](Res<std::vector<int>>) {}); // reader of the target
         if (s.level_count() != 2)
             return std::vector<int> {}; // leveling broken; fail loudly below
@@ -459,7 +455,7 @@ static void collect_matches_serial_filter_order() {
     {
         World w;
         populate_mixed(w, 12'000);
-        w.for_each<const Health>([&](auto& h) {
+        w.for_each<Health const>([&](auto& h) {
             if (h.hp % 7 == 0)
                 expect.push_back(h.hp);
         });
@@ -488,7 +484,7 @@ static void events_are_double_buffered_and_deterministic() {
         populate_mixed(w, 9'000);
         Schedule s;
         // Wave 1: emit one ping per Health row with hp % 5 == 0.
-        s.add_kernel("emit", [](Query<const Health> q, EventWriter<Ping> ev) {
+        s.add_kernel("emit", [](Query<Health const> q, EventWriter<Ping> ev) {
             q.for_each([&](auto& h) {
                 if (h.hp % 5 == 0)
                     ev.emit(Ping {h.hp});
@@ -510,9 +506,7 @@ static void events_are_double_buffered_and_deterministic() {
         for (int t = 0; t < ticks; ++t)
             s.run(w, pool);
         std::vector<float> ys;
-        w.for_each<const Position>([&](auto& p) {
-            ys.push_back(p.y);
-        });
+        w.for_each<Position const>([&](auto& p) { ys.push_back(p.y); });
         return std::pair {w.resource<PingLog>().v, ys};
     };
 
@@ -520,7 +514,7 @@ static void events_are_double_buffered_and_deterministic() {
     {
         World w;
         populate_mixed(w, 9'000);
-        w.for_each<const Health>([&](auto& h) {
+        w.for_each<Health const>([&](auto& h) {
             if (h.hp % 5 == 0)
                 expect.push_back(h.hp);
         });
@@ -528,9 +522,9 @@ static void events_are_double_buffered_and_deterministic() {
     CHECK(!expect.empty());
 
     auto const [log1, ys1] = run_events(4, 1);
-    CHECK(log1.empty());                        // tick 1: nothing visible yet
+    CHECK(log1.empty()); // tick 1: nothing visible yet
     for (float y : ys1)
-        CHECK(y == 0.0f);                       // reader kernel saw 0 events
+        CHECK(y == 0.0f); // reader kernel saw 0 events
 
     auto const [log3, ys3]   = run_events(4, 3);
     auto const [log3s, ys3s] = run_events(1, 3);
@@ -556,29 +550,29 @@ static void scratch_is_private_and_cleared() {
 
     std::atomic<int> dirty {0};
     Schedule s;
-    s.add_kernel("smooth",
-                 [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
-                     if (!tmp->empty())
-                         dirty.fetch_add(1, std::memory_order_relaxed);
-                     q.for_each([&](auto& h) {
-                         // A silly per-row use of workspace: digits of hp.
-                         tmp->clear();
-                         for (int v = h.hp; v > 0; v /= 10)
-                             tmp->push_back(v % 10);
-                         int sum = 0;
-                         for (int d : *tmp)
-                             sum += d;
-                         h.hp = sum; // digit sum, computed via scratch
-                     });
-                 });
+    s.add_kernel("smooth", [&dirty](Query<Health> q, Scratch<std::vector<int>> tmp) {
+        if (!tmp->empty())
+            dirty.fetch_add(1, std::memory_order_relaxed);
+        q.for_each([&](auto& h) {
+            // A silly per-row use of workspace: digits of hp.
+            tmp->clear();
+            for (int v = h.hp; v > 0; v /= 10)
+                tmp->push_back(v % 10);
+            int sum = 0;
+            for (int d : *tmp)
+                sum += d;
+            h.hp = sum; // digit sum, computed via scratch
+        });
+    });
     WorkerPool pool {4};
     for (int t = 0; t < 3; ++t)
         s.run(w, pool);
     CHECK(dirty.load() == 0); // scratch arrived cleared for every item
 
     bool exact = true;
-    w.for_each<const Health>([&](auto& h) {
-        if (h.hp > 9 + 9) // three runs of digit-summing values < 32: <= 18... always small
+    w.for_each<Health const>([&](auto& h) {
+        if (h.hp >
+            9 + 9) // three runs of digit-summing values < 32: <= 18... always small
             exact = false;
     });
     CHECK(exact);
@@ -604,9 +598,7 @@ static void random_streams_are_lane_count_invariant() {
         for (int t = 0; t < ticks; ++t)
             s.run(w, pool);
         std::vector<float> out;
-        w.for_each<const Position>([&](auto& p) {
-            out.push_back(p.x);
-        });
+        w.for_each<Position const>([&](auto& p) { out.push_back(p.x); });
         return out;
     };
 
@@ -668,8 +660,8 @@ static void kernel_commands_replay_in_canonical_order() {
         World w;
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("edit", [](Query<const Health> q, Commands& cmd) {
-            q.for_each_chunk([&](std::span<Entity const> es, chunk<const Health> h) {
+        s.add_kernel("edit", [](Query<Health const> q, Commands& cmd) {
+            q.for_each_chunk([&](std::span<Entity const> es, chunk<Health const> h) {
                 auto hp = h.column<0>();
                 for (std::size_t i = 0; i < hp.size(); ++i) {
                     if (hp[i] % 9 == 0)
@@ -683,13 +675,9 @@ static void kernel_commands_replay_in_canonical_order() {
         for (int t = 0; t < 2; ++t) // second tick: stores rewound and reused
             s.run(w, pool);
         std::vector<int> spawned;
-        w.for_each<const Spawned>([&](auto& sp) {
-            spawned.push_back(sp.v);
-        });
+        w.for_each<Spawned const>([&](auto& sp) { spawned.push_back(sp.v); });
         std::vector<int> alive;
-        w.for_each<const Health>([&](auto& h) {
-            alive.push_back(h.hp);
-        });
+        w.for_each<Health const>([&](auto& h) { alive.push_back(h.hp); });
         return std::pair {spawned, alive};
     };
 
@@ -709,7 +697,7 @@ static void bin_groups_match_serial_walk() {
         w.emplace_resource<Bins<int>>().reserve_buckets(16);
         populate_mixed(w, 12'000);
         Schedule s;
-        s.add_kernel("bucketize", [](Query<const Health> q, Bin<int> bin) {
+        s.add_kernel("bucketize", [](Query<Health const> q, Bin<int> bin) {
             q.for_each([&](auto& h) {
                 if (h.hp % 2 == 0) // only even hp: buckets 8..15 stay empty
                     bin.emit(std::uint32_t(h.hp % 8), h.hp);
@@ -734,7 +722,7 @@ static void bin_groups_match_serial_walk() {
     {
         World w;
         populate_mixed(w, 12'000);
-        w.for_each<const Health>([&](auto& h) {
+        w.for_each<Health const>([&](auto& h) {
             if (h.hp % 2 == 0)
                 expect[std::size_t(h.hp % 8)].push_back(h.hp);
         });
@@ -760,7 +748,7 @@ static void prewarm_sizes_state_without_changing_results() {
         w.emplace_resource<FSum>();
         populate_mixed(w, 30'000);
         Schedule s;
-        s.add_kernel("sum", [](Query<const Position> q, Reduce<FSum, FAdd> sum) {
+        s.add_kernel("sum", [](Query<Position const> q, Reduce<FSum, FAdd> sum) {
             q.for_each([&](auto& p) { sum->v += p.x; });
         });
         WorkerPool pool {4};

@@ -14,6 +14,7 @@
 // Build Release for meaningful timing: cmake -DCMAKE_BUILD_TYPE=Release
 
 #include <ecs/ecs.hpp>
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -82,7 +83,9 @@ int main() {
     // gravity: read Mass + the Gravity resource, write Velocity.
     schedule.add_kernel("gravity", [](Query<Velocity, Mass const> q, Res<Gravity> g) {
         float const a = g->accel;
-        q.for_each_chunk([a](std::span<Entity const>, chunk<Velocity> vel, chunk<Mass const>) {
+        q.for_each_chunk([a](std::span<Entity const>,
+                             chunk<Velocity> vel,
+                             chunk<Mass const>) {
             for (auto& vy : vel.column<1>())
                 vy += a * kDt; // SoA fast path
         });
@@ -135,9 +138,7 @@ int main() {
                     ResMut<SnapshotChannel<RenderSnapshot>> ch) {
                      RenderSnapshot& out = ch->back();
                      out.clear();
-                     q.for_each([&](auto& p, auto&) {
-                         out.push_back({p.x, p.y, p.z});
-                     });
+                     q.for_each([&](auto& p, auto&) { out.push_back({p.x, p.y, p.z}); });
                      ch->publish();
                  });
 

@@ -2,8 +2,9 @@
 // a sorted, de-duplicated ComponentId set that owns the id<->column-slot lookup
 // and the add/remove archetype transitions.
 
-#include "check.hpp"
 #include <ecs/ecs.hpp>
+
+#include "check.hpp"
 #include <unordered_map>
 #include <vector>
 
@@ -72,9 +73,9 @@ static void with_and_without() {
     CHECK(sb.contains(a));
     CHECK(sb.contains(b));
     CHECK(sb.size() == 2);
-    CHECK(s.with(a) == s);            // adding a present id is a no-op
-    CHECK(sb.without(b) == s);        // remove undoes with
-    CHECK(s.without(b) == s);         // removing an absent id is a no-op
+    CHECK(s.with(a) == s);     // adding a present id is a no-op
+    CHECK(sb.without(b) == s); // remove undoes with
+    CHECK(s.without(b) == s);  // removing an absent id is a no-op
 }
 
 // includes: superset test over sorted sets (drives archetype/query matching).

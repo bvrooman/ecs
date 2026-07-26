@@ -24,11 +24,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <variant>
 #include <vector>
-#include <cstddef>
-#include <utility>
 
 namespace ecs::detail {
 
@@ -63,8 +63,8 @@ private:
     [[nodiscard]]
     std::uint32_t capacity() const noexcept {
         return store_.index() == 0
-                 ? N
-                 : static_cast<std::uint32_t>(std::get<1>(store_).size());
+                   ? N
+                   : static_cast<std::uint32_t>(std::get<1>(store_).size());
     }
     // The live buffer's front, whichever alternative holds it. get_if avoids the
     // throwing check of std::get on this hot access.

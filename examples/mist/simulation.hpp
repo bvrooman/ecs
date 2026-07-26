@@ -5,6 +5,7 @@
 #pragma once
 
 #include <ecs/sync/triple_buffer.hpp>
+
 #include "mist.hpp" // MistInput, RenderSnapshot
 #include <cstddef>
 

@@ -54,6 +54,7 @@
 #include "simulation.hpp"
 
 #include <ecs/ecs.hpp>
+
 #include "mist.hpp"
 #include <cmath>
 #include <cstddef>

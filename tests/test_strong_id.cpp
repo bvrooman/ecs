@@ -2,10 +2,11 @@
 // and its use for SystemId: zero-overhead layout, value semantics, hashability,
 // and that distinct tags are distinct, non-interconvertible types.
 
-#include "check.hpp"
 #include <ecs/detail/container/id_vector.hpp>
-#include <ecs/strong_id.hpp>
 #include <ecs/ecs.hpp>
+#include <ecs/strong_id.hpp>
+
+#include "check.hpp"
 #include <cstdint>
 #include <string>
 #include <type_traits>

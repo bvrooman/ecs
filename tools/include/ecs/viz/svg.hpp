@@ -9,6 +9,7 @@
 #pragma once
 
 #include <ecs/schedule.hpp>
+
 #include "graph.hpp"
 #include "name_table.hpp"
 #include "node_view.hpp"

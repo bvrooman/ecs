@@ -21,6 +21,7 @@
 
 #include <ecs/schedule/params/parallel.hpp> // detail::slot_array
 #include <ecs/schedule/params/protocol.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <span>

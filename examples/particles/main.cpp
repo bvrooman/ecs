@@ -20,14 +20,16 @@
 //
 // Build (needs GLFW: `brew install glfw`); see examples/CMakeLists.txt.
 
+#include <ecs/diag/stats.hpp> // ecs::diag::TickStats -- per-tick timing distribution
 #include <ecs/ecs.hpp>
+
 #include "gl_util.hpp"
 #include "particles.hpp"
 #include "simulation.hpp"
-#include <ecs/diag/stats.hpp> // ecs::diag::TickStats -- per-tick timing distribution
 
 #if PARTICLES_DEV_TOOLING
 #include <ecs/viz/schedule_viz.hpp> // dev profile: render the assembled schedule to SVG
+
 #include <fstream>
 #endif
 #include <algorithm>
@@ -82,8 +84,9 @@ int main() {
     world.emplace_resource<Gravity>(cfg::kGravity);
     world.emplace_resource<Rng>(Rng {std::mt19937 {std::random_device {}()}});
     world.emplace_resource<Clock>(Clock {0.0f});
-    world.emplace_resource<Emitter>(
-        Emitter {cfg::kEmitPerTick, cfg::kOriginX, cfg::kOriginY});
+    world.emplace_resource<Emitter>(Emitter {cfg::kEmitPerTick,
+                                             cfg::kOriginX,
+                                             cfg::kOriginY});
     world.emplace_resource<TripleBuffer<RenderSnapshot>>();
 
     Schedule schedule;
@@ -182,9 +185,11 @@ int main() {
                 ticks.fetch_add(1, std::memory_order_relaxed);
                 if (stats_on) {
                     tick_stats.sample(
-                        std::chrono::duration<double, std::micro>(clock::now() - a).count());
+                        std::chrono::duration<double, std::micro>(clock::now() - a)
+                            .count());
                     if (auto const s = tick_stats.due()) {
-                        std::printf("%s\n", diag::TickStats::format(*s, "sim tick").c_str());
+                        std::printf("%s\n",
+                                    diag::TickStats::format(*s, "sim tick").c_str());
                         std::fflush(stdout);
                     }
                 }

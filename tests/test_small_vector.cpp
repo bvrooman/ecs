@@ -6,8 +6,9 @@
 // teeth: an inline buffer wrongly aliased across a move would be a use-after-
 // scope, a stolen heap buffer wrongly shared would be a use-after-free.
 
-#include "check.hpp"
 #include <ecs/detail/container/small_vector.hpp>
+
+#include "check.hpp"
 #include <utility>
 
 using ecs::detail::SmallVector;

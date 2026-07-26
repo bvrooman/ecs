@@ -20,6 +20,7 @@
 #include "simulation.hpp"
 
 #include <ecs/ecs.hpp>
+
 #include "particles.hpp"
 #include <cmath>
 #include <cstddef>
@@ -134,27 +135,27 @@ void build_particle_schedule(Schedule& schedule) {
 
     // accumulate: sum the three fields into Velocity (data-parallel). wave 2.
     schedule.add_kernel("accumulate",
-                 [](Query<Velocity, Swirl const, Drift const, Gust const> q) {
-                     q.for_each_chunk([](std::span<Entity const>,
-                                         chunk<Velocity> vel,
-                                         chunk<Swirl const> sw,
-                                         chunk<Drift const> dr,
-                                         chunk<Gust const> gu) {
-                         auto vx       = vel.column<0>();
-                         auto vy       = vel.column<1>();
-                         auto const sx = sw.column<0>();
-                         auto const sy = sw.column<1>();
-                         auto const dx = dr.column<0>();
-                         auto const dy = dr.column<1>();
-                         auto const gx = gu.column<0>();
-                         auto const gy = gu.column<1>();
-                         float const s = cfg::kTurbStrength * cfg::kDt;
-                         for (std::size_t i = 0; i < vx.size(); ++i) {
-                             vx[i] += s * (sx[i] + dx[i] + gx[i]);
-                             vy[i] += s * (sy[i] + dy[i] + gy[i]);
-                         }
-                     });
-                 });
+                        [](Query<Velocity, Swirl const, Drift const, Gust const> q) {
+                            q.for_each_chunk([](std::span<Entity const>,
+                                                chunk<Velocity> vel,
+                                                chunk<Swirl const> sw,
+                                                chunk<Drift const> dr,
+                                                chunk<Gust const> gu) {
+                                auto vx       = vel.column<0>();
+                                auto vy       = vel.column<1>();
+                                auto const sx = sw.column<0>();
+                                auto const sy = sw.column<1>();
+                                auto const dx = dr.column<0>();
+                                auto const dy = dr.column<1>();
+                                auto const gx = gu.column<0>();
+                                auto const gy = gu.column<1>();
+                                float const s = cfg::kTurbStrength * cfg::kDt;
+                                for (std::size_t i = 0; i < vx.size(); ++i) {
+                                    vx[i] += s * (sx[i] + dx[i] + gx[i]);
+                                    vy[i] += s * (sy[i] + dy[i] + gy[i]);
+                                }
+                            });
+                        });
 
     // integrate: read the final Velocity, write Position (data-parallel). wave 3.
     schedule.add_kernel("integrate", [](Query<Position, Velocity const> q) {

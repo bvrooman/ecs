@@ -15,18 +15,19 @@
 
 #include <ecs/detail/compat/move_only_function.hpp>
 #include <ecs/query.hpp> // WorldView
-#include <ecs/world.hpp>
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/work_item.hpp>
+#include <ecs/world.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
-#include <type_traits>
 
 namespace ecs::detail {
 

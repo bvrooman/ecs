@@ -18,6 +18,7 @@
 
 #include <ecs/reflection/type_names.hpp>
 #include <ecs/resource_id.hpp> // ResourceId
+
 #include <memory>
 #include <type_traits>
 #include <unordered_map>

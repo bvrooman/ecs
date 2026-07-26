@@ -67,8 +67,8 @@ public:
     void compact() { free_.resize(cursor_.load(std::memory_order_acquire)); }
 
 private:
-    std::vector<index_type> free_;             // recycled indices; frozen while allocating
-    std::atomic<index_type> high_ {0};         // next brand-new index
+    std::vector<index_type> free_;     // recycled indices; frozen while allocating
+    std::atomic<index_type> high_ {0}; // next brand-new index
     // Padded onto its own cache line: concurrent allocators hammer the cursor
     // and the high-water mark, so keep them apart.
     alignas(128) std::atomic<std::size_t> cursor_ {0}; // claimable free entries

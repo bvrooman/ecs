@@ -30,9 +30,10 @@
 
 #pragma once
 
-#include <ecs/world.hpp> // World, Commands, Res/ResMut, resource_id
-#include <ecs/schedule/system.hpp>   // system_param, SystemParam, is_res_mut_v, KernelWaveContext
 #include <ecs/schedule/params/state.hpp>
+#include <ecs/schedule/system.hpp> // system_param, SystemParam, is_res_mut_v, KernelWaveContext
+#include <ecs/world.hpp>           // World, Commands, Res/ResMut, resource_id
+
 #include <cstddef>
 #include <cstdint>
 #include <span>

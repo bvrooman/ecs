@@ -10,6 +10,7 @@
 #include <ecs/component_id.hpp> // ComponentId
 #include <ecs/resource_id.hpp>  // ResourceId
 #include <ecs/system_id.hpp>    // SystemId
+
 #include <algorithm>
 #include <vector>
 

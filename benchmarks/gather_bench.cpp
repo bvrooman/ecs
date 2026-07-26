@@ -87,9 +87,7 @@ static void sparse(char const* label, std::size_t N, int R) {
         });
     });
     double const par = ns_per_system(N, R, w, [](Query<W, Vel const> q) {
-        q.for_each([](auto& p, auto& v) {
-            p.a += v.x;
-        });
+        q.for_each([](auto& p, auto& v) { p.a += v.x; });
     });
     report(label, N, R, ch, par);
 }
@@ -101,8 +99,7 @@ int main() {
 #if ECS_USE_P2996
     std::printf("gather_bench -- P2996 backend (for_each = row PROXIES)\n");
 #else
-    std::printf(
-        "gather_bench -- portable backend (for_each = GATHER/SCATTER)\n");
+    std::printf("gather_bench -- portable backend (for_each = GATHER/SCATTER)\n");
 #endif
     std::printf(
         "N=%zu, 1 lane. Sparse kernel = component has many fields, kernel touches 1:\n",
@@ -119,7 +116,9 @@ int main() {
                 cmd.spawn(W16 {}, Vel {0.1f, 0.2f, 0.3f});
         });
         double const ch  = ns_per_system(N, R, w, [](Query<W16, Vel const> q) {
-            q.for_each_chunk([](std::span<Entity const>, chunk<W16> p, chunk<Vel const> v) {
+            q.for_each_chunk([](std::span<Entity const>,
+                                chunk<W16> p,
+                                chunk<Vel const> v) {
                 [&]<std::size_t... I>(std::index_sequence<I...>) {
                     auto cols = std::tuple {p.template column<I>()...};
                     auto vx   = v.column<0>();
@@ -160,7 +159,9 @@ int main() {
                 cmd.spawn(Named {big, float(i)}, Vel {0.1f, 0.2f, 0.3f});
         });
         double const ch  = ns_per_system(N, R, w, [](Query<Named, Vel const> q) {
-            q.for_each_chunk([](std::span<Entity const>, chunk<Named> p, chunk<Vel const> v) {
+            q.for_each_chunk([](std::span<Entity const>,
+                                chunk<Named> p,
+                                chunk<Vel const> v) {
                 auto x =
                     p.template column<1>(); // the float; the string column is untouched
                 auto vx = v.column<0>();
@@ -169,9 +170,7 @@ int main() {
             });
         });
         double const par = ns_per_system(N, R, w, [](Query<Named, Vel const> q) {
-            q.for_each([](auto& p, auto& v) {
-                p.v += v.x;
-            });
+            q.for_each([](auto& p, auto& v) { p.v += v.x; });
         });
         report("Named{std::string,float} (touch float)", N, R, ch, par);
     }

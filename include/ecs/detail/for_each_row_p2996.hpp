@@ -11,11 +11,12 @@
 #include <ecs/entity.hpp>                // Entity
 #include <ecs/reflection/field_view.hpp> // row<C>
 #include <ecs/reflection/reflect.hpp>    // reflect::field_count_v
+
+#include <cstddef>
 #include <span>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <cstddef>
 
 namespace ecs::detail {
 
