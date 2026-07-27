@@ -64,6 +64,22 @@ namespace detail {
         return (std::size_t(std::same_as<Opts, Want>) + ... + 0) <= 1;
     }
 
+    // Store one option into the resolved set. A function template rather than a
+    // lambda inside resolve_options: registering with no options is the common
+    // case, and a lambda the empty fold never calls is a set-but-unused local at
+    // every such call site.
+    template <class Opt>
+    constexpr void pick(AddOptions& out, Opt const opt) {
+        if constexpr (std::same_as<Opt, ecs::phase>)
+            out.phase = opt.n;
+        else if constexpr (std::same_as<Opt, ecs::every>)
+            out.every = opt.n;
+        else if constexpr (std::same_as<Opt, ecs::times>)
+            out.times = opt.n;
+        // anything else already failed resolve_options' static_assert; do nothing
+        // here so that assert is the only diagnostic the caller sees.
+    }
+
     // Fold a registration option pack into AddOptions. Unknown or repeated options
     // are rejected here rather than deeper in the registration machinery, so the
     // diagnostic names the call site.
@@ -77,17 +93,7 @@ namespace detail {
                           at_most_one<times, Opts...>(),
                       "each registration option may be given at most once");
         AddOptions out;
-        auto pick = [&out](auto opt) {
-            if constexpr (std::same_as<decltype(opt), phase>)
-                out.phase = opt.n;
-            else if constexpr (std::same_as<decltype(opt), every>)
-                out.every = opt.n;
-            else if constexpr (std::same_as<decltype(opt), times>)
-                out.times = opt.n;
-            // anything else already failed the static_assert above; do nothing here
-            // so that assert is the only diagnostic the caller sees.
-        };
-        (pick(opts), ...);
+        (pick(out, opts), ...);
         // tick % every: a cadence of 0 would divide by zero in WavePlan::prepare.
         assert(out.every >= 1 && "every{n} must be >= 1");
         return out;
