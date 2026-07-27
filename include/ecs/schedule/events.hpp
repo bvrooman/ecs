@@ -1,14 +1,13 @@
 // ecs/schedule/events.hpp
 //
 // The events Schedule::run emits as it executes, as one std::variant -- each
-// alternative carries the data for that boundary (`ordinal` is the wave plan's
-// 0-based position in execution order -- NOT its wavefront level, which is not
-// unique within a tick once a schedule has more than one phase). Observe them via
-// Schedule::events(); an observer is any callable void(ScheduleEvent const&), typically
-// one that std::visits (see event/emitter.hpp and event/observer.hpp). This is the
-// successor to the old virtual ScheduleObserver: the core announces boundaries as values
-// and observers decide what to do with them (time, log, count, ...). The profiler in
-// tools/ is one such observer.
+// alternative carries the data for that boundary. Observe them via
+// Schedule::events(); an observer is any callable void(ScheduleEvent const&),
+// typically one that std::visits (see event/emitter.hpp and
+// event/observer.hpp). This is the successor to the old virtual
+// ScheduleObserver: the core announces boundaries as values and observers
+// decide what to do with them (time, log, count, ...). The profiler in tools/
+// is one such observer.
 
 #pragma once
 

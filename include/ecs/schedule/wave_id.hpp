@@ -1,5 +1,5 @@
 // ecs/schedule/wave_id.hpp
-//
+
 #pragma once
 
 #include <ecs/strong_id.hpp> // StrongId
