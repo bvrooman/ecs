@@ -254,7 +254,7 @@ static void wave_ordinals_are_plan_positions() {
         if (auto const* tb = std::get_if<sched_event::TickBegin>(&e))
             announced = tb->n_waves;
         else if (auto const* wb = std::get_if<sched_event::WaveBegin>(&e))
-            begins.push_back(wb->level);
+            begins.push_back(wb->ordinal);
     });
     sched.run(w);
 

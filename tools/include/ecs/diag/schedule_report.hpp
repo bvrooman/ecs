@@ -65,7 +65,7 @@ public:
                            t_tick_ = clock::now();
                        },
                        [this](WaveBegin const& ev) {
-                           cur_wave_ = ev.level;
+                           cur_wave_ = ev.ordinal;
                            t_wave_   = clock::now();
                        },
                        // The report keys every system line off SystemWork (real
@@ -79,8 +79,8 @@ public:
                            s.items = ev.items;
                        },
                        [this](WaveEnd const& ev) {
-                           waves_[ev.level].sample(elapsed_us(t_wave_));
-                           wave_flush_us_[ev.level] += ev.flush_us;
+                           waves_[ev.ordinal].sample(elapsed_us(t_wave_));
+                           wave_flush_us_[ev.ordinal] += ev.flush_us;
                        },
                        [this](TickEnd const&) {
                            tick_.sample(elapsed_us(t_tick_));

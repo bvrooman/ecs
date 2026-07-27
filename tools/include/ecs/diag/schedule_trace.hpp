@@ -89,7 +89,7 @@ public:
                            t_tick_         = clock::now();
                        },
                        [this](WaveBegin const& ev) {
-                           cur_wave_       = ev.level;
+                           cur_wave_       = ev.ordinal;
                            wave_first_row_ = rows_.size();
                            t_wave_         = clock::now();
                        },
