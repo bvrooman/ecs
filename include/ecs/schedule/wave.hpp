@@ -3,6 +3,7 @@
 #include <ecs/detail/container/id_vector.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/schedule/system.hpp>
+#include <ecs/schedule/wave_id.hpp>
 #include <ecs/schedule/work_item.hpp>
 #include <ecs/strong_id.hpp>
 
@@ -18,7 +19,6 @@
 #include <vector>
 
 namespace ecs {
-using WaveId = StrongId<struct WaveIdTag, uint32_t>;
 
 // A system's barrier prepare hook, bound to one system for one tick. Built
 // for every due system -- a serial one taking Local<T> is stateful too;
@@ -115,6 +115,7 @@ class Wave {
 public:
     using System       = detail::SystemRecord;
     using SystemVector = detail::IdVector<SystemId, System>;
+    using WaveId       = detail::WaveId;
     using WorkItem     = detail::WorkItem;
 
     WaveId id = {};
@@ -219,10 +220,11 @@ class WavePlan {
 public:
     using System                                = detail::SystemRecord;
     using SystemVector                          = detail::IdVector<SystemId, System>;
+    using WaveId                                = detail::WaveId;
     static constexpr auto kMinItemRows          = 1024uz;
     static constexpr auto kTargetItemsPerSystem = 64uz;
 
-    WaveId wave_id = {};
+    WaveId id = {};
 
     WavePlan()                               = default;
     WavePlan(WavePlan const&)                = delete;
@@ -243,18 +245,6 @@ public:
     auto empty() const {
         return due_.empty();
     }
-    // This plan's position in the schedule's canonical (phase, level)-sorted
-    // plan order -- the same sense as WorkItem::ordinal, and like it, consumers
-    // index per-position state by it (ScheduleReport buckets a tick's waves by
-    // this). NOT the wavefront level: plans are sorted by {phase, level}, so two
-    // phases each contribute a level 0 and levels alone would collide.
-    [[nodiscard]]
-    auto ordinal() const {
-        return ordinal_;
-    }
-    // Assigned by build_wave_plans once the plans are in their final order; it
-    // is not knowable while the groups are still being collected.
-    void set_ordinal(std::size_t const n) { ordinal_ = n; }
     auto begin() const { return due_.begin(); }
     auto end() const { return due_.end(); }
 
@@ -275,7 +265,7 @@ public:
     // prepare() to have populated due_ this tick.
     Wave& build(SystemVector& systems, World const& world, std::uint64_t const tick) {
         wave_.reset(systems.size());
-        wave_.id           = wave_id;
+        wave_.id           = id;
         auto& items        = wave_.items_;
         auto& prepare      = wave_.prepare_;
         auto& finish       = wave_.finish_;
@@ -368,8 +358,7 @@ private:
         items.push_back(std::move(item));
     }
 
-    std::size_t ordinal_ = 0;
-    using WorkItem       = detail::WorkItem;
+    using WorkItem = detail::WorkItem;
     std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
     std::vector<SystemId> due_;     // due this tick (reused scratch)
     Wave wave_;                     // this tick's compiled wave (reused buffers)

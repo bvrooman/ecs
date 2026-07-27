@@ -248,7 +248,7 @@ static void wave_ordinals_are_plan_positions() {
     sched.add_serial("b", [](Query<Position> q) { q.for_each([](auto&) {}); });
     CHECK(sched.level_count() == 3); // (-1,0), (0,0), (0,1)
 
-    std::vector<std::size_t> begins;
+    std::vector<detail::WaveId> begins;
     std::size_t announced = 0;
     sched.events().add([&](ScheduleEvent const& e) {
         if (auto const* tb = std::get_if<sched_event::TickBegin>(&e))
@@ -260,8 +260,9 @@ static void wave_ordinals_are_plan_positions() {
 
     CHECK(announced == 3);
     CHECK(begins.size() == 3); // one per plan
-    for (std::size_t i = 0; i < begins.size(); ++i)
-        CHECK(begins[i] == i); // 0,1,2 -- positions, not wavefront levels
+    for (std::uint32_t i = 0; i < begins.size(); ++i)
+        CHECK(begins[i] ==
+              detail::WaveId {i}); // 0,1,2 -- positions, not wavefront levels
 }
 
 // The observer hook is a general, always-available core feature -- an observer is

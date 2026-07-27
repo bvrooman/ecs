@@ -38,6 +38,8 @@ public:
     }
 
     void reserve(std::size_t const n) { v_.reserve(n); }
+    void resize(std::size_t const n) { v_.resize(n); }
+    void resize(std::size_t const n, T const& value) { v_.resize(n, value); }
 
     // Range-for yields the elements (the ids are their positions); use size()
     // + Id{i} when the id itself is needed while scanning.
