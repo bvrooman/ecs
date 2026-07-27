@@ -148,9 +148,9 @@ public:
             int const k    = std::snprintf(
                 buf,
                 sizeof(buf),
-                "%llu,%zu,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f,%.2f,%.2f",
+                "%llu,%u,%s,%.1f,%.2f,%.2f,%u,%.1f,%.2f,%.1f,%.2f,%.2f,%.2f",
                 static_cast<unsigned long long>(r.tick),
-                r.wave,
+                r.wave.value, // a StrongId is a class type: never a vararg
                 nm,
                 r.busy_us,
                 r.prepare_us,
@@ -178,7 +178,7 @@ private:
 
     struct Row {
         std::uint64_t tick;
-        detail::WaveId wave;
+        WaveId wave;
         SystemId id;
         double busy_us;
         double prepare_us;
@@ -199,7 +199,7 @@ private:
     std::vector<Row> rows_;                           // rows since last flush
 
     clock::time_point t_tick_ {}, t_wave_ {};
-    detail::WaveId cur_wave_    = {};
+    WaveId cur_wave_            = {};
     std::size_t tick_first_row_ = 0; // first row of the current tick
     std::size_t wave_first_row_ = 0; // first row of the current wave
     std::uint64_t tick_no_      = 0;

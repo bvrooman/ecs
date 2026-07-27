@@ -235,34 +235,45 @@ static void registration_options_are_order_independent() {
     }
 }
 
-// A tick emits exactly one WaveBegin per wave plan, and their ordinals are the
-// plans' positions -- 0..n-1, distinct. Plans are sorted by {phase, level}, so
-// the wavefront level is NOT that position: two phases each contribute a level
-// 0. Consumers index per-wave state by the ordinal (ScheduleReport buckets a
-// tick's waves by it), so a repeat would silently pool two waves into one.
+// A tick emits exactly one WaveBegin per wave plan, and their ids are the plans'
+// positions -- 0..n-1, ascending, in the order the waves run. Two things that
+// are NOT that position and have each been shipped in its place: the wavefront
+// level (two phases each contribute a level 0, so it repeats within a tick) and
+// the order the waves were discovered while grouping (build_wave_plans sorts by
+// {phase, level} afterwards, which permutes it). Consumers index per-wave state
+// by the id and print in id order, so a repeat pools two waves into one bucket
+// and a permutation reports them out of execution order.
+//
+// The registration order below is load-bearing: `startup` is registered LAST so
+// that discovery order (a, b, startup) differs from execution order (startup,
+// a, b). Register it first and the two coincide, and the test stops
+// discriminating -- which is exactly how the discovery-order bug passed CI.
 static void wave_ordinals_are_plan_positions() {
     World w;
     Schedule sched;
-    sched.add_serial("startup", [](Commands&) {}, phase {-1}); // phase -1, level 0
     sched.add_serial("a", [](Query<Position> q) { q.for_each([](auto&) {}); });
     sched.add_serial("b", [](Query<Position> q) { q.for_each([](auto&) {}); });
-    CHECK(sched.level_count() == 3); // (-1,0), (0,0), (0,1)
+    sched.add_serial("startup", [](Commands&) {}, phase {-1}); // phase -1, level 0
+    CHECK(sched.level_count() == 3);                           // (-1,0), (0,0), (0,1)
 
-    std::vector<detail::WaveId> begins;
+    std::vector<WaveId> begins;
+    std::vector<std::string> order;
     std::size_t announced = 0;
     sched.events().add([&](ScheduleEvent const& e) {
         if (auto const* tb = std::get_if<sched_event::TickBegin>(&e))
             announced = tb->n_waves;
         else if (auto const* wb = std::get_if<sched_event::WaveBegin>(&e))
             begins.push_back(wb->ordinal);
+        else if (auto const* sw = std::get_if<sched_event::SystemWork>(&e))
+            order.emplace_back(sw->name);
     });
     sched.run(w);
 
     CHECK(announced == 3);
-    CHECK(begins.size() == 3); // one per plan
-    for (std::uint32_t i = 0; i < begins.size(); ++i)
-        CHECK(begins[i] ==
-              detail::WaveId {i}); // 0,1,2 -- positions, not wavefront levels
+    CHECK(begins.size() == 3);         // one per plan
+    CHECK(order.front() == "startup"); // the earlier phase really does run first
+    for (auto id = WaveId {}; auto const got : begins)
+        CHECK(got == id++); // 0,1,2 -- positions, not levels, not discovery order
 }
 
 // The observer hook is a general, always-available core feature -- an observer is

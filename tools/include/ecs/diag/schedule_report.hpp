@@ -29,6 +29,7 @@
 #include <ecs/schedule.hpp>       // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
 
 #include <chrono>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -168,7 +169,6 @@ private:
         return std::string(buf, k > 0 ? static_cast<std::size_t>(k) : 0);
     }
 
-    using WaveId = detail::WaveId;
     Sink sink_;
     TickStats tick_; // whole-tick distribution + report cadence
     detail::IdVector<WaveId, TickStats> waves_; // per wave index

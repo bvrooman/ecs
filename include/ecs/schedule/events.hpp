@@ -28,11 +28,11 @@ namespace sched_event {
     };
     struct TickEnd {};
     struct WaveBegin {
-        detail::WaveId ordinal;
+        WaveId ordinal;
         std::size_t n_systems;
     };
     struct WaveEnd {
-        detail::WaveId ordinal;
+        WaveId ordinal;
         // The command-flush portion of the wave (the flush runs at the
         // barrier, inside the WaveBegin/WaveEnd interval).
         double flush_us = 0;
@@ -66,7 +66,7 @@ namespace sched_event {
     // the run unwinds, so observers tracking an open tick/wave can reset instead
     // of carrying stale state into the next tick.
     struct TickAbort {
-        detail::WaveId ordinal;
+        WaveId ordinal;
         SystemId system;
     };
 } // namespace sched_event

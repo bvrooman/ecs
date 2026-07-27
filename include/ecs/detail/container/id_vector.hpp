@@ -38,6 +38,10 @@ public:
     }
 
     void reserve(std::size_t const n) { v_.reserve(n); }
+    // Size to an id space this vector does NOT own -- a side table keyed by ids
+    // some other container minted (ScheduleReport's per-wave stats, keyed by the
+    // WaveId the schedule assigns). Grow only: shrinking would invalidate ids
+    // that are still live in the owner.
     void resize(std::size_t const n) { v_.resize(n); }
     void resize(std::size_t const n, T const& value) { v_.resize(n, value); }
 

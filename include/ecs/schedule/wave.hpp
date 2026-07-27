@@ -115,7 +115,6 @@ class Wave {
 public:
     using System       = detail::SystemRecord;
     using SystemVector = detail::IdVector<SystemId, System>;
-    using WaveId       = detail::WaveId;
     using WorkItem     = detail::WorkItem;
 
     WaveId id = {};
@@ -220,7 +219,6 @@ class WavePlan {
 public:
     using System                                = detail::SystemRecord;
     using SystemVector                          = detail::IdVector<SystemId, System>;
-    using WaveId                                = detail::WaveId;
     static constexpr auto kMinItemRows          = 1024uz;
     static constexpr auto kTargetItemsPerSystem = 64uz;
 

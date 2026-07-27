@@ -11,6 +11,7 @@
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/wave.hpp>
+#include <ecs/schedule/wave_id.hpp>
 #include <ecs/system_id.hpp>
 
 #include <algorithm>
@@ -64,28 +65,32 @@ inline void assign_levels(SystemVector& systems) {
 inline void build_wave_plans(SystemVector const& systems,
                              std::vector<WavePlan>& wave_plans) {
     using WaveGroup  = std::pair<SystemRecord::WaveKey, WavePlan>;
-    auto wave_groups = detail::IdVector<WaveId, WaveGroup> {};
     auto search      = [](auto const& g) { return g.first; };
+    auto wave_groups = std::vector<WaveGroup> {};
     for (auto&& [system_id, system] : systems.enumerate()) {
         if (system.dead)
             continue;
         auto key = system.wave_key();
         auto it  = std::ranges::find(wave_groups, key, search);
         if (it == wave_groups.end()) {
-            auto const wave_id = wave_groups.push_back({key, WavePlan {}});
-            auto& [_, wave]    = wave_groups[wave_id];
-            wave.id            = wave_id;
-            wave.push_back(system_id);
-        } else {
-            auto& wave = it->second;
-            wave.push_back(system_id);
+            wave_groups.emplace_back(key, WavePlan {});
+            it = std::prev(wave_groups.end());
         }
+        auto& wave = it->second;
+        wave.push_back(system_id);
     }
     wave_plans.clear();
     wave_plans.reserve(wave_groups.size());
     std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
+    // Number the plans in their FINAL order, so a wave's id is also its 0-based
+    // position in execution order -- what the events promise and what the
+    // observers in tools/ index and order by. It is not knowable while the
+    // groups are still being collected: the sort above by {phase, level}
+    // permutes discovery order whenever phases are registered out of order.
+    for (auto id = WaveId {}; auto& plan : wave_plans)
+        plan.id = id++;
 }
 
 } // namespace ecs::detail

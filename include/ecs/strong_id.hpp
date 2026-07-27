@@ -54,6 +54,16 @@ struct StrongId {
         return *this;
     }
 
+    // Post-increment, for numbering a sequence in order (`x.id = i++`) -- the
+    // counter stays a StrongId end to end, so the id space is never widened to
+    // a bare integer just to walk it. Note the ctor is explicit, so such a loop
+    // starts `for (Id i {}; ...)`, not `Id i = 0`.
+    constexpr StrongId operator++(int) noexcept {
+        auto const before = *this;
+        ++value;
+        return before;
+    }
+
     // A canonical "none" id, distinct from every id next() hands out (which
     // start at 0 and climb). For fields that mean "no id yet" -- e.g. the query
     // match caches, which must not match any real World on first use.
