@@ -210,6 +210,19 @@ not wait on any toolchain: see "Known limitations" in `DESIGN.md`. It raises
 the value of the non-inline-TU fix, since it buys something today rather than
 only unblocking a migration that is parked.
 
+With one caveat that decides how it would have to ship: for the plugin case the
+non-inline TU must live in a **shared** library. Measured, with the counter
+compiled out of line:
+
+| | |
+| --- | --- |
+| static lib linked into host *and* plugin | still two counters |
+| shared lib both link against | one counter |
+
+So a compiled `ecs` that defaults to STATIC would take the header-only cost and
+deliver none of the benefit. The modules case is not affected by this — there
+one definition is enough, whatever the library kind.
+
 ## Untested
 
 P2996 reflection under clang (upstream clang has no `-freflection`; needs the
