@@ -223,11 +223,14 @@ Blockers to clear first:
   3.24 → 3.28 for `FILE_SET CXX_MODULES`.
 - Config macros (`ECS_USE_P2996`, `ECS_REFLECT_NAMES`) need an always-textual
   `config.hpp` + `ecs::config` constants for `if constexpr` in importers.
-- **Hazard**: inline-function singletons (`StrongId::next()`'s id counter,
-  `dynamic::registry()`, `detail::serial_pool()`, the flush-attribution
-  counter) mean mixing `#include` and `import` TUs yields two id counters →
-  colliding component ids, silently. Move them into a small non-inline TU in
-  the module target. Untested by the spike; see MODULES.md.
+- **Hazard, now confirmed**: inline-function singletons (`StrongId::next()`'s
+  id counter, `dynamic::registry()`, `detail::serial_pool()`, the
+  flush-attribution counter) mean mixing `#include` and `import` TUs yields two
+  id counters → colliding component ids, silently. Measured on gcc-14 and
+  clang-18 (clang-20 does not exhibit it, which makes it worse — it is
+  version-dependent). Move them into a small non-inline TU in the module
+  target. See MODULES.md for the root cause (module attachment) and the
+  measurements.
 - Expect Clang-first (GCC modules are shakiest with heavy templates, which
   cuts across the GCC-16 P2996 preset); keep wasm on headers. **Confirmed.**
 

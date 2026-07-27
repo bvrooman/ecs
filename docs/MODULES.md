@@ -151,10 +151,9 @@ dependency; it was removed by moving `work_item.hpp` to `detail/` (#52).
 - `<meta>` is not part of `import std`, so a reflection module keeps a GMF for
   it regardless.
 
-## Untested, and the risk that most deserves attention
+## The duplicated-counter hazard — confirmed, with a twist
 
-**Inline function-local statics are an ODR hazard the spike never covered.**
-Four exist today:
+Four inline function-local statics exist today:
 
 | | |
 | --- | --- |
@@ -163,18 +162,51 @@ Four exist today:
 | `parallel/worker_pool.hpp:216` | `serial_pool()` |
 | `dynamic/registry.hpp:96` | `dynamic::registry()` |
 
-If some TUs `#include` and others `import`, each may get its own copy: two id
-counters, therefore colliding `ComponentId`s. That fails silently as data
-corruption, not as a compile or link error, and it is exactly what a staged
-"modules alongside headers" migration would produce. Any migration must move
-these into a single non-inline TU owned by the module target *first*, with a
-test that mixes an importing and an including TU in one binary.
+`component_id<T>` is an inline variable template whose initializer calls
+`ComponentId::next()`, and `next()` holds the static. In a headers-only world
+every copy has vague linkage and the linker merges them: one counter, one id
+per type, process-wide. That is the invariant the archetype signatures rest on.
 
-Also untested: P2996 reflection under clang (upstream clang has no
-`-freflection`; needs the Bloomberg fork, not buildable in the environment
-available), Emscripten (CMake + emcc module scanning is unsupported upstream;
-the wasm leg should stay on headers), and the `config.hpp` / `ECS_USE_P2996`
-macro problem for importers noted in `IMPROVEMENTS.md` §5.
+**Root cause of the risk: module attachment.** A declaration in a module's
+*purview* is attached to that module ([basic.link]); the same declaration
+reaching another TU textually is attached to the global module. Declarations
+attached to different modules declare **different entities**, however identical
+their spelling. A function-local `static` belongs to its enclosing function
+entity — so two entities means two statics, and two counters. The global module
+fragment exists precisely to keep textual includes at global attachment.
+
+Measured, with a header of exactly this shape included in a module's purview,
+one TU importing and one including:
+
+| compiler | header in module **purview** | header in **GMF** |
+| --- | --- | --- |
+| gcc-14 | ids 0 and 0 — **two counters** | ids distinct — one counter |
+| clang-18 | ids 0 and 0 — **two counters** | ids distinct — one counter |
+| clang-20 | ids distinct — one counter | ids distinct — one counter |
+
+So the hazard is real, and it is *version-dependent* — which is worse than a
+consistent bug, because it works on clang-20 and silently corrupts on clang-18
+and gcc-14. Colliding `ComponentId`s surface as wrong-column reads, not as a
+compile or link error.
+
+Note the trap this sets: GMF placement is what fixes the counter, and GMF
+placement is exactly what GCC cannot carry into cross-TU template instantiation
+(see the blocker above). On GCC the two problems pull in opposite directions.
+
+The robust fix is neither: move these definitions into a single non-inline TU
+owned by the module target, so there is one definition regardless of
+attachment. Do it *before* any migration, not after — a staged "modules
+alongside headers" rollout is precisely the configuration that triggers it. Pair
+it with a test that links an importing TU and an including TU into one binary
+and asserts the ids differ.
+
+## Untested
+
+P2996 reflection under clang (upstream clang has no `-freflection`; needs the
+Bloomberg fork, not buildable in the environment available), Emscripten (CMake +
+emcc module scanning is unsupported upstream; the wasm leg should stay on
+headers), and the `config.hpp` / `ECS_USE_P2996` macro problem for importers
+noted in `IMPROVEMENTS.md` §5.
 
 Reflection *inside* a module purview does work: `std::meta` compiles in a
 module interface unit on g++-16. Only the consumer-side instantiation failed,
