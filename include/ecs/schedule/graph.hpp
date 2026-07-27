@@ -72,8 +72,7 @@ inline void build_wave_plans(SystemVector const& systems,
         auto key = system.wave_key();
         auto it  = std::ranges::find(wave_groups, key, search);
         if (it == wave_groups.end()) {
-            auto const level = system.level;
-            wave_groups.emplace_back(key, WavePlan {level});
+            wave_groups.emplace_back(key, WavePlan {});
             it = std::prev(wave_groups.end());
         }
         auto& wave = it->second;
@@ -84,6 +83,10 @@ inline void build_wave_plans(SystemVector const& systems,
     std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
+    // Ordinals number the plans in their final order, so a tick emits one wave
+    // per ordinal and consumers can index per-wave state by it.
+    for (std::size_t i = 0; auto& plan : wave_plans)
+        plan.set_ordinal(i++);
 }
 
 } // namespace ecs::detail

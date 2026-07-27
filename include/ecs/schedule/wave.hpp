@@ -224,8 +224,7 @@ public:
 
     WaveId wave_id = {};
 
-    explicit WavePlan(System::Level const level)
-        : level_(level) {}
+    WavePlan()                               = default;
     WavePlan(WavePlan const&)                = delete;
     WavePlan& operator=(WavePlan const&)     = delete;
     WavePlan(WavePlan&&) noexcept            = default;
@@ -244,10 +243,18 @@ public:
     auto empty() const {
         return due_.empty();
     }
+    // This plan's position in the schedule's canonical (phase, level)-sorted
+    // plan order -- the same sense as WorkItem::ordinal, and like it, consumers
+    // index per-position state by it (ScheduleReport buckets a tick's waves by
+    // this). NOT the wavefront level: plans are sorted by {phase, level}, so two
+    // phases each contribute a level 0 and levels alone would collide.
     [[nodiscard]]
-    auto level() const {
-        return level_;
+    auto ordinal() const {
+        return ordinal_;
     }
+    // Assigned by build_wave_plans once the plans are in their final order; it
+    // is not knowable while the groups are still being collected.
+    void set_ordinal(std::size_t const n) { ordinal_ = n; }
     auto begin() const { return due_.begin(); }
     auto end() const { return due_.end(); }
 
@@ -361,8 +368,8 @@ private:
         items.push_back(std::move(item));
     }
 
-    System::Level level_;
-    using WorkItem = detail::WorkItem;
+    std::size_t ordinal_ = 0;
+    using WorkItem       = detail::WorkItem;
     std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
     std::vector<SystemId> due_;     // due this tick (reused scratch)
     Wave wave_;                     // this tick's compiled wave (reused buffers)

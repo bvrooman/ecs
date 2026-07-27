@@ -255,7 +255,7 @@ public:
                 try {
                     run_wave(plan, world, cmds, pool);
                 } catch (...) {
-                    events_.emit(TickAbort {plan.level(), SystemId::none()});
+                    events_.emit(TickAbort {plan.ordinal(), SystemId::none()});
                     throw;
                 }
             }
@@ -503,7 +503,7 @@ private:
     // run's recorded edits and emit TickAbort (see run()).
     void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
         using namespace sched_event;
-        events_.emit(WaveBegin {plan.level(), plan.size()});
+        events_.emit(WaveBegin {plan.ordinal(), plan.size()});
         flush_attrib_.clear();
         auto& wave    = plan.build(systems_, world, tick_);
         auto flush_us = 0.0;
@@ -531,8 +531,10 @@ private:
                                      wave_result.item_counts[id],
                                      flsh});
         }
-        events_.emit(
-            WaveEnd {plan.level(), flush_us, plan_result.build_us, plan_result.sort_us});
+        events_.emit(WaveEnd {plan.ordinal(),
+                              flush_us,
+                              plan_result.build_us,
+                              plan_result.sort_us});
     }
 
     void rebuild() {

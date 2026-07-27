@@ -235,6 +235,35 @@ static void registration_options_are_order_independent() {
     }
 }
 
+// A tick emits exactly one WaveBegin per wave plan, and their ordinals are the
+// plans' positions -- 0..n-1, distinct. Plans are sorted by {phase, level}, so
+// the wavefront level is NOT that position: two phases each contribute a level
+// 0. Consumers index per-wave state by the ordinal (ScheduleReport buckets a
+// tick's waves by it), so a repeat would silently pool two waves into one.
+static void wave_ordinals_are_plan_positions() {
+    World w;
+    Schedule sched;
+    sched.add_serial("startup", [](Commands&) {}, phase {-1}); // phase -1, level 0
+    sched.add_serial("a", [](Query<Position> q) { q.for_each([](auto&) {}); });
+    sched.add_serial("b", [](Query<Position> q) { q.for_each([](auto&) {}); });
+    CHECK(sched.level_count() == 3); // (-1,0), (0,0), (0,1)
+
+    std::vector<std::size_t> begins;
+    std::size_t announced = 0;
+    sched.events().add([&](ScheduleEvent const& e) {
+        if (auto const* tb = std::get_if<sched_event::TickBegin>(&e))
+            announced = tb->n_waves;
+        else if (auto const* wb = std::get_if<sched_event::WaveBegin>(&e))
+            begins.push_back(wb->level);
+    });
+    sched.run(w);
+
+    CHECK(announced == 3);
+    CHECK(begins.size() == 3); // one per plan
+    for (std::size_t i = 0; i < begins.size(); ++i)
+        CHECK(begins[i] == i); // 0,1,2 -- positions, not wavefront levels
+}
+
 // The observer hook is a general, always-available core feature -- an observer is
 // any callable void(ScheduleEvent const&). This one counts the boundaries it is
 // notified of and, on each SystemWork (the per-system boundary), appends its tag
@@ -313,6 +342,7 @@ int main() {
     RUN_SUITE(system_exception_propagates);
     RUN_SUITE(aborted_run_discards_recorded_commands);
     RUN_SUITE(registration_options_are_order_independent);
+    RUN_SUITE(wave_ordinals_are_plan_positions);
     RUN_SUITE(multiple_observers_notified_in_order);
     return REPORT();
 }
