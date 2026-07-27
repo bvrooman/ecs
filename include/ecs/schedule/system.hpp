@@ -14,9 +14,9 @@
 #pragma once
 
 #include <ecs/detail/compat/move_only_function.hpp>
+#include <ecs/detail/work_item.hpp>
 #include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
 #include <ecs/schedule/access.hpp>
-#include <ecs/schedule/work_item.hpp>
 #include <ecs/world.hpp> // World, Commands, WorldView
 
 #include <chrono>

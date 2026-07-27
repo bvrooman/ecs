@@ -1,10 +1,10 @@
 #pragma once
 
 #include <ecs/detail/container/id_vector.hpp>
+#include <ecs/detail/work_item.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/wave_id.hpp>
-#include <ecs/schedule/work_item.hpp>
 #include <ecs/strong_id.hpp>
 
 #include <algorithm>

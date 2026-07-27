@@ -34,7 +34,6 @@ include/ecs/
     system.hpp           SystemRecord + system_param, the per-parameter
                          binding protocol both system kinds route through
     validate.hpp         the consteval checks registration is gated on
-    work_item.hpp        WorkItem/Unit -- one claimable slice of a wave
     wave.hpp             the work-item executor (build + dispatch)
     graph.hpp            systems -> wavefront levels -> wave plans
     schedule.hpp         the Schedule class (registration, run loop)
@@ -51,6 +50,8 @@ include/ecs/
   sync/                lock-free thread handoff primitives      (namespace ecs::sync)
   event/               Emitter/observer                        (namespace ecs::event)
   detail/              internals                              (namespace ecs::detail)
+    work_item.hpp        WorkItem/Unit -- one claimable slice of a wave; here
+                         rather than schedule/ because Query is built from one
     container/           generic containers, no ECS concepts
     compat/              toolchain shims (move_only_function, atomic_shared_ptr)
     chunk_fields.hpp, for_each_row*.hpp   ECS-specific, backend-selected

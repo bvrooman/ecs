@@ -1,3 +1,10 @@
+// ecs/detail/work_item.hpp
+//
+// One claimable slice of a wave. Here rather than under schedule/ because
+// Query is built from a WorkItem: parking it with the scheduler made the core
+// query type depend on schedule/, which pulled the whole scheduler in behind
+// it. It is a leaf -- it needs no scheduler machinery, only ids.
+
 #pragma once
 
 #include <ecs/archetype_id.hpp>
