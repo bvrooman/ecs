@@ -84,11 +84,6 @@ inline void build_wave_plans(SystemVector const& systems,
     std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
-    // Number the plans in their FINAL order, so a wave's id is also its 0-based
-    // position in execution order -- what the events promise and what the
-    // observers in tools/ index and order by. It is not knowable while the
-    // groups are still being collected: the sort above by {phase, level}
-    // permutes discovery order whenever phases are registered out of order.
     for (auto id = WaveId {}; auto& plan : wave_plans)
         plan.id = id++;
 }
