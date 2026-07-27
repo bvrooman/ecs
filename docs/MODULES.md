@@ -200,6 +200,16 @@ alongside headers" rollout is precisely the configuration that triggers it. Pair
 it with a test that links an importing TU and an including TU into one binary
 and asserts the ids differ.
 
+### The same hazard already exists without modules
+
+Chasing this turned up a present-day form. The counter is per *linkage unit*,
+so it also splits across a `dlopen`ed plugin (unless the host is linked
+`-rdynamic`) or a directly-linked shared library built `-fvisibility=hidden` —
+both ordinary practice, both measured. That is not a modules problem and does
+not wait on any toolchain: see "Known limitations" in `DESIGN.md`. It raises
+the value of the non-inline-TU fix, since it buys something today rather than
+only unblocking a migration that is parked.
+
 ## Untested
 
 P2996 reflection under clang (upstream clang has no `-freflection`; needs the
