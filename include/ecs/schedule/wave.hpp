@@ -3,6 +3,7 @@
 #include <ecs/detail/container/id_vector.hpp>
 #include <ecs/parallel/worker_pool.hpp>
 #include <ecs/schedule/system.hpp>
+#include <ecs/schedule/wave_id.hpp>
 #include <ecs/schedule/work_item.hpp>
 #include <ecs/strong_id.hpp>
 
@@ -18,7 +19,6 @@
 #include <vector>
 
 namespace ecs {
-using WaveId = StrongId<struct WaveIdTag, uint32_t>;
 
 // A system's barrier prepare hook, bound to one system for one tick. Built
 // for every due system -- a serial one taking Local<T> is stateful too;
@@ -222,7 +222,13 @@ public:
     static constexpr auto kMinItemRows          = 1024uz;
     static constexpr auto kTargetItemsPerSystem = 64uz;
 
-    WaveId wave_id = {};
+    WaveId id = {};
+
+    WavePlan()                               = default;
+    WavePlan(WavePlan const&)                = delete;
+    WavePlan& operator=(WavePlan const&)     = delete;
+    WavePlan(WavePlan&&) noexcept            = default;
+    WavePlan& operator=(WavePlan&&) noexcept = default;
 
     void push_back(SystemId const id) { systems_.push_back(id); }
 
@@ -257,7 +263,7 @@ public:
     // prepare() to have populated due_ this tick.
     Wave& build(SystemVector& systems, World const& world, std::uint64_t const tick) {
         wave_.reset(systems.size());
-        wave_.id           = wave_id;
+        wave_.id           = id;
         auto& items        = wave_.items_;
         auto& prepare      = wave_.prepare_;
         auto& finish       = wave_.finish_;

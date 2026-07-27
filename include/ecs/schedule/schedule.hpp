@@ -249,14 +249,16 @@ public:
         using namespace sched_event;
         events_.emit(TickBegin {wave_plans_.size()});
         auto cmds = Commands {world};
-        auto lvl  = 0uz;
         for (auto& plan : wave_plans_) {
-            auto sz = plan.prepare(systems_, tick_);
-            if (sz > 0) {
-                events_.emit(WaveBegin {lvl, sz});
-                run_wave(plan, world, cmds, pool, lvl);
+            plan.prepare(systems_, tick_);
+            if (plan.size() > 0) {
+                try {
+                    run_wave(plan, world, cmds, pool);
+                } catch (...) {
+                    events_.emit(TickAbort {plan.id, SystemId::none()});
+                    throw;
+                }
             }
-            ++lvl;
         }
         events_.emit(TickEnd {});
         detail::prune_expired(systems_, tick_, dirty_);
@@ -499,9 +501,9 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    void run_wave(
-        WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool, std::size_t lvl) {
+    void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
         using namespace sched_event;
+        events_.emit(WaveBegin {plan.id, plan.size()});
         flush_attrib_.clear();
         auto& wave    = plan.build(systems_, world, tick_);
         auto flush_us = 0.0;
@@ -514,7 +516,6 @@ private:
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();
-            events_.emit(TickAbort {lvl, SystemId::none()});
             throw;
         }
         auto const& plan_result = plan.result();
@@ -530,7 +531,8 @@ private:
                                      wave_result.item_counts[id],
                                      flsh});
         }
-        events_.emit(WaveEnd {lvl, flush_us, plan_result.build_us, plan_result.sort_us});
+        events_.emit(
+            WaveEnd {plan.id, flush_us, plan_result.build_us, plan_result.sort_us});
     }
 
     void rebuild() {

@@ -54,6 +54,12 @@ struct StrongId {
         return *this;
     }
 
+    constexpr StrongId operator++(int) noexcept {
+        auto const before = *this;
+        ++value;
+        return before;
+    }
+
     // A canonical "none" id, distinct from every id next() hands out (which
     // start at 0 and climb). For fields that mean "no id yet" -- e.g. the query
     // match caches, which must not match any real World on first use.

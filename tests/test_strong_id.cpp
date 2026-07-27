@@ -11,6 +11,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 using ecs::Schedule;
 using ecs::StrongId;
@@ -52,6 +53,31 @@ static void pre_increment() {
     CHECK((++t) == Ticket {1}); // returns the new value
     CHECK(t == Ticket {1});     // and advanced in place
     CHECK((++t) == Ticket {2});
+}
+
+// Post-increment yields the value from BEFORE the advance, so a loop can number
+// a sequence in order without the counter ever widening to a bare integer.
+static void post_increment() {
+    Ticket t {};
+    CHECK((t++) == Ticket {0}); // returns the old value
+    CHECK(t == Ticket {1});     // and advanced in place
+    CHECK((t++) == Ticket {1});
+    CHECK(t == Ticket {2});
+
+    // The numbering loop it exists for. Note `Ticket i {}`, not `Ticket i = 0`:
+    // construction stays explicit.
+    std::vector<Ticket> numbered(3);
+    for (auto i = Ticket {}; auto& slot : numbered)
+        slot = i++;
+    CHECK(numbered[0] == Ticket {0});
+    CHECK(numbered[1] == Ticket {1});
+    CHECK(numbered[2] == Ticket {2});
+
+    // Post-increment is constexpr, like the rest of the wrapper.
+    static_assert([] {
+        Ticket c {7};
+        return (c++).value == 7 && c.value == 8;
+    }());
 }
 
 // Distinct tags are distinct types that never interconvert -- the whole point.
@@ -182,6 +208,7 @@ int main() {
     RUN_SUITE(construct_and_read);
     RUN_SUITE(comparable);
     RUN_SUITE(pre_increment);
+    RUN_SUITE(post_increment);
     RUN_SUITE(tags_are_distinct_types);
     RUN_SUITE(hashable_key);
     RUN_SUITE(system_ids_are_monotonic_and_nonzero);

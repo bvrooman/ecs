@@ -56,8 +56,8 @@ namespace detail {
     };
 
     template <class T>
-    concept AddOption = std::same_as<T, ecs::phase> || std::same_as<T, ecs::every> ||
-                        std::same_as<T, ecs::times>;
+    concept AddOption =
+        std::same_as<T, phase> || std::same_as<T, every> || std::same_as<T, times>;
 
     template <class Want, class... Opts>
     consteval bool at_most_one() {
@@ -89,9 +89,8 @@ namespace detail {
             (AddOption<Opts> && ...),
             "unsupported registration option -- a system may be registered with "
             "phase{n}, every{n} and times{n}");
-        static_assert(at_most_one<ecs::phase, Opts...>() &&
-                          at_most_one<ecs::every, Opts...>() &&
-                          at_most_one<ecs::times, Opts...>(),
+        static_assert(at_most_one<phase, Opts...>() && at_most_one<every, Opts...>() &&
+                          at_most_one<times, Opts...>(),
                       "each registration option may be given at most once");
         AddOptions out;
         (pick(out, opts), ...);

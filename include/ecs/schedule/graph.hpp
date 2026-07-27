@@ -11,6 +11,7 @@
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/wave.hpp>
+#include <ecs/schedule/wave_id.hpp>
 #include <ecs/system_id.hpp>
 
 #include <algorithm>
@@ -66,7 +67,7 @@ inline void build_wave_plans(SystemVector const& systems,
     using WaveGroup  = std::pair<SystemRecord::WaveKey, WavePlan>;
     auto search      = [](auto const& g) { return g.first; };
     auto wave_groups = std::vector<WaveGroup> {};
-    for (auto&& [id, system] : systems.enumerate()) {
+    for (auto&& [system_id, system] : systems.enumerate()) {
         if (system.dead)
             continue;
         auto key = system.wave_key();
@@ -76,13 +77,15 @@ inline void build_wave_plans(SystemVector const& systems,
             it = std::prev(wave_groups.end());
         }
         auto& wave = it->second;
-        wave.push_back(id);
+        wave.push_back(system_id);
     }
     wave_plans.clear();
     wave_plans.reserve(wave_groups.size());
     std::ranges::sort(wave_groups, {}, search);
     std::ranges::copy(wave_groups | std::views::values | std::views::as_rvalue,
                       std::back_inserter(wave_plans));
+    for (auto id = WaveId {}; auto& plan : wave_plans)
+        plan.id = id++;
 }
 
 } // namespace ecs::detail

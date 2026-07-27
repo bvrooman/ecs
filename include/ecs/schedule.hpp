@@ -9,6 +9,7 @@
 //                          binding protocol both system kinds route through
 //   schedule/validate.hpp  the consteval checks registration is gated on
 //   schedule/work_item.hpp WorkItem/Unit -- one claimable slice of a wave
+//   schedule/wave_id.hpp   WaveId -- a wave's position in the tick's plan order
 //   schedule/wave.hpp      the work-item executor (build + dispatch)
 //   schedule/graph.hpp     systems -> wavefront levels -> wave plans
 //   schedule/params.hpp    umbrella over params/ -- the system parameters and

@@ -22,12 +22,14 @@
 
 #pragma once
 
+#include <ecs/detail/container/id_vector.hpp>
 #include <ecs/diag/sink.hpp>      // ecs::diag::Sink
 #include <ecs/diag/stats.hpp>     // ecs::diag::TickStats
 #include <ecs/event/observer.hpp> // ecs::event::overloaded
 #include <ecs/schedule.hpp>       // ecs::ScheduleEvent, ecs::sched_event, ecs::SystemId
 
 #include <chrono>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -65,7 +67,7 @@ public:
                            t_tick_ = clock::now();
                        },
                        [this](WaveBegin const& ev) {
-                           cur_wave_ = ev.level;
+                           cur_wave_ = ev.ordinal;
                            t_wave_   = clock::now();
                        },
                        // The report keys every system line off SystemWork (real
@@ -79,8 +81,8 @@ public:
                            s.items = ev.items;
                        },
                        [this](WaveEnd const& ev) {
-                           waves_[ev.level].sample(elapsed_us(t_wave_));
-                           wave_flush_us_[ev.level] += ev.flush_us;
+                           waves_[ev.ordinal].sample(elapsed_us(t_wave_));
+                           wave_flush_us_[ev.ordinal] += ev.flush_us;
                        },
                        [this](TickEnd const&) {
                            tick_.sample(elapsed_us(t_tick_));
@@ -135,14 +137,16 @@ private:
         sink_(TickStats::format(tick, "sim tick"));
         // Each wave in execution order, then its systems grouped beneath it, also
         // in execution order (the order they ran within the wave).
-        for (std::size_t w = 0; w < waves_.size(); ++w) {
-            auto const wave = waves_[w].flush();
+        for (auto [w, data] : std::views::zip(waves_, wave_flush_us_, wave_systems_) |
+                                  std::views::enumerate) {
+            auto [stats, flush_us, systems] = data;
+            auto const wave                 = stats.flush();
             if (!wave)
                 continue; // this wave did not run in the window
             sink_("  " + TickStats::format(*wave, "wave " + std::to_string(w)) +
-                  suffix("  flush %6.2f", wave_flush_us_[w] / double(wave->n)));
-            wave_flush_us_[w] = 0;
-            for (SystemId id : wave_systems_[w]) {
+                  suffix("  flush %6.2f", flush_us / double(wave->n)));
+            flush_us = 0;
+            for (SystemId id : systems) {
                 auto const it = systems_.find(id);
                 if (it == systems_.end())
                     continue;
@@ -166,15 +170,16 @@ private:
     }
 
     Sink sink_;
-    TickStats tick_;                    // whole-tick distribution + report cadence
-    std::vector<TickStats> waves_;      // per wave index
-    std::vector<double> wave_flush_us_; // per wave: flush sums over the window
+    TickStats tick_; // whole-tick distribution + report cadence
+    detail::IdVector<WaveId, TickStats> waves_; // per wave index
+    detail::IdVector<WaveId, double>
+        wave_flush_us_; // per wave: flush sums over the window
     std::unordered_map<SystemId, Slot> systems_;
     // Per-wave system ids in execution order, rebuilt each tick (index == wave).
-    std::vector<std::vector<SystemId>> wave_systems_;
+    detail::IdVector<WaveId, std::vector<SystemId>> wave_systems_;
 
     clock::time_point t_tick_ {}, t_wave_ {};
-    std::size_t cur_wave_ = 0;
+    WaveId cur_wave_ = {};
 };
 
 } // namespace ecs::diag
