@@ -11,9 +11,10 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include <ranges>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -35,7 +36,8 @@ public:
     SystemId system;
 
     // rows: the Wave's shared scratch, sized here to this system's item count.
-    template <typename Items>
+    template <std::ranges::input_range Items>
+        requires std::same_as<std::ranges::range_value_t<Items>, WorkItem>
     bool prepare(World& world, Items&& items, std::vector<uint32_t>& rows) const {
         if (!*fn_)
             return false;
