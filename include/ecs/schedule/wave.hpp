@@ -304,7 +304,7 @@ public:
     }
 
 private:
-    static void build_parallel(auto& world, auto& system, auto& items) {
+    void build_parallel(auto& world, auto& system, auto& items) {
         auto id             = system.id;
         auto const& matches = system.match.resolve(world, system.query_sig);
         auto total          = 0uz;
