@@ -35,15 +35,12 @@ public:
     SystemId system;
 
     // rows: the Wave's shared scratch, sized here to this system's item count.
-    bool prepare(World& world,
-                 std::span<WorkItem const> items,
-                 std::vector<uint32_t>& rows) const {
+    template <typename Items>
+    bool prepare(World& world, Items&& items, std::vector<uint32_t>& rows) const {
         if (!*fn_)
             return false;
         rows.clear();
         for (auto const& it : items) {
-            if (it.system != system)
-                continue;
             if (rows.size() <= it.ordinal)
                 rows.resize(it.ordinal + 1);
             rows[it.ordinal] = it.end - it.begin;
@@ -126,7 +123,10 @@ public:
         assert(state_ == State::New);
         for (auto const& ctx : prepare_) {
             auto const t0 = detail::sched_clock::now();
-            if (ctx.prepare(world, items_, rows_scratch_))
+            auto items    = items_ | std::views::filter([&](auto const& item) {
+                             return item.system == ctx.system;
+                            });
+            if (ctx.prepare(world, items, rows_scratch_))
                 result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
         }
         state_ = State::Prepared;
@@ -304,7 +304,7 @@ public:
     }
 
 private:
-    void build_parallel(auto& world, auto& system, auto& items) {
+    static void build_parallel(auto& world, auto& system, auto& items) {
         auto id             = system.id;
         auto const& matches = system.match.resolve(world, system.query_sig);
         auto total          = 0uz;
