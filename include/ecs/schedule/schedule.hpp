@@ -156,7 +156,7 @@ public:
     // row-range work items, and fans those across the pool, invoking `run` once
     // per slice. `run` reads its WorkItem for the archetype and [begin, end) rows
     // to process (see Wave::build_parallel); it must NOT self-iterate or
-    // self-dispatch -- the pool is already fanned, and a nested parallel_for on
+    // self-dispatch -- the pool is already fanned, and a nested dispatch on
     // it would throw. `query_sig` is REQUIRED (a null signature matches nothing,
     // so the scheduler would build zero items and never call `run`).
     template <class Run, class... Opts>

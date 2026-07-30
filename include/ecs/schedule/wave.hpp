@@ -134,9 +134,9 @@ public:
         state_ = State::Prepared;
     }
 
-    // Execute the item list. A lone item runs inline on the caller; several are
-    // claimed from an atomic cursor across the pool's lanes. Each item's busy
-    // time is rolled up per system into result_.
+    // Execute the item list: each item is claimed by whichever lane is free
+    // (a lone item runs inline on the caller -- see for_each_index). Each
+    // item's busy time is rolled up per system into result_.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
@@ -147,17 +147,7 @@ public:
             system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);
         };
-        if (items_.size() == 1) {
-            run_one(items_[0]);
-        } else if (items_.size() > 1) {
-            auto next = std::atomic {0uz};
-            pool.for_each_lane([&] {
-                for (auto i = next.fetch_add(1, std::memory_order_relaxed);
-                     i < items_.size();
-                     i = next.fetch_add(1, std::memory_order_relaxed))
-                    run_one(items_[i]);
-            });
-        }
+        pool.for_each_index(items_.size(), [&](std::size_t i) { run_one(items_[i]); });
         for (auto const& item : items_) {
             result_.busy_us[item.system] += item.busy_us;
             result_.item_counts[item.system]++;

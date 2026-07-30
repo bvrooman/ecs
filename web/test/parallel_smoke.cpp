@@ -17,6 +17,8 @@
 
 #include <ecs/parallel/worker_pool.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <emscripten.h>
@@ -46,7 +48,17 @@ int main() {
     auto const base = reinterpret_cast<std::uintptr_t>(arr.data());
 
     WorkerPool pool {lanes};
-    pool.parallel_for(N, [&](std::size_t b, std::size_t e) {
+    // for_each_lane, not for_each_index/for_each_block: what this spike proves
+    // is that EVERY lane can eval and run a kernel in its own JS context, so it
+    // needs one invocation per lane with a slice pinned to it. The claiming
+    // helpers deliberately do not promise that -- a fast lane may take every
+    // block -- which would leave the distinct-thread check below passing by
+    // luck. Here each lane derives its own contiguous slice from its index.
+    pool.for_each_lane([&](unsigned lane) {
+        std::size_t const q = N / lanes;
+        std::size_t const r = N % lanes;
+        std::size_t const b = q * lane + std::min<std::size_t>(lane, r);
+        std::size_t const e = b + q + (lane < r ? 1 : 0);
         // Runs on each lane (main thread + workers). EM_ASM executes in THIS
         // lane's JS context; eval() defines the kernel there (cached per source).
         EM_ASM(
@@ -64,7 +76,7 @@ int main() {
             static_cast<int>(b),
             static_cast<int>(e),
             static_cast<int>(base));
-        tids[b * lanes / N] = reinterpret_cast<std::uintptr_t>(pthread_self());
+        tids[lane] = reinterpret_cast<std::uintptr_t>(pthread_self());
     });
 
     bool ok = true;
