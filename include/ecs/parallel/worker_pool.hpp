@@ -102,6 +102,21 @@ public:
         parallel_for(count, kMinParallel, std::forward<Kernel>(kernel));
     }
 
+    // Run kernel() once on every lane (the caller is lane 0) and block until
+    // all of them finish; a 1-lane pool just calls it inline. Unlike
+    // parallel_for there is no range and no partition: the kernel takes no
+    // arguments and decides its own work, typically by claiming items from a
+    // shared atomic cursor. That suits a ragged workload -- the wave executor's
+    // work items vary in cost, so a lane that draws short items keeps pulling
+    // instead of idling on an equal static slice it finished early.
+    //
+    // Exception and re-entrancy behaviour is parallel_for's, below: this
+    // delegates to it, giving each lane a one-index slice it ignores.
+    template <class Kernel>
+    void for_each_lane(Kernel&& kernel) {
+        parallel_for(lanes_, 1, [&kernel](std::size_t, std::size_t) { kernel(); });
+    }
+
     // As above, with a caller-chosen serial threshold: dispatch whenever
     // count >= min_parallel. The schedule executor uses this to fan a handful
     // of coarse tasks (whole systems) across lanes, where the default 256-row

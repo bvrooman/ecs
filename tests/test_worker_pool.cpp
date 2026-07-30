@@ -70,10 +70,53 @@ static void exception_propagates() {
     CHECK(caught);
 }
 
+// for_each_lane runs the kernel exactly once per lane -- no range, no
+// partition. This is the wave executor's shape: every lane drains a shared
+// atomic cursor, so the total claimed must be the item count exactly once.
+static void for_each_lane_runs_once_per_lane() {
+    for (unsigned lanes : {1u, 2u, 4u}) {
+        WorkerPool pool {lanes};
+        std::atomic<int> calls {0};
+        pool.for_each_lane([&] { calls.fetch_add(1, std::memory_order_relaxed); });
+        CHECK(calls.load() == int(lanes));
+    }
+}
+
+// The cursor-drain pattern: each item claimed exactly once across all lanes,
+// whatever the split -- the property Wave::run depends on.
+static void for_each_lane_drains_a_cursor_exactly_once() {
+    WorkerPool pool {4};
+    std::size_t const n = 10'000;
+    std::vector<int> hits(n, 0);
+    auto next = std::atomic<std::size_t> {0};
+    pool.for_each_lane([&] {
+        for (auto i = next.fetch_add(1, std::memory_order_relaxed); i < n;
+             i      = next.fetch_add(1, std::memory_order_relaxed))
+            hits[i] += 1; // distinct i per claim -> no data race on any element
+    });
+    CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
+}
+
+// A throwing lane propagates out of for_each_lane on the caller, as it does
+// out of parallel_for -- for_each_lane delegates, so it inherits the join.
+static void for_each_lane_propagates_exceptions() {
+    WorkerPool pool {4};
+    bool caught = false;
+    try {
+        pool.for_each_lane([] { throw std::runtime_error("boom"); });
+    } catch (std::runtime_error const&) {
+        caught = true;
+    }
+    CHECK(caught);
+}
+
 int main() {
     RUN_SUITE(partition_is_exact_and_disjoint);
     RUN_SUITE(dispatch_after_idle_gap);
     RUN_SUITE(single_lane_runs_inline);
     RUN_SUITE(exception_propagates);
+    RUN_SUITE(for_each_lane_runs_once_per_lane);
+    RUN_SUITE(for_each_lane_drains_a_cursor_exactly_once);
+    RUN_SUITE(for_each_lane_propagates_exceptions);
     return REPORT();
 }

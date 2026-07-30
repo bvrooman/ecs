@@ -151,7 +151,7 @@ public:
             run_one(items_[0]);
         } else if (items_.size() > 1) {
             auto next = std::atomic {0uz};
-            pool.parallel_for(items_.size(), 2, [&](std::size_t, std::size_t) {
+            pool.for_each_lane([&] {
                 for (auto i = next.fetch_add(1, std::memory_order_relaxed);
                      i < items_.size();
                      i = next.fetch_add(1, std::memory_order_relaxed))
