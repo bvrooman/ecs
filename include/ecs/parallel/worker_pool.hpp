@@ -10,20 +10,15 @@
 // (woken per wave) suffers. for_each() hands a range out to the lanes, one
 // element claimed at a time, and blocks until all finish; for_each_index() is
 // the same over an index space. Both cover their range exactly once, so a body
-// touching only its own element cannot race. Beneath them is a raw per-lane
-// fan-out that makes no such promise; it is private -- nothing outside the pool
-// needs it. The body is referenced, never copied or type-erased onto the heap,
-// so a dispatch allocates nothing. On macOS workers request the
-// performance-core QoS.
+// touching only its own element cannot race. The body is referenced, never copied or
+// type-erased onto the heap, so a dispatch allocates nothing. On macOS workers request
+// the performance-core QoS.
 //
 // Claiming is dynamic rather than a fixed partition because the wave executor
 // -- the pool's one in-tree consumer -- runs ragged work items whose costs
 // differ by design. Claiming costs one relaxed fetch_add per element and lets a
 // lane that drew cheap work keep pulling; a static split would leave it idle on
-// a slice it finished early. A caller wanting contiguous runs rather than
-// single elements -- to amortise a per-call cost, or because the body needs a
-// span -- builds a range of slice descriptors and iterates that (see
-// web/test/parallel_smoke.cpp).
+// a slice it finished early.
 //
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
@@ -114,11 +109,8 @@ public:
     // The same, over an index space rather than a container: body(i) once per
     // index in [0, count), each claimed by whichever lane is free. Reach for it
     // when there is nothing to iterate -- indices into several parallel arrays,
-    // or a computed range. Want contiguous runs rather than single elements?
-    // Build a range of slice descriptors and hand that to for_each.
-    //
-    // A single element runs inline on the caller, so the common one-item tick
-    // never pays a dispatch; a 1-lane pool is always inline.
+    // or a computed range. A single element runs inline on the caller, so the common
+    // one-item tick never pays a dispatch; a 1-lane pool is always inline.
     template <class Body>
     void for_each_index(std::size_t count, Body&& body) {
         if (count == 0)
