@@ -2,6 +2,10 @@
 // exactly-once coverage of [0, count) however the lanes claim it, dispatch
 // across idle gaps (the fixed-timestep pattern), the inline paths that skip
 // the job slot, and exception propagation from a lane back to the caller.
+//
+// NOTE: CHECK is not thread-safe -- it bumps plain int globals -- so it must
+// not be called from inside a dispatched body, where lanes run it
+// concurrently. Record the condition in an atomic and CHECK after the join.
 #include <ecs/parallel/worker_pool.hpp>
 
 #include "check.hpp"
@@ -34,14 +38,18 @@ static void blocks_tile_the_range_exactly() {
         WorkerPool pool {4};
         std::size_t const n = 10'000; // deliberately not a multiple of any grain
         std::vector<int> hits(n, 0);
-        auto blocks = std::atomic<int> {0};
+        auto blocks    = std::atomic<int> {0};
+        auto malformed = std::atomic<bool> {false};
         pool.for_each_block(n, grain, [&](std::size_t b, std::size_t e) {
-            CHECK(b < e && e <= n);
-            CHECK(e - b <= grain);
+            // Not CHECK: that writes a shared non-atomic counter (see the note
+            // at the top of this file). Flag it here, assert after the join.
+            if (!(b < e && e <= n && e - b <= grain))
+                malformed.store(true, std::memory_order_relaxed);
             blocks.fetch_add(1, std::memory_order_relaxed);
             for (auto i = b; i < e; ++i)
                 hits[i] += 1;
         });
+        CHECK(!malformed.load());
         CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
         CHECK(blocks.load() == int((n + grain - 1) / grain));
     }
@@ -52,11 +60,13 @@ static void blocks_tile_the_range_exactly() {
 static void grain_at_or_above_count_runs_inline() {
     WorkerPool pool {4};
     auto calls = std::atomic<int> {0};
+    auto whole = std::atomic<bool> {false};
     pool.for_each_block(100, 100, [&](std::size_t b, std::size_t e) {
         calls.fetch_add(1, std::memory_order_relaxed);
-        CHECK(b == 0 && e == 100);
+        whole.store(b == 0 && e == 100, std::memory_order_relaxed);
     });
     CHECK(calls.load() == 1);
+    CHECK(whole.load());
 }
 
 // An empty range never calls the body and never dispatches.
@@ -101,11 +111,16 @@ static void for_each_lane_runs_once_per_lane() {
         WorkerPool pool {lanes};
         std::vector<int> seen(lanes, 0);
         std::atomic<int> calls {0};
+        auto out_of_range = std::atomic<bool> {false};
         pool.for_each_lane([&](unsigned lane) {
-            CHECK(lane < lanes);
+            if (lane >= lanes) { // not CHECK: shared non-atomic counter
+                out_of_range.store(true, std::memory_order_relaxed);
+                return;
+            }
             seen[lane] += 1; // distinct lane per invocation -> no race
             calls.fetch_add(1, std::memory_order_relaxed);
         });
+        CHECK(!out_of_range.load());
         CHECK(calls.load() == int(lanes));
         CHECK(std::all_of(seen.begin(), seen.end(), [](int c) { return c == 1; }));
     }
