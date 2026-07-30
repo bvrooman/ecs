@@ -16,6 +16,7 @@
 #include <vector>
 
 using namespace ecs;
+using ecs::parallel::detail::PoolAccess;
 
 // Every index is handed to the body exactly once across all lanes. Claiming is
 // dynamic, so *which* lane gets an index is not fixed -- the coverage is.
@@ -135,15 +136,15 @@ static void single_lane_runs_inline() {
     CHECK(sum == 1000);
 }
 
-// for_each_lane is the raw fan-out: the kernel runs once per lane, with each
-// lane's own index, whatever the pool's width.
+// The raw per-lane fan-out (private; reached through detail::PoolAccess): the
+// kernel runs once per lane, with each lane's own index, whatever the width.
 static void for_each_lane_runs_once_per_lane() {
     for (unsigned lanes : {1u, 2u, 4u}) {
         WorkerPool pool {lanes};
         std::vector<int> seen(lanes, 0);
         std::atomic<int> calls {0};
         auto out_of_range = std::atomic<bool> {false};
-        pool.for_each_lane([&](unsigned lane) {
+        PoolAccess::for_each_lane(pool, [&](unsigned lane) {
             if (lane >= lanes) { // not CHECK: shared non-atomic counter
                 out_of_range.store(true, std::memory_order_relaxed);
                 return;
@@ -178,7 +179,8 @@ static void for_each_lane_propagates_exceptions() {
     WorkerPool pool {4};
     bool caught = false;
     try {
-        pool.for_each_lane([](unsigned) { throw std::runtime_error("boom"); });
+        PoolAccess::for_each_lane(pool,
+                                  [](unsigned) { throw std::runtime_error("boom"); });
     } catch (std::runtime_error const&) {
         caught = true;
     }

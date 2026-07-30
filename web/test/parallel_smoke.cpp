@@ -48,13 +48,14 @@ int main() {
     auto const base = reinterpret_cast<std::uintptr_t>(arr.data());
 
     WorkerPool pool {lanes};
-    // for_each_lane, not for_each_index/for_each_block: what this spike proves
-    // is that EVERY lane can eval and run a kernel in its own JS context, so it
-    // needs one invocation per lane with a slice pinned to it. The claiming
-    // helpers deliberately do not promise that -- a fast lane may take every
-    // block -- which would leave the distinct-thread check below passing by
-    // luck. Here each lane derives its own contiguous slice from its index.
-    pool.for_each_lane([&](unsigned lane) {
+    // The raw per-lane fan-out, not the public for_each/for_each_index: what
+    // this spike proves is that EVERY lane can eval and run a kernel in its own
+    // JS context, so it needs one invocation per lane with a slice pinned to
+    // it. The claiming dispatches deliberately do not promise that -- a fast
+    // lane may take every block -- which would leave the distinct-thread check
+    // below passing by luck. So each lane derives its own contiguous slice from
+    // its index, and owns the disjointness that buys.
+    ecs::parallel::detail::PoolAccess::for_each_lane(pool, [&](unsigned lane) {
         std::size_t const q = N / lanes;
         std::size_t const r = N % lanes;
         std::size_t const b = q * lane + std::min<std::size_t>(lane, r);

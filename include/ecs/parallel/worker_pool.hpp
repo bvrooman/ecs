@@ -9,10 +9,12 @@
 // sleeps a thread -- the source of the tail latency a general work-stealing pool
 // (woken per wave) suffers. for_each() hands a range out to the lanes in
 // dynamically claimed pieces and blocks until all finish; for_each_index() and
-// for_each_block() are the same over an index space, and for_each_lane() is the
-// raw fan-out the other three are built on. The body is referenced, never
-// copied or type-erased onto the heap, so a dispatch allocates nothing. On
-// macOS workers request the performance-core QoS.
+// for_each_block() are the same over an index space. All three cover their
+// range exactly once, so a body touching only its own element cannot race.
+// Beneath them is a raw per-lane fan-out that makes no such promise; it is
+// private, reachable only through detail::PoolAccess. The body is referenced,
+// never copied or type-erased onto the heap, so a dispatch allocates nothing.
+// On macOS workers request the performance-core QoS.
 //
 // Claiming is dynamic rather than a fixed partition because the wave executor
 // -- the pool's one in-tree consumer -- runs ragged work items whose costs
@@ -62,6 +64,10 @@
 
 namespace ecs::parallel {
 
+namespace detail {
+    struct PoolAccess;
+} // namespace detail
+
 // CPU "relax" hint for spin loops (lets the core de-prioritize the spinning
 // hyperthread / save power without yielding the OS time slice).
 inline void cpu_relax() noexcept {
@@ -95,12 +101,12 @@ public:
         return lanes_;
     }
 
-    // The four dispatches below are one mechanism in layers, most-used first:
-    // for_each -> for_each_index -> for_each_block -> for_each_lane, each
-    // implemented by the next. They share the semantics the file comment
-    // describes -- dynamic claiming, blocking until every lane rejoins, no
-    // allocation -- and the exception and re-entrancy contract spelled out on
-    // for_each_lane at the bottom.
+    // The three dispatches below are one mechanism in layers, most-used first:
+    // for_each -> for_each_index -> for_each_block, each implemented by the
+    // next, and all three finally by the private for_each_lane. They share the
+    // semantics the file comment describes -- dynamic claiming, exactly-once
+    // coverage, blocking until every lane rejoins, no allocation -- and the
+    // exception and re-entrancy contract documented on for_each_lane.
 
     // Run body(element) once per element of `range`, each element claimed by
     // whichever lane is free. The dispatch most callers want: say what the work
@@ -172,21 +178,34 @@ public:
         });
     }
 
+private:
     // Run kernel(lane) once on every lane (the caller is lane 0) and block
-    // until all finish; a 1-lane pool calls it inline. This is the raw fan-out
-    // the three dispatches above are built on -- reach for it only when the
-    // work is not an index range at all (per-lane setup, a bespoke claiming
-    // scheme). Prefer for_each / for_each_index / for_each_block.
+    // until all finish; a 1-lane pool calls it inline. The raw fan-out the
+    // three public dispatches are built on.
+    //
+    // PRIVATE ON PURPOSE. Every dispatch above guarantees exactly-once coverage
+    // of a range, so a body that touches only its own element cannot race. This
+    // one guarantees nothing: it hands out a lane index and leaves disjointness
+    // entirely to the caller. Overlap and you get a data race; leave a gap and
+    // the work silently never runs. Neither fails to compile, and both can pass
+    // on a 1-lane pool, where the kernel runs exactly once on the caller.
+    //
+    // Genuine per-lane work -- pinning a slice to a lane, per-lane setup such
+    // as the wasm spike's eval-a-kernel-into-each-Web-Worker -- reaches it via
+    // detail::PoolAccess, which has to be named explicitly. That is the point:
+    // it should be a deliberate act, not the fourth entry in a menu.
     //
     // Allocation-free: the kernel is referenced via a static trampoline, never
-    // stored or type-erased onto the heap. That holds for everything above too,
-    // since it all routes through here.
+    // stored or type-erased onto the heap. That holds for the public dispatches
+    // too, since they all route through here.
     //
     // Exceptions: if the kernel throws on any lane, every lane still runs to
     // completion (so the referenced kernel stays alive for the whole dispatch),
     // then the first exception is rethrown on the calling thread -- a throwing
     // system propagates out of Schedule::run as it would inline, with no
     // std::terminate from a worker and no use-after-unwind.
+    friend struct detail::PoolAccess;
+
     template <class Kernel>
     void for_each_lane(Kernel&& kernel) {
         if (lanes_ == 1) {
@@ -221,7 +240,6 @@ public:
         }
     }
 
-private:
     // Padding so the two atomics every lane hammers do not share a line with
     // each other or the job slot (128 covers x86's 64B lines and the 128B
     // spatial prefetcher / Apple Silicon).
@@ -278,6 +296,21 @@ private:
     std::atomic<bool> has_err_ {false};
     std::exception_ptr err_;
 };
+
+namespace detail {
+    // The way to the pool's raw per-lane fan-out, for the cases that genuinely
+    // need a lane pinned rather than a claimed slice. Deliberately awkward: you
+    // have to name detail::PoolAccess, which is a decision, whereas an extra
+    // pool.for_each_* in the completion list is a shrug. Read WorkerPool's
+    // for_each_lane comment before using it -- disjointness becomes yours, and
+    // getting it wrong races or silently drops work without failing to compile.
+    struct PoolAccess {
+        template <class Kernel>
+        static void for_each_lane(WorkerPool& pool, Kernel&& kernel) {
+            pool.for_each_lane(std::forward<Kernel>(kernel));
+        }
+    };
+} // namespace detail
 
 // A process-wide 1-lane WorkerPool. One lane spawns no threads and its
 // dispatches just call the body on the calling thread -- they never touch
