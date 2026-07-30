@@ -130,9 +130,6 @@ public:
         }
         auto next = std::atomic<std::size_t> {0};
         for_each_lane([&](unsigned) {
-            // Claim, then test: the lane that draws i >= count is done. Relaxed
-            // is enough -- the fetch_add only has to hand out distinct i's, and
-            // the join is what orders the bodies' writes against the caller.
             std::size_t i = 0;
             while ((i = next.fetch_add(1, std::memory_order_relaxed)) < count)
                 body(i);
