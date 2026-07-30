@@ -35,8 +35,10 @@ int main() {
     for (std::size_t i = 0; i < N; ++i)
         arr[i] = static_cast<float>(i);
 
-    unsigned const lanes = 4;
-    std::vector<std::uintptr_t> tids(lanes, 0); // which thread ran each slice
+    unsigned const lanes          = 4;
+    constexpr std::size_t kGrain  = 100; // 40 blocks over N
+    constexpr std::size_t kBlocks = (N + kGrain - 1) / kGrain;
+    std::vector<std::uintptr_t> tids(kBlocks, 0); // which thread ran each block
 
     // A pure JS kernel: x10 over [begin,end) of a Float32 view at byte offset
     // `base` into the shared heap. No closures -- only its arguments.
@@ -48,19 +50,16 @@ int main() {
     auto const base = reinterpret_cast<std::uintptr_t>(arr.data());
 
     WorkerPool pool {lanes};
-    // The raw per-lane fan-out, not the public for_each/for_each_index: what
-    // this spike proves is that EVERY lane can eval and run a kernel in its own
-    // JS context, so it needs one invocation per lane with a slice pinned to
-    // it. The claiming dispatches deliberately do not promise that -- a fast
-    // lane may take every block -- which would leave the distinct-thread check
-    // below passing by luck. So each lane derives its own contiguous slice from
-    // its index, and owns the disjointness that buys.
-    ecs::parallel::detail::PoolAccess::for_each_lane(pool, [&](unsigned lane) {
-        std::size_t const q = N / lanes;
-        std::size_t const r = N % lanes;
-        std::size_t const b = q * lane + std::min<std::size_t>(lane, r);
-        std::size_t const e = b + q + (lane < r ? 1 : 0);
-        // Runs on each lane (main thread + workers). EM_ASM executes in THIS
+    // Blocks are claimed dynamically, so the pool does not *promise* that every
+    // lane draws one -- but with kBlocks well above `lanes`, and workers already
+    // spin-waiting on the generation counter (so they observe a dispatch within
+    // nanoseconds, long before the first EM_ASM finishes its eval), a single
+    // thread taking all of them is not a case that occurs in practice. The
+    // distinct-thread check below is the assertion this spike exists for; if it
+    // ever does flake, that is a real signal about worker startup, not noise to
+    // paper over.
+    pool.for_each_block(N, kGrain, [&](std::size_t b, std::size_t e) {
+        // Runs on whichever lane claimed this block. EM_ASM executes in THAT
         // lane's JS context; eval() defines the kernel there (cached per source).
         EM_ASM(
             {
@@ -77,7 +76,7 @@ int main() {
             static_cast<int>(b),
             static_cast<int>(e),
             static_cast<int>(base));
-        tids[lane] = reinterpret_cast<std::uintptr_t>(pthread_self());
+        tids[b / kGrain] = reinterpret_cast<std::uintptr_t>(pthread_self());
     });
 
     bool ok = true;

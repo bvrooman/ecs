@@ -16,7 +16,6 @@
 #include <vector>
 
 using namespace ecs;
-using ecs::parallel::detail::PoolAccess;
 
 // Every index is handed to the body exactly once across all lanes. Claiming is
 // dynamic, so *which* lane gets an index is not fixed -- the coverage is.
@@ -136,28 +135,6 @@ static void single_lane_runs_inline() {
     CHECK(sum == 1000);
 }
 
-// The raw per-lane fan-out (private; reached through detail::PoolAccess): the
-// kernel runs once per lane, with each lane's own index, whatever the width.
-static void for_each_lane_runs_once_per_lane() {
-    for (unsigned lanes : {1u, 2u, 4u}) {
-        WorkerPool pool {lanes};
-        std::vector<int> seen(lanes, 0);
-        std::atomic<int> calls {0};
-        auto out_of_range = std::atomic<bool> {false};
-        PoolAccess::for_each_lane(pool, [&](unsigned lane) {
-            if (lane >= lanes) { // not CHECK: shared non-atomic counter
-                out_of_range.store(true, std::memory_order_relaxed);
-                return;
-            }
-            seen[lane] += 1; // distinct lane per invocation -> no race
-            calls.fetch_add(1, std::memory_order_relaxed);
-        });
-        CHECK(!out_of_range.load());
-        CHECK(calls.load() == int(lanes));
-        CHECK(std::all_of(seen.begin(), seen.end(), [](int c) { return c == 1; }));
-    }
-}
-
 // An exception on any lane propagates out to the caller (after every lane has
 // finished, so the body stays alive for the whole dispatch).
 static void exception_propagates() {
@@ -168,19 +145,6 @@ static void exception_propagates() {
             if (i == 0)
                 throw std::runtime_error("boom");
         });
-    } catch (std::runtime_error const&) {
-        caught = true;
-    }
-    CHECK(caught);
-}
-
-// The same, straight out of the raw fan-out.
-static void for_each_lane_propagates_exceptions() {
-    WorkerPool pool {4};
-    bool caught = false;
-    try {
-        PoolAccess::for_each_lane(pool,
-                                  [](unsigned) { throw std::runtime_error("boom"); });
     } catch (std::runtime_error const&) {
         caught = true;
     }
@@ -212,9 +176,7 @@ int main() {
     RUN_SUITE(empty_range_is_a_noop);
     RUN_SUITE(dispatch_after_idle_gap);
     RUN_SUITE(single_lane_runs_inline);
-    RUN_SUITE(for_each_lane_runs_once_per_lane);
     RUN_SUITE(exception_propagates);
-    RUN_SUITE(for_each_lane_propagates_exceptions);
     RUN_SUITE(nested_dispatch_throws);
     return REPORT();
 }

@@ -12,7 +12,7 @@
 // for_each_block() are the same over an index space. All three cover their
 // range exactly once, so a body touching only its own element cannot race.
 // Beneath them is a raw per-lane fan-out that makes no such promise; it is
-// private, reachable only through detail::PoolAccess. The body is referenced,
+// private -- nothing outside the pool needs it. The body is referenced,
 // never copied or type-erased onto the heap, so a dispatch allocates nothing.
 // On macOS workers request the performance-core QoS.
 //
@@ -63,10 +63,6 @@
 #endif
 
 namespace ecs::parallel {
-
-namespace detail {
-    struct PoolAccess;
-} // namespace detail
 
 // CPU "relax" hint for spin loops (lets the core de-prioritize the spinning
 // hyperthread / save power without yielding the OS time slice).
@@ -190,11 +186,6 @@ private:
     // the work silently never runs. Neither fails to compile, and both can pass
     // on a 1-lane pool, where the kernel runs exactly once on the caller.
     //
-    // Genuine per-lane work -- pinning a slice to a lane, per-lane setup such
-    // as the wasm spike's eval-a-kernel-into-each-Web-Worker -- reaches it via
-    // detail::PoolAccess, which has to be named explicitly. That is the point:
-    // it should be a deliberate act, not the fourth entry in a menu.
-    //
     // Allocation-free: the kernel is referenced via a static trampoline, never
     // stored or type-erased onto the heap. That holds for the public dispatches
     // too, since they all route through here.
@@ -204,8 +195,6 @@ private:
     // then the first exception is rethrown on the calling thread -- a throwing
     // system propagates out of Schedule::run as it would inline, with no
     // std::terminate from a worker and no use-after-unwind.
-    friend struct detail::PoolAccess;
-
     template <class Kernel>
     void for_each_lane(Kernel&& kernel) {
         if (lanes_ == 1) {
@@ -296,21 +285,6 @@ private:
     std::atomic<bool> has_err_ {false};
     std::exception_ptr err_;
 };
-
-namespace detail {
-    // The way to the pool's raw per-lane fan-out, for the cases that genuinely
-    // need a lane pinned rather than a claimed slice. Deliberately awkward: you
-    // have to name detail::PoolAccess, which is a decision, whereas an extra
-    // pool.for_each_* in the completion list is a shrug. Read WorkerPool's
-    // for_each_lane comment before using it -- disjointness becomes yours, and
-    // getting it wrong races or silently drops work without failing to compile.
-    struct PoolAccess {
-        template <class Kernel>
-        static void for_each_lane(WorkerPool& pool, Kernel&& kernel) {
-            pool.for_each_lane(std::forward<Kernel>(kernel));
-        }
-    };
-} // namespace detail
 
 // A process-wide 1-lane WorkerPool. One lane spawns no threads and its
 // dispatches just call the body on the calling thread -- they never touch
