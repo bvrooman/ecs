@@ -8,7 +8,6 @@
 #include <ecs/strong_id.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <concepts>
@@ -134,9 +133,8 @@ public:
         state_ = State::Prepared;
     }
 
-    // Execute the item list: each item is claimed by whichever lane is free
-    // (a lone item runs inline on the caller -- see for_each_index). Each
-    // item's busy time is rolled up per system into result_.
+    // Execute the item list: each item is claimed by whichever lane is free.
+    // Each item's busy time is rolled up per system into result_.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;

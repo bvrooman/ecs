@@ -28,15 +28,14 @@
 // -- a paused app that must not burn idle cores should own that decision
 // explicitly rather than have the pool guess at it.
 //
-// A dispatch is NOT re-entrant: there is one job slot, so a nested
-// dispatch on the same pool -- e.g. a query iterated from inside another
-// query's kernel -- throws std::logic_error rather than corrupting the
-// in-flight dispatch. Run inner iteration serially (for_each / an
-// ad-hoc 1-lane query) or restructure the system.
+// A dispatch is NOT re-entrant: there is one job slot, so a nested dispatch on
+// the same pool -- e.g. a query iterated from inside another query's kernel --
+// throws std::logic_error rather than corrupting the in-flight dispatch. Run
+// the inner iteration serially (Query::for_each, or an ad-hoc 1-lane query) or
+// restructure the system.
 
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <exception>
@@ -104,8 +103,8 @@ public:
     // The same, over an index space rather than a container: body(i) once per
     // index in [0, count), each claimed by whichever lane is free. Reach for it
     // when there is nothing to iterate -- indices into several parallel arrays,
-    // or a computed range. A single element runs inline on the caller, so the
-    // common one-item tick never pays a dispatch; a 1-lane pool is always inline.
+    // or a computed range. A single element, or a 1-lane pool, runs inline on
+    // the caller rather than paying for a dispatch.
     template <class Body>
     void for_each_index(std::size_t count, Body&& body) {
         if (count == 0)
@@ -136,17 +135,14 @@ private:
             kernel(); // serial: exception propagates directly
             return;
         }
-        // Re-entrancy guard: there is ONE job slot. A nested dispatch -- a
-        // kernel that itself iterates a pool-bound Query, or a second thread
-        // sharing the pool -- would overwrite fn_/ctx_ while lanes are
-        // mid-flight on the outer job (corruption or deadlock). Disallowed:
-        // thrown from inside an outer kernel, this surfaces at the outer
-        // dispatch's join like any kernel exception.
+        // One job slot: a nested dispatch would overwrite fn_/ctx_ while lanes
+        // are still reading them. Thrown from inside an outer kernel, this
+        // surfaces at that dispatch's join like any other kernel exception.
         if (dispatching_.exchange(true, std::memory_order_acquire))
             throw std::logic_error(
                 "WorkerPool::for_each_lane: nested dispatch on a pool that is "
                 "already mid-dispatch (a Query iterated inside another query's "
-                "kernel?); use for_each for inner iteration");
+                "kernel?); iterate the inner query serially");
         fn_ = +[](void* ctx) { (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(); };
         ctx_ = static_cast<void*>(&kernel);
         has_err_.store(false, std::memory_order_relaxed);

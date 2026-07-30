@@ -3,12 +3,12 @@
 // across idle gaps (the fixed-timestep pattern), the inline paths that skip
 // the job slot, and exception propagation from a lane back to the caller.
 //
-// NOTE: CHECK is not thread-safe -- it bumps plain int globals -- so it must
-// not be called from inside a dispatched body, where lanes run it
-// concurrently. Record the condition in an atomic and CHECK after the join.
+// CHECK is not thread-safe (see check.hpp), so it must not be called from
+// inside a dispatched body.
 #include <ecs/parallel/worker_pool.hpp>
 
 #include "check.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
@@ -62,18 +62,28 @@ static void for_each_over_an_empty_range_is_a_noop() {
     CHECK(!called);
 }
 
-// A single element runs inline on the caller -- the job slot is untouched, so
-// the common one-item dispatch costs nothing.
+// A single element runs inline instead of dispatching. Probed by nesting it
+// inside a real dispatch: running inline never touches the job slot, so it is
+// legal there, where a second dispatch would trip the re-entrancy guard.
+//
+// Neither a claim count nor thread identity can tell the two apart -- only one
+// lane ever draws index 0, and the caller runs as lane 0, so it often draws
+// that index itself even when the work was dispatched.
 static void single_element_runs_inline() {
     WorkerPool pool {4};
-    auto calls = std::atomic<int> {0};
-    auto only  = std::atomic<bool> {false};
-    pool.for_each_index(1, [&](std::size_t i) {
-        calls.fetch_add(1, std::memory_order_relaxed);
-        only.store(i == 0, std::memory_order_relaxed);
-    });
-    CHECK(calls.load() == 1);
-    CHECK(only.load());
+    auto ran   = std::atomic<int> {0};
+    bool threw = false;
+    try {
+        pool.for_each_index(4, [&](std::size_t) {
+            pool.for_each_index(1, [&](std::size_t) {
+                ran.fetch_add(1, std::memory_order_relaxed);
+            });
+        });
+    } catch (std::logic_error const&) {
+        threw = true; // the inner call dispatched rather than running inline
+    }
+    CHECK(!threw);
+    CHECK(ran.load() == 4);
 }
 
 // An empty range never calls the body and never dispatches.

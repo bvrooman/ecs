@@ -2,10 +2,8 @@
 // returns non-zero if anything failed. Wrap comma-containing expressions in
 // extra parens, e.g. CHECK((w.count<A, B>() == 2)).
 //
-// NOT thread-safe: the counters below are plain ints, so calling CHECK from
-// two threads at once is a data race (TSan will say so). In a concurrent test,
-// record the condition in an atomic inside the threaded region and CHECK it
-// after the join.
+// NOT thread-safe -- the counters below are plain ints. In a concurrent test,
+// record the condition in an atomic and CHECK it after the join.
 #pragma once
 #include <cstdio>
 
