@@ -31,30 +31,6 @@ static void every_index_runs_exactly_once() {
     }
 }
 
-// Same guarantee for blocks: [begin, end) ranges tile [0, count) exactly, with
-// the last block short when grain does not divide count.
-static void blocks_tile_the_range_exactly() {
-    for (std::size_t grain : {1uz, 7uz, 256uz, 4096uz}) {
-        WorkerPool pool {4};
-        std::size_t const n = 10'000; // deliberately not a multiple of any grain
-        std::vector<int> hits(n, 0);
-        auto blocks    = std::atomic<int> {0};
-        auto malformed = std::atomic<bool> {false};
-        pool.for_each_block(n, grain, [&](std::size_t b, std::size_t e) {
-            // Not CHECK: that writes a shared non-atomic counter (see the note
-            // at the top of this file). Flag it here, assert after the join.
-            if (!(b < e && e <= n && e - b <= grain))
-                malformed.store(true, std::memory_order_relaxed);
-            blocks.fetch_add(1, std::memory_order_relaxed);
-            for (auto i = b; i < e; ++i)
-                hits[i] += 1;
-        });
-        CHECK(!malformed.load());
-        CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
-        CHECK(blocks.load() == int((n + grain - 1) / grain));
-    }
-}
-
 // The range overload: every element handed to the body exactly once, and the
 // body gets a mutable reference into the caller's range, not a copy.
 static void for_each_over_a_range_covers_every_element() {
@@ -86,18 +62,18 @@ static void for_each_over_an_empty_range_is_a_noop() {
     CHECK(!called);
 }
 
-// A grain at or above the count means one lane would claim everything, so the
-// body runs inline on the caller as a single block -- the job slot is untouched.
-static void grain_at_or_above_count_runs_inline() {
+// A single element runs inline on the caller -- the job slot is untouched, so
+// the common one-item dispatch costs nothing.
+static void single_element_runs_inline() {
     WorkerPool pool {4};
     auto calls = std::atomic<int> {0};
-    auto whole = std::atomic<bool> {false};
-    pool.for_each_block(100, 100, [&](std::size_t b, std::size_t e) {
+    auto only  = std::atomic<bool> {false};
+    pool.for_each_index(1, [&](std::size_t i) {
         calls.fetch_add(1, std::memory_order_relaxed);
-        whole.store(b == 0 && e == 100, std::memory_order_relaxed);
+        only.store(i == 0, std::memory_order_relaxed);
     });
     CHECK(calls.load() == 1);
-    CHECK(whole.load());
+    CHECK(only.load());
 }
 
 // An empty range never calls the body and never dispatches.
@@ -105,7 +81,6 @@ static void empty_range_is_a_noop() {
     WorkerPool pool {4};
     bool called = false;
     pool.for_each_index(0, [&](std::size_t) { called = true; });
-    pool.for_each_block(0, 8, [&](std::size_t, std::size_t) { called = true; });
     CHECK(!called);
 }
 
@@ -119,8 +94,8 @@ static void dispatch_after_idle_gap() {
     constexpr int rounds = 50;
     for (int r = 0; r < rounds; ++r) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1)); // idle between ticks
-        pool.for_each_block(n, 64, [&](std::size_t b, std::size_t e) {
-            total.fetch_add(long(e - b), std::memory_order_relaxed);
+        pool.for_each_index(n, [&](std::size_t) {
+            total.fetch_add(1, std::memory_order_relaxed);
         });
     }
     CHECK(total.load() == long(n) * rounds);
@@ -171,8 +146,7 @@ int main() {
     RUN_SUITE(for_each_over_a_range_covers_every_element);
     RUN_SUITE(for_each_over_a_const_range_reads);
     RUN_SUITE(for_each_over_an_empty_range_is_a_noop);
-    RUN_SUITE(blocks_tile_the_range_exactly);
-    RUN_SUITE(grain_at_or_above_count_runs_inline);
+    RUN_SUITE(single_element_runs_inline);
     RUN_SUITE(empty_range_is_a_noop);
     RUN_SUITE(dispatch_after_idle_gap);
     RUN_SUITE(single_lane_runs_inline);

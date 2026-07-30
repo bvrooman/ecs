@@ -7,21 +7,23 @@
 // thread is lane 0; lanes-1 resident OS threads are lanes 1..N) stay alive and
 // spin-wait on a generation counter, so a dispatch never creates, wakes, or
 // sleeps a thread -- the source of the tail latency a general work-stealing pool
-// (woken per wave) suffers. for_each() hands a range out to the lanes in
-// dynamically claimed pieces and blocks until all finish; for_each_index() and
-// for_each_block() are the same over an index space. All three cover their
-// range exactly once, so a body touching only its own element cannot race.
-// Beneath them is a raw per-lane fan-out that makes no such promise; it is
-// private -- nothing outside the pool needs it. The body is referenced,
-// never copied or type-erased onto the heap, so a dispatch allocates nothing.
-// On macOS workers request the performance-core QoS.
+// (woken per wave) suffers. for_each() hands a range out to the lanes, one
+// element claimed at a time, and blocks until all finish; for_each_index() is
+// the same over an index space. Both cover their range exactly once, so a body
+// touching only its own element cannot race. Beneath them is a raw per-lane
+// fan-out that makes no such promise; it is private -- nothing outside the pool
+// needs it. The body is referenced, never copied or type-erased onto the heap,
+// so a dispatch allocates nothing. On macOS workers request the
+// performance-core QoS.
 //
 // Claiming is dynamic rather than a fixed partition because the wave executor
 // -- the pool's one in-tree consumer -- runs ragged work items whose costs
-// differ by design. Claiming costs one relaxed fetch_add per block and lets a
-// lane that drew cheap blocks keep pulling; a static split would leave it idle
-// on a slice it finished early. Pass grain = count / lanes() to recover a
-// static partition for a uniform workload.
+// differ by design. Claiming costs one relaxed fetch_add per element and lets a
+// lane that drew cheap work keep pulling; a static split would leave it idle on
+// a slice it finished early. A caller wanting contiguous runs rather than
+// single elements -- to amortise a per-call cost, or because the body needs a
+// span -- builds a range of slice descriptors and iterates that (see
+// web/test/parallel_smoke.cpp).
 //
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
@@ -110,41 +112,30 @@ public:
     }
 
     // The same, over an index space rather than a container: body(i) once per
-    // index in [0, count). Reach for it when there is nothing to iterate --
-    // indices into several parallel arrays, or a computed range.
+    // index in [0, count), each claimed by whichever lane is free. Reach for it
+    // when there is nothing to iterate -- indices into several parallel arrays,
+    // or a computed range. Want contiguous runs rather than single elements?
+    // Build a range of slice descriptors and hand that to for_each.
+    //
+    // A single element runs inline on the caller, so the common one-item tick
+    // never pays a dispatch; a 1-lane pool is always inline.
     template <class Body>
     void for_each_index(std::size_t count, Body&& body) {
-        for_each_block(count, 1, [&body](std::size_t b, std::size_t e) {
-            for (auto i = b; i < e; ++i)
-                body(i);
-        });
-    }
-
-    // Claim [0, count) in `grain`-sized blocks: body(begin, end) once per
-    // claimed block, every index landing in exactly one call.
-    //
-    // For a *uniform* workload pass grain = count / lanes() to recover a static
-    // partition at the cost of one atomic per lane.
-    //
-    // `grain` doubles as the serial threshold: at count <= grain a single lane
-    // would claim everything anyway, so the body runs inline on the caller and
-    // the job slot is never touched. A 1-lane pool is always inline.
-    template <class Body>
-    void for_each_block(std::size_t count, std::size_t grain, Body&& body) {
         if (count == 0)
             return;
-        if (lanes_ == 1 || count <= grain) {
-            body(std::size_t {0}, count); // serial: exception propagates directly
+        if (lanes_ == 1 || count == 1) {
+            for (std::size_t i = 0; i < count; ++i)
+                body(i); // serial: exception propagates directly
             return;
         }
         auto next = std::atomic<std::size_t> {0};
         for_each_lane([&](unsigned) {
-            // Claim, then test: the lane that draws b >= count is done. Relaxed
-            // is enough -- the fetch_add only has to hand out distinct b's, and
+            // Claim, then test: the lane that draws i >= count is done. Relaxed
+            // is enough -- the fetch_add only has to hand out distinct i's, and
             // the join is what orders the bodies' writes against the caller.
-            std::size_t b = 0;
-            while ((b = next.fetch_add(grain, std::memory_order_relaxed)) < count)
-                body(b, std::min(b + grain, count));
+            std::size_t i = 0;
+            while ((i = next.fetch_add(1, std::memory_order_relaxed)) < count)
+                body(i);
         });
     }
 
