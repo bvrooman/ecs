@@ -7,11 +7,12 @@
 // thread is lane 0; lanes-1 resident OS threads are lanes 1..N) stay alive and
 // spin-wait on a generation counter, so a dispatch never creates, wakes, or
 // sleeps a thread -- the source of the tail latency a general work-stealing pool
-// (woken per wave) suffers. for_each_index()/for_each_block() hand [0, count)
-// out to the lanes in dynamically claimed blocks and block until all finish;
-// for_each_lane() is the raw fan-out beneath them. The body is referenced,
-// never copied or type-erased onto the heap, so a dispatch allocates nothing.
-// On macOS workers request the performance-core QoS.
+// (woken per wave) suffers. for_each() hands a range out to the lanes in
+// dynamically claimed pieces and blocks until all finish; for_each_index() and
+// for_each_block() are the same over an index space, and for_each_lane() is the
+// raw fan-out the other three are built on. The body is referenced, never
+// copied or type-erased onto the heap, so a dispatch allocates nothing. On
+// macOS workers request the performance-core QoS.
 //
 // Claiming is dynamic rather than a fixed partition because the wave executor
 // -- the pool's one in-tree consumer -- runs ragged work items whose costs
@@ -94,9 +95,53 @@ public:
         return lanes_;
     }
 
-    // Claim [0, count) in `grain`-sized blocks, dynamically, across all lanes;
-    // blocks until every lane finishes. body(begin, end) is called once per
-    // claimed block, and every index in [0, count) lands in exactly one call.
+    // The four dispatches below are one mechanism in layers, most-used first:
+    // for_each -> for_each_index -> for_each_block -> for_each_lane, each
+    // implemented by the next. They share the semantics the file comment
+    // describes -- dynamic claiming, blocking until every lane rejoins, no
+    // allocation -- and the exception and re-entrancy contract spelled out on
+    // for_each_lane at the bottom.
+
+    // Run body(element) once per element of `range`, each element claimed by
+    // whichever lane is free. The dispatch most callers want: say what the work
+    // *is* rather than counting it and indexing back in.
+    //
+    //   pool.for_each(items, run_one);   // not for_each_index(items.size(), ...)
+    //
+    // Random access and sized because claiming hands a lane an arbitrary index,
+    // which has to be O(1); a list would have to be walked. `range` must outlive
+    // the call, which it does -- the dispatch blocks until every lane rejoins.
+    // The element reference follows the range's constness, so a body taking T&
+    // can mutate in place.
+    template <class R, class Body>
+        requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
+    void for_each(R&& range, Body&& body) {
+        auto const first = std::ranges::begin(range);
+        for_each_index(std::ranges::size(range),
+                       [&](std::size_t i) { body(first[std::ptrdiff_t(i)]); });
+    }
+
+    // The same, over an index space rather than a container: body(i) once per
+    // index in [0, count). Reach for it when there is nothing to iterate --
+    // indices into several parallel arrays, or a computed range.
+    //
+    // This is for_each_block at grain 1, one element per claim. The wave
+    // executor's shape -- a handful of coarse, uneven work items, where
+    // per-item claiming is the point and the one atomic per item is noise
+    // against the item's own cost. A lone item runs inline on the caller, so
+    // the common single-system tick never pays a dispatch.
+    template <class Body>
+    void for_each_index(std::size_t count, Body&& body) {
+        for_each_block(count, 1, [&body](std::size_t b, std::size_t e) {
+            for (auto i = b; i < e; ++i)
+                body(i);
+        });
+    }
+
+    // Claim [0, count) in `grain`-sized blocks: body(begin, end) once per
+    // claimed block, every index landing in exactly one call. Use it when the
+    // body is cheap per element and wants a run to amortise over, or when it
+    // needs a contiguous span.
     //
     // Dynamic rather than a fixed partition: the wave executor's work items are
     // ragged (build() sorts them longest-first precisely because their costs
@@ -108,9 +153,6 @@ public:
     // `grain` doubles as the serial threshold: at count <= grain a single lane
     // would claim everything anyway, so the body runs inline on the caller and
     // the job slot is never touched. A 1-lane pool is always inline.
-    //
-    // Allocation-free: the body is referenced via a static trampoline, never
-    // stored or type-erased onto the heap.
     template <class Body>
     void for_each_block(std::size_t count, std::size_t grain, Body&& body) {
         if (count == 0)
@@ -130,45 +172,15 @@ public:
         });
     }
 
-    // for_each_block with grain 1: body(i) once per index in [0, count), each
-    // claimed by whichever lane is free. The wave executor's shape -- a handful
-    // of coarse, uneven work items, where per-item claiming is the point and
-    // the one atomic per item is noise against the item's own cost.
-    //
-    // A lone item runs inline on the caller (count <= grain), so the common
-    // single-system tick never pays a dispatch.
-    template <class Body>
-    void for_each_index(std::size_t count, Body&& body) {
-        for_each_block(count, 1, [&body](std::size_t b, std::size_t e) {
-            for (auto i = b; i < e; ++i)
-                body(i);
-        });
-    }
-
-    // for_each_index over a range: body(element) once per element, each claimed
-    // by whichever lane is free. The shape most callers want -- say what the
-    // work *is* rather than indexing back into it:
-    //
-    //   pool.for_each(items, run_one);   // not for_each_index(items.size(), ...)
-    //
-    // Random access and sized because claiming hands a lane an arbitrary index,
-    // which has to be O(1); a list would have to be walked. `range` must outlive
-    // the call, which it does -- the dispatch blocks until every lane rejoins.
-    // The element reference follows the range's constness, so a body taking T&
-    // can mutate in place.
-    template <class R, class Body>
-        requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
-    void for_each(R&& range, Body&& body) {
-        auto const first = std::ranges::begin(range);
-        for_each_index(std::ranges::size(range),
-                       [&](std::size_t i) { body(first[std::ptrdiff_t(i)]); });
-    }
-
     // Run kernel(lane) once on every lane (the caller is lane 0) and block
-    // until all finish; a 1-lane pool calls it inline. This is the raw
-    // fan-out the two range helpers above are built on -- reach for it only
-    // when the work is not an index range at all (per-lane setup, a bespoke
-    // claiming scheme). Prefer for_each_index / for_each_block.
+    // until all finish; a 1-lane pool calls it inline. This is the raw fan-out
+    // the three dispatches above are built on -- reach for it only when the
+    // work is not an index range at all (per-lane setup, a bespoke claiming
+    // scheme). Prefer for_each / for_each_index / for_each_block.
+    //
+    // Allocation-free: the kernel is referenced via a static trampoline, never
+    // stored or type-erased onto the heap. That holds for everything above too,
+    // since it all routes through here.
     //
     // Exceptions: if the kernel throws on any lane, every lane still runs to
     // completion (so the referenced kernel stays alive for the whole dispatch),
