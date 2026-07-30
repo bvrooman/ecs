@@ -69,7 +69,7 @@ public:
     explicit WorkerPool(unsigned lanes)
         : lanes_(lanes < 1 ? 1u : lanes) {
         for (unsigned w = 1; w < lanes_; ++w)
-            threads_.emplace_back([this, w] { worker_main(w); });
+            threads_.emplace_back([this] { worker_main(); });
     }
 
     ~WorkerPool() {
@@ -116,7 +116,7 @@ public:
             return;
         }
         auto next = std::atomic<std::size_t> {0};
-        for_each_lane([&](unsigned) {
+        for_each_lane([&] {
             std::size_t i = 0;
             while ((i = next.fetch_add(1, std::memory_order_relaxed)) < count)
                 body(i);
@@ -124,8 +124,8 @@ public:
     }
 
 private:
-    // Run kernel(lane) once on every lane (the caller is lane 0) and block
-    // until all finish; a 1-lane pool calls it inline.
+    // Run kernel() once on every lane (the caller is lane 0) and block until
+    // all finish; a 1-lane pool calls it inline.
     //
     // Exceptions: if the kernel throws on any lane, every lane still runs to
     // completion (so the referenced kernel stays alive for the whole dispatch),
@@ -133,7 +133,7 @@ private:
     template <class Kernel>
     void for_each_lane(Kernel&& kernel) {
         if (lanes_ == 1) {
-            kernel(0u); // serial: exception propagates directly
+            kernel(); // serial: exception propagates directly
             return;
         }
         // Re-entrancy guard: there is ONE job slot. A nested dispatch -- a
@@ -147,14 +147,12 @@ private:
                 "WorkerPool::for_each_lane: nested dispatch on a pool that is "
                 "already mid-dispatch (a Query iterated inside another query's "
                 "kernel?); use for_each for inner iteration");
-        fn_ = +[](void* ctx, unsigned lane) {
-            (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(lane);
-        };
+        fn_ = +[](void* ctx) { (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(); };
         ctx_ = static_cast<void*>(&kernel);
         has_err_.store(false, std::memory_order_relaxed);
         remaining_.store(lanes_, std::memory_order_relaxed);
         gen_.fetch_add(1, std::memory_order_release); // publish the job
-        run_lane(0);                                  // the caller is lane 0
+        run_lane();                                   // the caller is lane 0
         while (remaining_.load(std::memory_order_acquire) != 0)
             cpu_relax();
         dispatching_.store(false, std::memory_order_release);
@@ -169,9 +167,9 @@ private:
     // spatial prefetcher / Apple Silicon).
     static constexpr std::size_t kNoShare = 128;
 
-    void run_lane(unsigned lane) {
+    void run_lane() {
         try {
-            fn_(ctx_, lane);
+            fn_(ctx_);
         } catch (...) {
             // Keep the first exception; let other lanes finish (the kernel must
             // stay alive until the join), then the caller rethrows.
@@ -181,7 +179,7 @@ private:
         remaining_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    void worker_main(unsigned lane) {
+    void worker_main() {
 #if defined(__APPLE__)
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
@@ -195,7 +193,7 @@ private:
             last = gen_.load(std::memory_order_acquire);
             if (stop_.load(std::memory_order_acquire))
                 return;
-            run_lane(lane);
+            run_lane();
         }
     }
 
@@ -204,8 +202,8 @@ private:
 
     // Job slot: written by the caller before it bumps gen_, read by each lane
     // after it observes the new gen_ (release/acquire handshake).
-    void (*fn_)(void*, unsigned) = nullptr;
-    void* ctx_                   = nullptr;
+    void (*fn_)(void*) = nullptr;
+    void* ctx_         = nullptr;
 
     // gen_ and remaining_ each get their own cache line: every lane spins on
     // gen_ and every lane's fetch_sub invalidates remaining_ -- sharing a line
