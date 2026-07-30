@@ -103,18 +103,10 @@ public:
     // semantics the file comment describes -- dynamic claiming, exactly-once
     // coverage, blocking until every lane rejoins, no allocation -- and the
     // exception and re-entrancy contract documented on for_each_lane.
-
     // Run body(element) once per element of `range`, each element claimed by
-    // whichever lane is free. The dispatch most callers want: say what the work
-    // *is* rather than counting it and indexing back in.
+    // whichever lane is free.
     //
     //   pool.for_each(items, run_one);   // not for_each_index(items.size(), ...)
-    //
-    // Random access and sized because claiming hands a lane an arbitrary index,
-    // which has to be O(1); a list would have to be walked. `range` must outlive
-    // the call, which it does -- the dispatch blocks until every lane rejoins.
-    // The element reference follows the range's constness, so a body taking T&
-    // can mutate in place.
     template <class R, class Body>
         requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
     void for_each(R&& range, Body&& body) {
@@ -126,12 +118,6 @@ public:
     // The same, over an index space rather than a container: body(i) once per
     // index in [0, count). Reach for it when there is nothing to iterate --
     // indices into several parallel arrays, or a computed range.
-    //
-    // This is for_each_block at grain 1, one element per claim. The wave
-    // executor's shape -- a handful of coarse, uneven work items, where
-    // per-item claiming is the point and the one atomic per item is noise
-    // against the item's own cost. A lone item runs inline on the caller, so
-    // the common single-system tick never pays a dispatch.
     template <class Body>
     void for_each_index(std::size_t count, Body&& body) {
         for_each_block(count, 1, [&body](std::size_t b, std::size_t e) {
@@ -176,25 +162,11 @@ public:
 
 private:
     // Run kernel(lane) once on every lane (the caller is lane 0) and block
-    // until all finish; a 1-lane pool calls it inline. The raw fan-out the
-    // three public dispatches are built on.
-    //
-    // PRIVATE ON PURPOSE. Every dispatch above guarantees exactly-once coverage
-    // of a range, so a body that touches only its own element cannot race. This
-    // one guarantees nothing: it hands out a lane index and leaves disjointness
-    // entirely to the caller. Overlap and you get a data race; leave a gap and
-    // the work silently never runs. Neither fails to compile, and both can pass
-    // on a 1-lane pool, where the kernel runs exactly once on the caller.
-    //
-    // Allocation-free: the kernel is referenced via a static trampoline, never
-    // stored or type-erased onto the heap. That holds for the public dispatches
-    // too, since they all route through here.
+    // until all finish; a 1-lane pool calls it inline.
     //
     // Exceptions: if the kernel throws on any lane, every lane still runs to
     // completion (so the referenced kernel stays alive for the whole dispatch),
-    // then the first exception is rethrown on the calling thread -- a throwing
-    // system propagates out of Schedule::run as it would inline, with no
-    // std::terminate from a worker and no use-after-unwind.
+    // then the first exception is rethrown on the calling thread.
     template <class Kernel>
     void for_each_lane(Kernel&& kernel) {
         if (lanes_ == 1) {
