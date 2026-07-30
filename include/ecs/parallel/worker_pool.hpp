@@ -97,12 +97,6 @@ public:
         return lanes_;
     }
 
-    // The three dispatches below are one mechanism in layers, most-used first:
-    // for_each -> for_each_index -> for_each_block, each implemented by the
-    // next, and all three finally by the private for_each_lane. They share the
-    // semantics the file comment describes -- dynamic claiming, exactly-once
-    // coverage, blocking until every lane rejoins, no allocation -- and the
-    // exception and re-entrancy contract documented on for_each_lane.
     // Run body(element) once per element of `range`, each element claimed by
     // whichever lane is free.
     //
