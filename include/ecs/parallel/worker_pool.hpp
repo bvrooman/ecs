@@ -121,8 +121,11 @@ public:
         }
         auto next = std::atomic<std::size_t> {0};
         for_each_lane([&](unsigned) {
-            for (auto b = next.fetch_add(grain, std::memory_order_relaxed); b < count;
-                 b      = next.fetch_add(grain, std::memory_order_relaxed))
+            // Claim, then test: the lane that draws b >= count is done. Relaxed
+            // is enough -- the fetch_add only has to hand out distinct b's, and
+            // the join is what orders the bodies' writes against the caller.
+            std::size_t b = 0;
+            while ((b = next.fetch_add(grain, std::memory_order_relaxed)) < count)
                 body(b, std::min(b + grain, count));
         });
     }
