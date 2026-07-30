@@ -6,12 +6,12 @@
 // It is built once and reused every tick. `lanes` execution lanes (the calling
 // thread is lane 0; lanes-1 resident OS threads are lanes 1..N) stay alive and
 // spin-wait on a generation counter, so a dispatch never creates, wakes, or
-// sleeps a thread -- the source of the tail latency a general work-stealing pool
-// suffers. for_each() hands a range out to the lanes, one
-// element claimed at a time, and blocks until all finish; for_each_index() is
-// the same over an index space. The body is referenced, never copied or
-// type-erased onto the heap, so a dispatch allocates nothing. On macOS workers request
-// the performance-core QoS.
+// sleeps a thread -- the source of the tail latency a general work-stealing
+// pool suffers. for_each() hands a range out to the lanes, one element claimed
+// at a time, and blocks until all finish; for_each_index() is the same over an
+// index space. The body is referenced, never copied or type-erased onto the
+// heap, so a dispatch allocates nothing. On macOS workers request the
+// performance-core QoS.
 //
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
@@ -102,8 +102,8 @@ public:
     // The same, over an index space rather than a container: body(i) once per
     // index in [0, count), each claimed by whichever lane is free. Reach for it
     // when there is nothing to iterate -- indices into several parallel arrays,
-    // or a computed range. A single element runs inline on the caller, so the common
-    // one-item tick never pays a dispatch; a 1-lane pool is always inline.
+    // or a computed range. A single element runs inline on the caller, so the
+    // common one-item tick never pays a dispatch; a 1-lane pool is always inline.
     template <class Body>
     void for_each_index(std::size_t count, Body&& body) {
         if (count == 0)
