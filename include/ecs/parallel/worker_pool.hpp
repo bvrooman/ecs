@@ -121,16 +121,10 @@ public:
     }
 
     // Claim [0, count) in `grain`-sized blocks: body(begin, end) once per
-    // claimed block, every index landing in exactly one call. Use it when the
-    // body is cheap per element and wants a run to amortise over, or when it
-    // needs a contiguous span.
+    // claimed block, every index landing in exactly one call.
     //
-    // Dynamic rather than a fixed partition: the wave executor's work items are
-    // ragged (build() sorts them longest-first precisely because their costs
-    // differ), so a lane that draws short blocks keeps pulling instead of
-    // idling on an equal static slice it finished early. For a *uniform*
-    // workload pass grain = count / lanes() to recover a static partition at
-    // the cost of one atomic per lane.
+    // For a *uniform* workload pass grain = count / lanes() to recover a static
+    // partition at the cost of one atomic per lane.
     //
     // `grain` doubles as the serial threshold: at count <= grain a single lane
     // would claim everything anyway, so the body runs inline on the caller and
