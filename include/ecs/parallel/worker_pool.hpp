@@ -7,10 +7,9 @@
 // thread is lane 0; lanes-1 resident OS threads are lanes 1..N) stay alive and
 // spin-wait on a generation counter, so a dispatch never creates, wakes, or
 // sleeps a thread -- the source of the tail latency a general work-stealing pool
-// (woken per wave) suffers. for_each() hands a range out to the lanes, one
+// suffers. for_each() hands a range out to the lanes, one
 // element claimed at a time, and blocks until all finish; for_each_index() is
-// the same over an index space. Both cover their range exactly once, so a body
-// touching only its own element cannot race. The body is referenced, never copied or
+// the same over an index space. The body is referenced, never copied or
 // type-erased onto the heap, so a dispatch allocates nothing. On macOS workers request
 // the performance-core QoS.
 //
