@@ -95,8 +95,10 @@ public:
         requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
     void for_each(R&& range, Body&& body) {
         auto const first = std::ranges::begin(range);
-        for_each_index(std::ranges::size(range),
-                       [&](std::size_t i) { body(first[std::ptrdiff_t(i)]); });
+        for_each_index(std::ranges::size(range), [&](std::size_t index) {
+            auto i = static_cast<std::ptrdiff_t>(index);
+            body(first[i]);
+        });
     }
 
     // The same, over an index space rather than a container: body(i) once per
