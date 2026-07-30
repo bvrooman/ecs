@@ -47,6 +47,7 @@
 #include <atomic>
 #include <cstddef>
 #include <exception>
+#include <ranges>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -139,6 +140,25 @@ public:
             for (auto i = b; i < e; ++i)
                 body(i);
         });
+    }
+
+    // for_each_index over a range: body(element) once per element, each claimed
+    // by whichever lane is free. The shape most callers want -- say what the
+    // work *is* rather than indexing back into it:
+    //
+    //   pool.for_each(items, run_one);   // not for_each_index(items.size(), ...)
+    //
+    // Random access and sized because claiming hands a lane an arbitrary index,
+    // which has to be O(1); a list would have to be walked. `range` must outlive
+    // the call, which it does -- the dispatch blocks until every lane rejoins.
+    // The element reference follows the range's constness, so a body taking T&
+    // can mutate in place.
+    template <class R, class Body>
+        requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
+    void for_each(R&& range, Body&& body) {
+        auto const first = std::ranges::begin(range);
+        for_each_index(std::ranges::size(range),
+                       [&](std::size_t i) { body(first[std::ptrdiff_t(i)]); });
     }
 
     // Run kernel(lane) once on every lane (the caller is lane 0) and block

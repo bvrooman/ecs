@@ -55,6 +55,37 @@ static void blocks_tile_the_range_exactly() {
     }
 }
 
+// The range overload: every element handed to the body exactly once, and the
+// body gets a mutable reference into the caller's range, not a copy.
+static void for_each_over_a_range_covers_every_element() {
+    for (unsigned lanes : {1u, 2u, 4u}) {
+        WorkerPool pool {lanes};
+        std::vector<int> items(10'000, 0);
+        pool.for_each(items, [](int& v) { v += 1; }); // distinct element per claim
+        CHECK(std::all_of(items.begin(), items.end(), [](int v) { return v == 1; }));
+    }
+}
+
+// A const range yields const references -- the body sees T const&, so a
+// read-only pass over someone else's data compiles as such.
+static void for_each_over_a_const_range_reads() {
+    WorkerPool pool {4};
+    std::vector<int> const items(10'000, 3);
+    std::atomic<long> total {0};
+    pool.for_each(items,
+                  [&](int const& v) { total.fetch_add(v, std::memory_order_relaxed); });
+    CHECK(total.load() == 30'000);
+}
+
+// An empty range never calls the body, matching for_each_index(0, ...).
+static void for_each_over_an_empty_range_is_a_noop() {
+    WorkerPool pool {4};
+    std::vector<int> empty;
+    bool called = false;
+    pool.for_each(empty, [&](int&) { called = true; });
+    CHECK(!called);
+}
+
 // A grain at or above the count means one lane would claim everything, so the
 // body runs inline on the caller as a single block -- the job slot is untouched.
 static void grain_at_or_above_count_runs_inline() {
@@ -171,6 +202,9 @@ static void nested_dispatch_throws() {
 
 int main() {
     RUN_SUITE(every_index_runs_exactly_once);
+    RUN_SUITE(for_each_over_a_range_covers_every_element);
+    RUN_SUITE(for_each_over_a_const_range_reads);
+    RUN_SUITE(for_each_over_an_empty_range_is_a_noop);
     RUN_SUITE(blocks_tile_the_range_exactly);
     RUN_SUITE(grain_at_or_above_count_runs_inline);
     RUN_SUITE(empty_range_is_a_noop);

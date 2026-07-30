@@ -147,7 +147,7 @@ public:
             system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);
         };
-        pool.for_each_index(items_.size(), [&](std::size_t i) { run_one(items_[i]); });
+        pool.for_each(items_, run_one);
         for (auto const& item : items_) {
             result_.busy_us[item.system] += item.busy_us;
             result_.item_counts[item.system]++;
