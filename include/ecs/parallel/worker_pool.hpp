@@ -14,12 +14,6 @@
 // type-erased onto the heap, so a dispatch allocates nothing. On macOS workers request
 // the performance-core QoS.
 //
-// Claiming is dynamic rather than a fixed partition because the wave executor
-// -- the pool's one in-tree consumer -- runs ragged work items whose costs
-// differ by design. Claiming costs one relaxed fetch_add per element and lets a
-// lane that drew cheap work keep pulling; a static split would leave it idle on
-// a slice it finished early.
-//
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
 // fixed-timestep loop, where a dispatch lands every tick and the cost that
