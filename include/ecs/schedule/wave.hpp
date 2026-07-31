@@ -11,9 +11,10 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include <ranges>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -35,15 +36,13 @@ public:
     SystemId system;
 
     // rows: the Wave's shared scratch, sized here to this system's item count.
-    bool prepare(World& world,
-                 std::span<WorkItem const> items,
-                 std::vector<uint32_t>& rows) const {
+    template <std::ranges::input_range Items>
+        requires std::same_as<std::ranges::range_value_t<Items>, WorkItem>
+    bool prepare(World& world, Items&& items, std::vector<uint32_t>& rows) const {
         if (!*fn_)
             return false;
         rows.clear();
         for (auto const& it : items) {
-            if (it.system != system)
-                continue;
             if (rows.size() <= it.ordinal)
                 rows.resize(it.ordinal + 1);
             rows[it.ordinal] = it.end - it.begin;
@@ -126,7 +125,10 @@ public:
         assert(state_ == State::New);
         for (auto const& ctx : prepare_) {
             auto const t0 = detail::sched_clock::now();
-            if (ctx.prepare(world, items_, rows_scratch_))
+            auto items    = items_ | std::views::filter([&](auto const& item) {
+                             return item.system == ctx.system;
+                            });
+            if (ctx.prepare(world, items, rows_scratch_))
                 result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
         }
         state_ = State::Prepared;
