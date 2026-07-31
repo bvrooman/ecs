@@ -8,7 +8,10 @@
 #include "setup.hpp"
 #include <atomic>
 #include <cstddef>
+#include <mutex>
+#include <set>
 #include <span>
+#include <thread>
 #include <vector>
 
 using namespace ecs;
@@ -263,6 +266,80 @@ void grain_does_not_split_a_serial_system() {
     CHECK(items.load() == 1);
 }
 
+// --- Exec -------------------------------------------------------------------
+// Exec fans an arbitrary index space onto the schedule's own lanes from inside
+// a system. The safety argument is that it declares its system exclusive, so
+// the system is alone in its wave and a one-item wave runs inline on the
+// caller with the pool idle -- the tests below pin down both halves.
+void exec_fans_work_onto_the_pool() {
+    World world;
+    spawn_n<Val>(world, 8);
+
+    std::atomic<int> visited {0};
+    std::mutex m;
+    std::set<std::thread::id> threads;
+
+    Schedule sched;
+    sched.add_serial("fanout", [&](Exec exec) {
+        exec.for_each_index(256, [&](std::size_t) {
+            ++visited;
+            auto lk = std::lock_guard(m);
+            threads.insert(std::this_thread::get_id());
+        });
+    });
+    WorkerPool pool {4};
+    sched.run(world, pool);
+
+    CHECK(visited.load() == 256); // every index ran, exactly once
+    CHECK(threads.size() > 1);    // ...and on more than one lane
+}
+
+// The dispatch is a real one, not a silent fallback: it must survive being
+// nested inside the schedule's own run, which is what the exclusivity buys.
+// A system that merely ran serially would still pass the count check above,
+// so also assert the pool the body sees is the one the schedule was given.
+void exec_reports_the_running_pool() {
+    World world;
+    spawn_n<Val>(world, 4);
+    unsigned seen = 0;
+    Schedule sched;
+    sched.add_serial("lanes", [&](Exec exec) { seen = exec.lanes(); });
+    WorkerPool pool {3};
+    sched.run(world, pool);
+    CHECK(seen == 3);
+}
+
+// Exclusivity is the mechanism, so it must actually be declared: an Exec system
+// gets a wave to itself even among systems it shares no data with.
+void exec_system_runs_alone_in_its_wave() {
+    Schedule sched;
+    sched.add_parallel("a", [](Query<Val> q) { (void)q; });
+    sched.add_serial("fanout", [](Exec) {});
+    sched.add_parallel("b", [](Query<Other> q) { (void)q; });
+    // a and b touch different components and would share a wave; the Exec
+    // system between them conflicts with both, so three waves.
+    CHECK(sched.level_count() == 3);
+}
+
+// It composes with the ordinary parameters -- the fan-out is additive.
+void exec_composes_with_other_parameters() {
+    World world;
+    spawn_n<Val>(world, 64);
+    world.emplace_resource<int>(0);
+
+    Schedule sched;
+    sched.add_serial("scale", [](Query<Val> q, ResMut<int> res, Exec exec) {
+        std::vector<int> rows;
+        q.for_each([&](auto& v) { rows.push_back(v.v); });
+        std::atomic<int> sum {0};
+        exec.for_each_index(rows.size(), [&](std::size_t i) { sum += rows[i]; });
+        *res = sum.load();
+    });
+    WorkerPool pool {4};
+    sched.run(world, pool);
+    CHECK(world.resource<int>() == 64 * 63 / 2); // 0 + 1 + ... + 63
+}
+
 } // namespace
 
 int main() {
@@ -276,5 +353,9 @@ int main() {
     RUN_SUITE(grain_raises_the_item_count_of_a_small_system);
     RUN_SUITE(grain_sets_rows_per_item_on_a_large_system);
     RUN_SUITE(grain_does_not_split_a_serial_system);
+    RUN_SUITE(exec_fans_work_onto_the_pool);
+    RUN_SUITE(exec_reports_the_running_pool);
+    RUN_SUITE(exec_system_runs_alone_in_its_wave);
+    RUN_SUITE(exec_composes_with_other_parameters);
     return REPORT();
 }

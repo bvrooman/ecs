@@ -141,6 +141,7 @@ public:
         auto run_one = [&](WorkItem& item) {
             auto& system               = systems[item.system];
             detail::recording_source() = system.id;
+            item.pool                  = &pool; // for Exec; see work_item.hpp
             auto const t0              = clock::now();
             system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);

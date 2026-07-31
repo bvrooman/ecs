@@ -41,7 +41,7 @@ include/ecs/
     schedule.hpp         the Schedule class (registration, run loop)
     events.hpp           sched_event::*, ScheduleEvent
     params.hpp           umbrella over params/
-    params/              one header per system parameter (Bin, Collect,
+    params/              one header per system parameter (Bin, Collect, Exec,
                          Extract, Local, Random, Reduce, Scratch, Events, ...)
                          plus the two policies: parallel.hpp (parallel_param,
                          for add_parallel) and serial.hpp (serial_param, for
@@ -285,6 +285,7 @@ The system parameters are:
 | `Res<T>` / `ResMut<T>` | read / write resource T | typed resource handle |
 | `Commands&` | none (deferred side channel) | record structural edits |
 | `ColumnView<Cs...>` | a read on each `C` | read **every row** of those components, whole columns |
+| `Exec` | *exclusive* — runs alone in its wave | fan an arbitrary index space onto the schedule's lanes |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
 Trailing `phase{n}`/`every{n}`/`times{n}`/`grain{n}` options are the only
@@ -345,7 +346,13 @@ system's own items run concurrently, so writes through `ResMut` would race
 between them); a system that writes a resource is a *reduction* — spelled
 `Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a parallel system, with
 the shared-target writes confined to the single-threaded barrier hooks.
-Genuinely ordered iteration still belongs in `add()` systems. An
+Genuinely ordered iteration still belongs in `add()` systems. Work that has
+parallelism but no ROWS -- building a tree, walking one, partitioning a broad
+phase -- takes `Exec` in an `add_serial` system instead: it fans an arbitrary
+index space onto the same lanes. That is safe because `Exec` declares its
+system exclusive, so the system is alone in its wave, its wave holds one item,
+and a one-item wave runs inline on the caller with the pool idle -- the body's
+dispatch is a fresh one, not a nested one. The cost is the exclusivity. An
 **serial system** (`add_serial`/`add_dynamic_serial` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
 persisting across ticks, do reductions or ordered work)

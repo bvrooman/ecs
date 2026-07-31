@@ -439,7 +439,7 @@ private:
         static_assert(detail::params_allowed<ParamS, Fn>(),
                       "unsupported system parameter type: a system may take "
                       "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
-                      "ColumnView<Cs...>, and Local<T> (spelled exactly so -- "
+                      "ColumnView<Cs...>, Local<T>, and Exec (spelled exactly so -- "
                       "e.g. Query by value, Commands by reference); raw World& is "
                       "deliberately not a system parameter, and the per-item "
                       "primitives (Reduce/Extract/Collect/Bin/EventWriter/"
