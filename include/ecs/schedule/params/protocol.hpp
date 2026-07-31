@@ -20,9 +20,14 @@
 //   prepare(state, world, item_rows, ctx)   before the dispatch,
 //                                      single-threaded: size/reset the slots,
 //                                      pre-size targets
-//   finish(state, world)               after the join, before the command
-//                                      flush, single-threaded: fold the slots
-//                                      into the target in ORDINAL order
+//   finish(state, world, pool)         after the join, before the command
+//                                      flush: fold the slots into the target in
+//                                      ORDINAL order. Single-threaded by
+//                                      default -- but the pool is idle here, so
+//                                      a fold whose cost is O(everything the
+//                                      items emitted), like Bin's counting
+//                                      sort, may dispatch on it rather than
+//                                      become the system's serial floor
 //
 // Because slot contents are per-item and the fold order is canonical, every
 // primitive built on this is deterministic at ANY lane count -- bitwise, even
@@ -75,8 +80,11 @@ void prepare_all(States& st,
     (Param<std::tuple_element_t<I, Args>>::prepare(std::get<I>(st), w, rows, ctx), ...);
 }
 template <template <class> class Param, class Args, class States, std::size_t... I>
-void finish_all(States& st, World& w, std::index_sequence<I...>) {
-    (Param<std::tuple_element_t<I, Args>>::finish(std::get<I>(st), w), ...);
+void finish_all(States& st,
+                World& w,
+                parallel::WorkerPool& pool,
+                std::index_sequence<I...>) {
+    (Param<std::tuple_element_t<I, Args>>::finish(std::get<I>(st), w, pool), ...);
 }
 
 template <template <class> class Param,

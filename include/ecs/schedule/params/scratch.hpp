@@ -54,7 +54,7 @@ namespace detail {
             s.parts.prepare(rows.size());
         }
 
-        static void finish(state&, World&) {}
+        static void finish(state&, World&, parallel::WorkerPool&) {}
 
         static Scratch<T> bind(state& s, World&, Commands&, WorkItem const& item) {
             auto ordinal = item.ordinal;

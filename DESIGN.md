@@ -323,8 +323,11 @@ Op>` private partials folded at the barrier, `Extract<T>` disjoint spans over
 a pre-sized buffer, `Collect<T>` filtered gather concatenated at the barrier,
 `EventWriter<T>`/`EventReader<T>` over a double-buffered `Events<T>` channel,
 `Bin<V>` group-by counting-sorted into per-bucket spans of a `Bins<V>`
-resource, `Scratch<T>` private workspace, `Random` deterministic
-per-item streams) bind per item and fold into the derived access, so a
+resource -- tiled across the pool at the barrier when the entries are
+numerous and the buckets dense enough to be worth it, serial otherwise,
+identical either way -- `Scratch<T>` private workspace, `Random`
+deterministic per-item streams) bind per item and fold into the derived
+access, so a
 components-plus-resources system (read the clock, chase a goal, record
 spawns, jitter an emitter) keeps slicing — and a serial system with
 independent per-row work becomes a parallel system by changing one word:

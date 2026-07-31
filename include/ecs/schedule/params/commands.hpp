@@ -76,7 +76,7 @@ namespace detail {
         // Single-threaded, before the wave's flush: enqueue each item's store
         // in ordinal order. The flush then drains them in that order (the
         // replay commands live in the barrier thread's one shard).
-        static void finish(state& s, World&) {
+        static void finish(state& s, World&, parallel::WorkerPool&) {
             for (std::size_t i = 0; i < s.active; ++i)
                 if (s.slots[i]->store.size() > 0)
                     s.slots[i]->cmds.enqueue_local();

@@ -69,11 +69,11 @@ class FinishContext {
 public:
     SystemId system;
 
-    bool finish(World& world) const {
+    bool finish(World& world, WorkerPool& pool) const {
         if (!*fn_)
             return false;
         detail::recording_source() = system;
-        (*fn_)(world);
+        (*fn_)(world, pool);
         return true;
     }
 
@@ -153,13 +153,16 @@ public:
         state_ = State::Ran;
     }
 
-    // Barrier finish hooks (Reduce folds, ...), single-threaded, after the join
-    // and before the command flush.
-    void finish(World& world) {
+    // Barrier finish hooks (Reduce folds, ...), after the join and before the
+    // command flush. Single-threaded by default; the pool is passed through
+    // because it is idle here, so a fold big enough to matter (Bin's counting
+    // sort over everything the items emitted) can dispatch on it rather than
+    // becoming the system's serial floor.
+    void finish(World& world, WorkerPool& pool) {
         assert(state_ == State::Ran);
         for (auto const& ctx : finish_) {
             auto const t0 = detail::sched_clock::now();
-            if (ctx.finish(world))
+            if (ctx.finish(world, pool))
                 result_.finish_us[ctx.system] = detail::elapsed_us(t0);
         }
         state_ = State::Finished;
