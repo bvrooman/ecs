@@ -41,6 +41,7 @@
 #include <ecs/schedule/params/collect.hpp>
 #include <ecs/schedule/params/commands.hpp>
 #include <ecs/schedule/params/events.hpp>
+#include <ecs/schedule/params/exec.hpp>
 #include <ecs/schedule/params/extract.hpp>
 #include <ecs/schedule/params/local.hpp>
 #include <ecs/schedule/params/parallel.hpp>

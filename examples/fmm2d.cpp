@@ -155,6 +155,11 @@ struct Tree {
 
     // Scratch reused across ticks so a steady-state build does not allocate.
     std::vector<std::vector<std::uint32_t>> m2l_tmp, p2p_tmp;
+    // The parallel traversal's hand-off: seeds[A] holds the source boxes the
+    // serial phase stopped at when the target reached the cut level, so each
+    // cut node's subtree can be finished independently.
+    std::vector<std::vector<std::uint32_t>> seeds;
+    int cut_level = -1;
 };
 
 // Per-tick counters the build fills for the report.
@@ -385,7 +390,15 @@ static void build_tree(Tree& t,
 // Dual-tree traversal: the adaptive interaction lists. Source and target may
 // sit at different levels; every particle pair is covered exactly once, either
 // by an M2L or by a direct P2P.
-static void traverse(Tree& t, std::uint32_t A, std::uint32_t B) {
+// cut < 0 traverses everything (the serial algorithm). Otherwise the recursion
+// stops as soon as the TARGET reaches the cut level and records the pair as a
+// seed: everything below belongs to that target's subtree, and subtrees of
+// distinct cut nodes write disjoint node lists, so they can run concurrently.
+static void traverse(Tree& t, std::uint32_t A, std::uint32_t B, int const cut) {
+    if (cut >= 0 && int(t.level[A]) >= cut) {
+        t.seeds[A].push_back(B);
+        return;
+    }
     double const dx = std::abs(t.cx[B] - t.cx[A]), dy = std::abs(t.cy[B] - t.cy[A]);
     double const sep = kBuffer * (t.half[A] + t.half[B]);
     if (std::max(dx, dy) >= sep * (1.0 - 1e-9)) {
@@ -399,21 +412,28 @@ static void traverse(Tree& t, std::uint32_t A, std::uint32_t B) {
     }
     if (bl || (!al && t.half[A] >= t.half[B])) {
         for (std::uint32_t c = 0; c < t.nchild[A]; ++c)
-            traverse(t, static_cast<std::uint32_t>(t.child0[A]) + c, B);
+            traverse(t, static_cast<std::uint32_t>(t.child0[A]) + c, B, cut);
     } else {
         for (std::uint32_t c = 0; c < t.nchild[B]; ++c)
-            traverse(t, A, static_cast<std::uint32_t>(t.child0[B]) + c);
+            traverse(t, A, static_cast<std::uint32_t>(t.child0[B]) + c, cut);
     }
 }
 
-static void build_lists(Tree& t) {
+// The serial half: descend until every target has reached the cut level.
+static void seed_lists(Tree& t, int const cut) {
     t.m2l_tmp.resize(t.node_count);
     t.p2p_tmp.resize(t.node_count);
+    t.seeds.resize(t.node_count);
     for (std::uint32_t i = 0; i < t.node_count; ++i) {
         t.m2l_tmp[i].clear();
         t.p2p_tmp[i].clear();
+        t.seeds[i].clear();
     }
-    traverse(t, 0, 0);
+    t.cut_level = cut;
+    traverse(t, 0, 0, cut);
+}
+
+static void flatten_lists(Tree& t) {
     auto flatten = [](auto const& tmp, auto& off, auto& src, std::uint32_t n) {
         off.assign(n + 1, 0);
         for (std::uint32_t i = 0; i < n; ++i)
@@ -424,6 +444,19 @@ static void build_lists(Tree& t) {
     };
     flatten(t.m2l_tmp, t.m2l_off, t.m2l_src, t.node_count);
     flatten(t.p2p_tmp, t.p2p_off, t.p2p_src, t.node_count);
+}
+
+// Where to cut: the shallowest level with enough nodes to keep the lanes fed.
+// Above it the traversal stays serial (a few hundred pairs); below it every
+// subtree is independent.
+static int choose_cut(Tree const& t, unsigned const lanes) {
+    if (t.node_count < 512 || lanes <= 1)
+        return -1; // not worth splitting: traverse it serially
+    for (int L = 1; L <= t.depth; ++L)
+        if (t.level_begin[std::size_t(L) + 1] - t.level_begin[std::size_t(L)] >=
+            4 * lanes)
+            return L;
+    return -1;
 }
 
 // --- the schedule ----------------------------------------------------------
@@ -642,6 +675,7 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
                    ResMut<Tree> t,
                    ResMut<Pools> pools,
                    ResMut<BuildStats> st,
+                   Exec exec,
                    Commands& cmd) {
             // The key column is already contiguous and already sorted, so the
             // tree build reads it in place -- a ColumnView chunk IS the column.
@@ -650,7 +684,26 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
                 keys = k.column<0>();
             });
             build_tree(*t, keys, leaf_cap);
-            build_lists(*t);
+
+            // Interaction lists. The traversal is recursive, so it has no rows
+            // to slice -- but Exec does not need rows: descend serially until
+            // every target reaches a cut level, then finish each cut node's
+            // subtree on the pool. Distinct subtrees write distinct nodes'
+            // lists, so the split needs no merge, and the per-node lists come
+            // out in the same order the fully serial walk produces.
+            int const cut = choose_cut(*t, exec.lanes());
+            seed_lists(*t, cut);
+            if (cut >= 0) {
+                auto const base = t->level_begin[std::size_t(cut)];
+                auto const n    = t->level_begin[std::size_t(cut) + 1] - base;
+                Tree& tree      = *t;
+                exec.for_each_index(n, [&tree, base](std::size_t const i) {
+                    auto const a = base + static_cast<std::uint32_t>(i);
+                    for (auto const b : tree.seeds[a])
+                        traverse(tree, a, b, -1);
+                });
+            }
+            flatten_lists(*t);
             grow_levels(cmd,
                         *pools,
                         *t,

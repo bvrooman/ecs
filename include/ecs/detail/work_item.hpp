@@ -13,6 +13,10 @@
 
 #include <cstdint>
 
+namespace ecs::parallel {
+class WorkerPool; // only ever pointed at here; see WorkItem::pool
+}
+
 namespace ecs::detail {
 
 // One row-range of a matched archetype: rows [begin, end) of `archetype`.
@@ -33,6 +37,11 @@ struct WorkItem {
     std::uint32_t end;
     std::uint32_t ordinal;
     double busy_us = 0;
+    // The pool executing this item, so a system can fan work out onto the lanes
+    // it is already running on (the Exec parameter). Dispatching is only legal
+    // when the item is the wave's ONLY one -- see schedule/params/exec.hpp,
+    // which is what makes Exec declare its system exclusive.
+    parallel::WorkerPool* pool = nullptr;
 };
 
 } // namespace ecs::detail

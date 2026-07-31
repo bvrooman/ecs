@@ -233,7 +233,19 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
 ## 6. ECS feature gaps vs bevy_ecs / flecs / EnTT (roadmap)
 
-0. **[done]** Cross-row reads with precise access — `ColumnView<Cs...>`
+0. **[done]** Fan-out without rows — `Exec` (`schedule/params/exec.hpp`). Every
+   other route to the pool is row-shaped: a parallel system is sliced by the
+   rows its Query matches, so an irregular stage with parallelism but no rows
+   (a tree build or traversal, a broad-phase partition, a CSR fill) was stuck in
+   an `add_serial` system at one item on one lane. `Exec` fans an arbitrary
+   index space onto the schedule's own lanes. Safe because it declares its
+   system exclusive, so the system is alone in its wave, the wave holds one
+   item, and a one-item wave runs inline on the caller with the pool idle --
+   the mechanism already existed, what was missing was the guarantee and a
+   handle. Measured on the FMM tree build (a recursive traversal): 2.38 → 1.52
+   ms at leaf_cap=32 and 9.74 → 5.22 ms at leaf_cap=4, 4 lanes, with
+   bit-identical output.
+0b. **[done]** Cross-row reads with precise access — `ColumnView<Cs...>`
    (`world/column_view.hpp`): every matching archetype's FULL columns,
    read-only, declaring a read on exactly `Cs...`. `WorldView` already permitted
    the access but declared "reads everything", which serializes a gather-shaped

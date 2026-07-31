@@ -6,16 +6,17 @@ simulation?
 **Verdict: yes.** `examples/fmm2d.cpp` is a working one — adaptive quadtree,
 dual-tree traversal, verified against a direct O(N²) sum — and every FMM pass in
 it is an ordinary system whose access the scheduler derives and orders by
-itself. Getting there took four library changes, because the first version of
+itself. Getting there took five library changes, because the first version of
 the spike could *only* be written by stepping outside the access model. Those
 changes are the real output of this exercise; §3 is the list, with the
 before/after each one bought.
 
-What remains serial is the tree build, which is the scaling limit past roughly
-16 lanes. Four fifths of it is the interaction-list traversal, and that is
-*not* inherently serial — §6.1 measures it, shows why the obvious
-parallelization is wrong, and identifies what the library would need to make
-the correct one pay (a parallel `Bin` merge, already on the roadmap).
+The tree build was the last serial stage, and four fifths of it is the
+interaction-list traversal. That turned out not to be inherently serial either:
+§6.1 measures it, shows why the obvious parallelization is *wrong*, and gets
+the correct one running on the pool through `Exec` — the fifth library change,
+and the only one that changes what is expressible rather than how well it
+runs.
 
 ```
 $ ./build/examples/fmm2d                  # n leaf_cap ticks max_lanes
@@ -180,6 +181,26 @@ is two relaxed atomic loads:
 
 This one is a straight win for existing `WorldView` users too.
 
+### 3.5 `Exec` — fan out work that has no rows
+
+Every route to the pool was row-shaped: a parallel system is sliced by the rows
+its Query matches. An irregular stage with parallelism but no rows — a tree
+build, a traversal, a broad-phase partition — therefore sat in an `add_serial`
+system at one item on one lane, however many lanes existed.
+
+`Exec` fans an arbitrary index space onto the schedule's own lanes. The
+mechanism already existed; what was missing was the guarantee and a handle. A
+dispatch is not re-entrant, so a system running as one item of a fanned wave
+must not dispatch — but `Exec` declares its system **exclusive**, so the system
+is alone in its wave, the wave holds exactly one item, and a one-item wave is
+run inline on the calling thread (`for_each_index` returns before touching the
+job slot). The pool is idle at that moment, so the body's dispatch is a fresh
+one. The cost is the exclusivity: such a system overlaps with nothing else in
+its phase.
+
+Measured on the tree build in §6.1: −36% and −46% at 4 lanes, bit-identical
+output.
+
 ## 4. What the library already gave for free
 
 1. **The spatial sort is first-class.** `World::sort_rows<C>(key)` counting-sorts
@@ -208,7 +229,7 @@ scheduler measured it, median of three runs.
 |---|---|---|---|---|---|
 | `morton` | 65 | 0.86 ms | 0.46 ms | 0.23 ms | 3.69× |
 | `sort` (command flush) | 1 | 0.27 ms | 0.24 ms | 0.27 ms | 1.00× |
-| `build` (serial) | 1 | 2.54 ms | 2.40 ms | 2.47 ms | 1.03× |
+| `build` (`Exec` fan-out) | 1 | 2.31 ms | 1.63 ms | 1.29 ms | 1.79× |
 | `p2m` + `assign-leaf` (one wave) | 70, 65 | 4.52 ms | 2.43 ms | 1.19 ms | 3.79× |
 | `m2m.*` (8 waves) | 12–20 | 1.23 ms | 0.75 ms | 0.44 ms | 2.77× |
 | `m2l` | 70 | 47.40 ms | 24.61 ms | 11.95 ms | 3.97× |
@@ -270,16 +291,10 @@ What binds at 64 lanes is §6.1: the serial tree build.
 
 ## 6. What remains
 
-### 6.1 The tree build is serial — but mostly for a fixable reason
+### 6.1 The tree build: was serial, now mostly isn't
 
-A recursive build has no row shape, so it is an `add_serial` system: one opaque
-work item, one lane. The pool rejects nested dispatch by design, so a serial
-system cannot fan out internally either.
-
-| leaf_cap | nodes | `build`, 1 lane / 4 lanes | share of the 4-lane tick |
-|---|---|---|---|
-| 32 | 6205 | 2.42 / 2.42 ms | 1.5% |
-| 4 | 23531 | 10.9 / 10.9 ms | 6.5% |
+A recursive build has no row shape, so it was an `add_serial` system: one opaque
+work item, one lane, whatever the lane count.
 
 Inside it, the two halves are not alike:
 
@@ -296,33 +311,36 @@ level L has been split. The traversal is not, and it is the 80%.
 lists: measured force error 0.64 instead of 9.6e-07. A dual-tree traversal's
 decisions are path-dependent — when it splits the target at (A, B), the pair
 moves to A's children with B *already descended*, and a fresh descent for a
-child re-derives a different stopping point. Either the rule must be made
-path-independent (the classic U/V/W/X list construction, which is defined per
-box precisely so it can be built in parallel — and which needs the M2P/P2L
-kernels the W and X lists imply), or the same recursion must be split: run it
-serially until the target reaches a cut level, then complete each subtree in
-parallel, one work item per cut node.
+child re-derives a different stopping point.
 
-**And the output shape hits a real limit.** A traversal emits a variable-length
-list per target, which is exactly `Bin<V>`: bucket = target node, value =
-source node, counting-sorted at the barrier into contiguous per-bucket spans —
-the CSR the serial version builds by hand. Prototyped, and the barrier merge
-measured **3.20 ms** at ~4.6× the true pair count, so ≈0.7 ms at the real one:
-comparable to the entire 1.8 ms serial traversal it replaces, and it does not
-shrink with lanes. `Bin`'s count → prefix-sum → scatter runs serially in the
-finish hook, so parallelizing the traversal would move the bottleneck rather
-than remove it.
+**What works is splitting the same recursion.** Descend serially until every
+target reaches a cut level, recording where each stopped; then finish each cut
+node's subtree independently. Subtrees of distinct cut nodes write distinct
+nodes' lists, so there is no merge at all — and because the seeds are recorded
+in the order the serial walk would reach them, each node's list comes out in
+the same order. The demo's output is bit-identical either way (9.595e-07).
 
-`IMPROVEMENTS.md` §6 already scopes the fix — *parallel two-pass `Bin`*: a
-parallel per-(item, key) count, a barrier prefix-sum into disjoint precomputed
-ranges, then a parallel scatter, preserving canonical within-bucket order. That
-is the change that would make a parallel traversal worth building; without it,
-the traversal is worth parallelizing only past ~8 lanes, and even then the merge
-caps it.
+That has parallelism but no rows to slice, which is what `Exec` is for
+(§3.5). The cut level is chosen at runtime: the shallowest level with at least
+four nodes per lane.
 
-Until then the practical answer is a cadence — rebuild the tree every k ticks
-(`every{n}`) and re-sort rows in between, which is standard for slowly-evolving
-distributions.
+| build, 4 lanes | serial traversal | with `Exec` | |
+|---|---|---|---|
+| leaf_cap=32 | 2.38 ms | **1.52 ms** | −36% |
+| leaf_cap=4 | 9.74 ms | **5.22 ms** | −46% |
+
+At 1 lane the cut is disabled and the code path is the old one (2.33 → 2.25 ms,
+within noise). What is left serial is the BFS subdivision and the flatten into
+CSR; a cadence (`every{n}`) remains the answer for shrinking those, and is
+standard for slowly-evolving distributions.
+
+**A road not taken.** A traversal emits a variable-length list per target, which
+looks exactly like `Bin<V>` — bucket = target node, value = source node,
+counting-sorted at the barrier into the CSR the serial version builds by hand.
+Prototyped, and the barrier merge measured **3.20 ms** at ~4.6× the true pair
+count. Worse, FMM's lists are ~31 entries per bucket, which is too sparse for
+the tiled merge to help (see the `Bin` work). The cut-and-subtree split above
+avoids the merge entirely, which is why it wins.
 
 At 4 lanes this is nearly free; it is the **scaling** limit, and the §5.1
 simulation puts a number on it. In the tree-heavy configuration (`leaf_cap=4`,
