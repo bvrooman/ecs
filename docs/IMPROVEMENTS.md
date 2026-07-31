@@ -423,16 +423,29 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    - Roadmap: sort-by-entity/multi-component keys; in-place permutation if a
      workload ever makes the gather scratch matter.
 
-   **Parallel two-pass `Bin` (roadmap)** — the deterministic answer for
-   scatter shapes that sorting can't fix (keys genuinely uncorrelated,
-   many-core targets, where engines reach for atomic containers and give up
-   reproducibility): today `Bin`'s count → prefix-sum → scatter runs serially
-   in the finish hook; both passes parallelize deterministically — parallel
-   per-(item, key) count, barrier prefix-sum into DISJOINT precomputed
-   ranges, parallel scatter into them (no atomics, canonical within-bucket
-   order preserved), plus a parallel per-bucket fold for aggregation-shaped
-   uses. Covers most of the "atomic container territory" without forfeiting
-   bitwise invariance; build it when a profiled workload asks.
+   **Parallel two-pass `Bin`** — **[done, with a measured caveat]**. The merge
+   is now a tiled counting sort: the entries are the concatenation of the
+   per-item partials, split into tiles that count and scatter on the pool
+   (`FinishItemsFn` gained a `WorkerPool&` — a barrier fold runs after the
+   join, so the pool is idle and safe to dispatch on), with only the
+   O(tiles × buckets) prefix left serial. Offsets are assigned bucket-major
+   with tiles in order, so within-bucket order stays canonical and the result
+   is bitwise identical at any lane count (`test_parallel_paths.cpp`,
+   `bin_merge_is_lane_invariant_at_scale`, over 1.28M entries).
+
+   The caveat is the interesting part: **the merge is memory-bound, so the
+   tiling is not where the win came from.** Measured on 4 cores at 4 lanes,
+   vs the old merge: −32% (200k entries → 64 buckets), −20% (→1000), −15%
+   (→6205), −19% (→20000), −41% and −57% at 2M entries. Almost all of that is
+   the *serial* rewrite — skipping the max-key scan when `reserve_buckets`
+   already covers the keys, and 32-bit cursors instead of 64. Tiling itself
+   only helps past ~1M entries (14% at 2M into dense buckets) and *hurt* at
+   200k, so it is gated on entry count AND on bucket density: tiles split each
+   bucket, so a tile's slice must be worth a cache line or the scatters
+   ping-pong the same lines. Sparse buckets — including the FMM
+   interaction-list shape (~31 entries per bucket) — keep the serial path.
+   Expect the gate to be pessimistic on a host with more lanes and more
+   memory channels; it is tuned on the only hardware available.
 
 ## 7. Tests, benchmarks, CI
 

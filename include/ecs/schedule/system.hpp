@@ -15,6 +15,7 @@
 
 #include <ecs/detail/compat/move_only_function.hpp>
 #include <ecs/detail/work_item.hpp>
+#include <ecs/parallel/worker_pool.hpp>
 #include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
 #include <ecs/schedule/access.hpp>
 #include <ecs/world.hpp> // World, Commands, WorldView
@@ -253,7 +254,11 @@ struct MatchCache {
 using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
-using FinishItemsFn = move_only_function<void(World&)>;
+// Barrier folds run single-threaded by default, but they are handed the pool:
+// a fold whose cost is O(everything the items emitted) -- Bin's counting sort --
+// would otherwise become the serial floor of an otherwise parallel system. Safe
+// to dispatch on: finish runs after the wave's join, so the pool is idle.
+using FinishItemsFn = move_only_function<void(World&, parallel::WorkerPool&)>;
 
 // One registered system, in either of its two forms.
 struct SystemRecord {

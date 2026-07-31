@@ -410,8 +410,8 @@ private:
                                          detail::WaveContext const& ctx) {
                 detail::prepare_all<Param, Args>(*states, w, rows, ctx, Seq {});
             };
-            sys.finish_items = [states](World& w) {
-                detail::finish_all<Param, Args>(*states, w, Seq {});
+            sys.finish_items = [states](World& w, WorkerPool& pool) {
+                detail::finish_all<Param, Args>(*states, w, pool, Seq {});
             };
         }
         return register_system(std::move(sys));
@@ -526,7 +526,7 @@ private:
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
-            wave.finish(world);
+            wave.finish(world, pool);
             auto const tf = detail::sched_clock::now();
             world.apply_commands(&flush_attrib_);
             flush_us = detail::elapsed_us(tf);

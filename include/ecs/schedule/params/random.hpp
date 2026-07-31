@@ -92,7 +92,7 @@ namespace detail {
             s.stream_base    = mix64(base) ^ mix64(ctx.tick) ^ mix64(ctx.system.value);
         }
 
-        static void finish(state&, World&) {}
+        static void finish(state&, World&, parallel::WorkerPool&) {}
 
         static Random bind(state& s, World&, Commands&, WorkItem const& item) {
             auto ordinal = item.ordinal;

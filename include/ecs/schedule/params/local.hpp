@@ -62,7 +62,7 @@ namespace detail {
                             World&,
                             std::span<std::uint32_t const>,
                             WaveContext const&) {}
-        static void finish(state&, World&) {}
+        static void finish(state&, World&, parallel::WorkerPool&) {}
         static Local<T> bind(state& s, World&, Commands&, WorkItem const&) {
             return Local<T>(s.value);
         }

@@ -72,7 +72,7 @@ namespace detail {
             reset_value(w.resource<T>());
         }
 
-        static void finish(state& s, World& w) {
+        static void finish(state& s, World& w, parallel::WorkerPool&) {
             auto& target = w.resource<T>();
             for (std::size_t i = 0; i < s.parts.active; ++i) {
                 auto& part = s.parts[i];

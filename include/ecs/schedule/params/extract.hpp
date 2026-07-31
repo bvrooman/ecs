@@ -95,7 +95,8 @@ namespace detail {
             w.resource<T>().resize(total);
         }
 
-        static void finish(state&, World&) {} // writes were direct + disjoint
+        static void finish(state&, World&, parallel::WorkerPool&) {
+        } // writes were direct + disjoint
 
         static Extract<T> bind(state& s, World& w, Commands&, WorkItem const& item) {
             auto& target = w.resource<T>();

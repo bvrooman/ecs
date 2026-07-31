@@ -61,7 +61,7 @@ struct parallel_param {
                         World&,
                         std::span<std::uint32_t const>,
                         WaveContext const&) {}
-    static void finish(state&, World&) {}
+    static void finish(state&, World&, parallel::WorkerPool&) {}
     static P bind(state&, World& w, Commands& c, WorkItem const& item) {
         return system_param<P>::bind(w, c, item);
     }

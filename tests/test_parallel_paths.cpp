@@ -744,6 +744,57 @@ static void bin_groups_match_serial_walk() {
     CHECK(total > 0);
 }
 
+// The Bin merge is a counting sort over everything the items emitted, tiled
+// across the pool at the barrier. Tiling must be invisible: bucket contents --
+// values AND order -- must equal the serial walk's gather at any lane count,
+// including when the (tile x bucket) histogram cap forces a coarser tiling
+// than the lane count would ask for.
+static void bin_merge_is_lane_invariant_at_scale() {
+    constexpr int kRows    = 90'000; // ~30k emitting rows: well past one tile
+    constexpr int kBuckets = 4096;
+    auto run_bins          = [](unsigned lanes, std::size_t reserve) {
+        World w;
+        w.emplace_resource<Bins<int>>().reserve_buckets(reserve);
+        populate_mixed(w, kRows);
+        Schedule s;
+        s.add_parallel("bucketize", [](Query<Health const> q, Bin<int> bin) {
+            q.for_each([&](auto& h) { bin.emit(std::uint32_t(h.hp % kBuckets), h.hp); });
+        });
+        WorkerPool pool {lanes};
+        s.run(w, pool);
+        auto const& bins = w.resource<Bins<int>>();
+        std::vector<std::vector<int>> out(bins.bucket_count());
+        for (std::size_t b = 0; b < bins.bucket_count(); ++b) {
+            auto const sp = bins.bucket(b);
+            out[b].assign(sp.begin(), sp.end());
+        }
+        return out;
+    };
+
+    // What a serial walk in canonical order produces.
+    std::vector<std::vector<int>> expect(kBuckets);
+    {
+        World w;
+        populate_mixed(w, kRows);
+        w.for_each<Health const>([&](auto& h) {
+            expect[std::size_t(h.hp % kBuckets)].push_back(h.hp);
+        });
+    }
+    std::size_t total = 0;
+    for (auto const& b : expect)
+        total += b.size();
+    CHECK(total > 4096); // past the merge's parallel threshold
+
+    CHECK(run_bins(1, kBuckets) == expect); // one tile: the serial algorithm
+    CHECK(run_bins(2, kBuckets) == expect);
+    CHECK(run_bins(4, kBuckets) == expect);
+    // A bucket space far larger than the entry count: too sparse to tile, so
+    // the merge keeps the serial path. Same answer.
+    auto const wide = run_bins(4, 400'000);
+    CHECK(wide.size() == 400'000);
+    CHECK(std::vector<std::vector<int>>(wide.begin(), wide.begin() + kBuckets) == expect);
+}
+
 // prewarm sizes kernel-param state against the populated world without running
 // any system body or barrier fold, so it must NOT change simulation state (the
 // reduce target stays empty), and a subsequent run must produce the bitwise
@@ -789,6 +840,7 @@ int main() {
     RUN_SUITE(local_state_persists_across_ticks);
     RUN_SUITE(kernel_commands_replay_in_canonical_order);
     RUN_SUITE(bin_groups_match_serial_walk);
+    RUN_SUITE(bin_merge_is_lane_invariant_at_scale);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
     RUN_SUITE(prewarm_sizes_state_without_changing_results);

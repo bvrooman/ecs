@@ -150,7 +150,7 @@ namespace detail {
             s.parts.prepare(rows.size());
         }
 
-        static void finish(state& s, World& w) {
+        static void finish(state& s, World& w, parallel::WorkerPool&) {
             auto& channel = w.resource<Events<T>>();
             for (std::size_t i = 0; i < s.parts.active; ++i) {
                 auto& part = s.parts[i];
@@ -189,7 +189,7 @@ namespace detail {
             s.events = channel.read();
         }
 
-        static void finish(state&, World&) {}
+        static void finish(state&, World&, parallel::WorkerPool&) {}
 
         static EventReader<T> bind(state& s, World&, Commands&, WorkItem const&) {
             return EventReader<T>(s.events);
