@@ -12,24 +12,32 @@
 //
 // What the spike is actually testing is the ECS mapping, not the physics:
 //
-//   particles are entities            Pos/Charge/Field/Key are components, so
-//                                     the SoA columns, the row sort and the
-//                                     data-parallel passes are the library's.
-//   tree NODES are entities too       but only as *rows to slice*: each node
-//                                     entity carries nothing but its slot
-//                                     index. Row count is the only thing the
-//                                     executor can parallelize over, so
-//                                     "one entity per node" is how a per-node
-//                                     pass gets across the lanes at all.
-//   the tree and the expansion        a resource. Every FMM pass is a gather
-//   coefficients are resources        from arbitrary *other* nodes, which a
-//                                     Query (own-slice-only) cannot express.
-//   pass ordering is phase{}          the coefficient writes go through a
-//                                     pointer inside a resource (see Coeffs),
-//                                     which the scheduler cannot see, so the
-//                                     upward/downward passes are ordered by
-//                                     explicit phases rather than by derived
-//                                     conflicts.
+//   particles are entities         Pos/Charge/Field/Key are components, so the
+//                                  SoA columns, the Morton row sort and the
+//                                  data-parallel passes are the library's.
+//   tree NODES are entities        one per node, in the archetype of its level
+//                                  (the Lvl<L> tag), carrying its expansions
+//                                  Mp/Lc as components -- so every pass writes
+//                                  its OWN rows and the scheduler sees it.
+//   gathers are ColumnView         a Query shows a body only its work item's
+//                                  rows; ColumnView<Cs...> reads every row of
+//                                  named components, declaring a read on
+//                                  exactly those. Narrowed with a tag
+//                                  (ColumnView<Mp, NodeRef, Lvl<L+1>>) it names
+//                                  the level below, so the rows read are
+//                                  provably disjoint from the rows written.
+//   the tree itself is a resource  variable-length CSR interaction lists have
+//                                  no component shape; read via Res<Tree>.
+//   ordering is DERIVED            only the pipeline head carries phases
+//                                  (morton -> sort -> build, ordered by a
+//                                  structural effect). The upward and downward
+//                                  passes conflict on Mp/Lc, so the scheduler
+//                                  places those barriers itself; registration
+//                                  order fixes the direction.
+//
+// See docs/FMM_FEASIBILITY.md for the write-up, including what this cost the
+// library (ColumnView, grain{n}, chunk::row_begin(), and a memoized ad-hoc read
+// path) and what is still unsupported (the serial tree build).
 //
 // Run:  fmm2d [n] [leaf_cap] [ticks] [max_lanes]
 // Verifies against a direct O(N^2) sum on a random sample and reports the
@@ -66,6 +74,10 @@ constexpr int kMaxLevel = 8;  // quadtree depth cap (also the Morton key depth)
 // to the unequal-size pairs a dual-tree traversal produces).
 constexpr double kBuffer = 2.0;
 
+// The expansions are COMPONENTS of the node entities below. Reflection stores
+// each as one column of fixed-size arrays (a std::array member is a single
+// field, and std::complex is opaque to the portable backend), so a level's
+// multipoles are contiguous -- which is what a ColumnView hands a gather.
 struct Mp {
     std::array<cplx, kP + 1> a {}; // a[0] = total charge, a[1..p] = moments
 };
@@ -107,21 +119,17 @@ struct LeafId { // which leaf box owns this particle
     std::uint32_t leaf;
 };
 
-// Node "driver" entities. They hold nothing but a slot index: their only job is
-// to be ROWS, because row count is the sole unit of parallelism the executor
-// has. A distinct type per pool keeps the pools in distinct archetypes -- the
-// library has no Without<> filter, so overlapping component sets would make one
-// pool's query match another pool's rows.
-struct LeafSlot {
-    std::uint32_t i;
-};
-struct NodeSlot {
-    std::uint32_t i;
+// Tree nodes are entities too, and they carry the real payload: a node's
+// expansions ARE its components (Mp/Lc above), so every FMM pass writes its own
+// rows and the scheduler can see it. One node entity per tree node, in the
+// archetype of its level -- the Lvl<L> tag is what lets a per-level pass select
+// its level, and what lets a ColumnView name the level BELOW it.
+struct NodeRef {
+    std::uint32_t slot;  // row within this level's archetype
+    std::uint32_t level; // which level, so a gather can index by it
 };
 template <int L>
-struct LevelSlot {
-    std::uint32_t i;
-};
+struct Lvl {};
 
 // --- resources -------------------------------------------------------------
 // The tree: topology, geometry and the CSR interaction lists. Nodes are
@@ -134,6 +142,7 @@ struct Tree {
     std::vector<std::uint8_t> level, is_leaf;
     std::vector<std::int32_t> child0; // first child id; children are contiguous
     std::vector<std::uint8_t> nchild;
+    std::vector<std::int32_t> parent;            // -1 for the root; L2L pulls through it
     std::vector<std::uint32_t> pbegin, pend;     // particle row range (sorted order)
     std::vector<std::uint32_t> key_lo;           // Morton key range of the box
     std::vector<std::uint32_t> leaves;           // leaf node ids
@@ -146,29 +155,6 @@ struct Tree {
 
     // Scratch reused across ticks so a steady-state build does not allocate.
     std::vector<std::vector<std::uint32_t>> m2l_tmp, p2p_tmp;
-};
-
-// The expansion coefficients, indexed by node id.
-//
-// THE ESCAPE HATCH. Res<Coeffs> hands a parallel system `Coeffs const&`, but
-// `mp`/`lc` are non-const pointers into the vectors, so a kernel writes its own
-// nodes' slots through them. Every FMM pass writes a node-indexed array in
-// pieces that are disjoint but NOT row-aligned, which is the one gather/scatter
-// shape the parallel-primitive suite (Reduce/Extract/Collect/Bin) does not
-// cover -- and ResMut<T> is rejected in a parallel system. The cost of the
-// hatch is that the scheduler sees only a resource READ, so it cannot order the
-// passes: phase{} does that here, by hand.
-struct Coeffs {
-    std::vector<Mp> mp_store;
-    std::vector<Lc> lc_store;
-    Mp* mp = nullptr;
-    Lc* lc = nullptr;
-    void reset(std::size_t n) {
-        mp_store.assign(n, Mp {});
-        lc_store.assign(n, Lc {});
-        mp = mp_store.data();
-        lc = lc_store.data();
-    }
 };
 
 // Per-tick counters the build fills for the report.
@@ -310,7 +296,8 @@ static void build_tree(Tree& t,
                         int level,
                         std::uint32_t kb,
                         std::uint32_t pb,
-                        std::uint32_t pe) {
+                        std::uint32_t pe,
+                        std::int32_t par) {
         t.cx.push_back(cx);
         t.cy.push_back(cy);
         t.half.push_back(half);
@@ -318,13 +305,14 @@ static void build_tree(Tree& t,
         t.is_leaf.push_back(1);
         t.child0.push_back(-1);
         t.nchild.push_back(0);
+        t.parent.push_back(par);
         t.key_lo.push_back(kb);
         t.pbegin.push_back(pb);
         t.pend.push_back(pe);
     };
 
     t.level_begin.push_back(0);
-    add_node(0.5, 0.5, 0.5, 0, 0, 0, n);
+    add_node(0.5, 0.5, 0.5, 0, 0, 0, n, -1);
     std::uint32_t cursor = 0;
     int level            = 0;
     t.depth              = 0;
@@ -366,7 +354,8 @@ static void build_tree(Tree& t,
                          level + 1,
                          kb,
                          lo,
-                         hi);
+                         hi,
+                         static_cast<std::int32_t>(i));
             }
             if (nc > 0) {
                 t.is_leaf[i] = 0;
@@ -438,113 +427,173 @@ static void build_lists(Tree& t) {
 }
 
 // --- the schedule ----------------------------------------------------------
-// Phase layout. Every coefficient write is invisible to the scheduler (see
-// Coeffs), so the passes are ordered by hand; only the last pair
-// (assign-leaf -> evaluate) is ordered by DERIVED conflicts, as a control.
+// Only the pipeline HEAD carries phases: morton -> sort -> build is ordered by
+// a structural effect (a row sort recorded as a command), which access analysis
+// does not model. Everything downstream is ordered by DERIVED access -- the
+// passes write their own rows' Mp/Lc and read other rows through ColumnView, so
+// the scheduler places every barrier of the upward and downward passes itself.
+// The direction is registration order: deepest-first for M2M, shallowest-first
+// for L2L.
 namespace ph {
-constexpr int kMorton  = -3;
-constexpr int kSort    = -2;
-constexpr int kBuild   = -1;
-constexpr int kP2M     = 0;
-constexpr int kM2MBase = 1; // level L runs at kM2MBase + (kMaxLevel - L)
-constexpr int kM2L     = kM2MBase + kMaxLevel + 1;
-constexpr int kL2LBase = kM2L + 1; // level L runs at kL2LBase + L
-constexpr int kEval    = kL2LBase + kMaxLevel + 1;
+constexpr int kMorton = -3;
+constexpr int kSort   = -2;
+constexpr int kBuild  = -1;
 } // namespace ph
 
-// Read the whole particle archetype's columns through a WorldView. This is the
-// only way a parallel system reaches rows outside its own slice: Query hands a
-// body its slice alone, but WorldView::for_each_chunk yields every matching
-// archetype's FULL contiguous column spans, read-only. Requires the particles
-// to live in a single archetype (asserted by the count).
+// Heavy per-row kernels over few rows: the default 1024-row item floor would
+// pin a level's pass to one item -- one lane -- so ask for a finer split.
+constexpr std::size_t kNodeGrain = 64;
+
+// Level -> that level's contiguous column, gathered from a ColumnView. Every
+// FMM gather is "read node n's expansion", and node ids are level-major, so one
+// pass over the view's chunks (one per level archetype) turns a node id into a
+// span index: node n at level l is slot n - level_begin[l] of levels[l].
+template <class Coeff>
+struct LevelSpans {
+    std::array<std::span<std::array<cplx, kP + 1> const>, kMaxLevel + 2> level {};
+
+    template <class View>
+    void gather(View const& view) {
+        // A trailing pack absorbs any tag chunk the view was narrowed with
+        // (ColumnView<Mp, NodeRef, Lvl<L>> hands the kernel three chunks).
+        view.for_each_chunk([&](std::span<Entity const>,
+                                chunk<Coeff const> c,
+                                chunk<NodeRef const> nr,
+                                auto&&...) {
+            if (c.size() == 0)
+                return;
+            auto const lv = nr.template column<1>()[0]; // level is uniform here
+            level[lv]     = c.template column<0>();
+        });
+    }
+};
+
+// Particle columns, read through a ColumnView: full contiguous spans of the
+// real SoA storage, no shadow copy. Declares reads on exactly Pos and Charge.
 struct ParticleCols {
-    std::span<Entity const> ents;
     std::span<double const> x, y, q;
 };
-inline ParticleCols particle_cols(WorldView const& view) {
+inline ParticleCols particle_cols(ColumnView<Pos, Charge> const& view) {
     ParticleCols c;
-    int seen = 0;
-    view.for_each_chunk<Pos, Charge>([&](std::span<Entity const> e,
-                                         chunk<Pos const> p,
-                                         chunk<Charge const> ch) {
-        c.ents = e;
-        c.x    = p.column<0>();
-        c.y    = p.column<1>();
-        c.q    = ch.column<0>();
-        ++seen;
+    view.for_each_chunk([&](std::span<Entity const>,
+                            chunk<Pos const> p,
+                            chunk<Charge const> ch) {
+        c.x = p.column<0>();
+        c.y = p.column<1>();
+        c.q = ch.column<0>();
     });
     return c;
 }
 
+// M2M for one level. Registered DEEPEST FIRST: consecutive levels conflict on
+// Mp, so registration order is what fixes the direction of the chain.
 template <int L>
-static void register_level(Schedule& s) {
-    // M2M for level L: gather this level's nodes from their children one level
-    // down. Deeper levels run first (phase descending in L).
+static void register_m2m_level(Schedule& s) {
+    // M2M: gather this level's nodes from their children one level down. The
+    // view names Lvl<L + 1>, so the rows it reads are provably disjoint from the
+    // rows this system writes -- a different archetype, not an argument.
     s.add_parallel(
         "m2m." + std::to_string(L),
-        [](Query<LevelSlot<L> const> q, Res<Tree> t, Res<Coeffs> co) {
-            auto const base = t->level_begin[L];
-            auto const end  = t->level_begin[L + 1];
-            q.for_each_chunk([&](std::span<Entity const>, chunk<LevelSlot<L> const> sl) {
-                auto const idx = sl.template column<0>();
-                for (std::size_t r = 0; r < idx.size(); ++r) {
-                    std::uint32_t const node = base + idx[r];
+        [](Query<Mp, NodeRef const, Lvl<L> const> q,
+           ColumnView<Mp, NodeRef, Lvl<L + 1>> below,
+           Res<Tree> t) {
+            LevelSpans<Mp> child;
+            child.gather(below);
+            auto const base  = t->level_begin[L];
+            auto const end   = t->level_begin[L + 1];
+            auto const cbase = t->level_begin[L + 1];
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Mp> m,
+                                 chunk<NodeRef const> nr,
+                                 chunk<Lvl<L> const>) {
+                auto out        = m.template column<0>();
+                auto const slot = nr.template column<0>();
+                for (std::size_t r = 0; r < out.size(); ++r) {
+                    std::uint32_t const node = base + slot[r];
                     if (node >= end || t->is_leaf[node])
-                        continue;
+                        continue; // pool slack, or a leaf P2M already filled
+                    Mp acc {};
                     cplx const cp {t->cx[node], t->cy[node]};
                     for (std::uint32_t c = 0; c < t->nchild[node]; ++c) {
                         auto const ch = static_cast<std::uint32_t>(t->child0[node]) + c;
-                        m2m(co->mp[node], co->mp[ch], cplx {t->cx[ch], t->cy[ch]}, cp);
+                        Mp cm {};
+                        cm.a = child.level[L + 1][ch - cbase];
+                        m2m(acc, cm, cplx {t->cx[ch], t->cy[ch]}, cp);
                     }
+                    out[r] = acc.a;
                 }
             });
         },
-        phase {ph::kM2MBase + (kMaxLevel - L)});
+        grain {kNodeGrain});
+}
 
-    // L2L for level L: push the parent's local expansion down. Shallow levels
-    // first (phase ascending in L).
+// L2L for one level. Registered SHALLOWEST FIRST, after M2L (which writes Lc).
+template <int L>
+static void register_l2l_level(Schedule& s) {
+    // L2L: PULL the parent's local expansion down, rather than pushing to the
+    // children -- a system may only write its own rows, and the children are
+    // rows of another archetype. Accumulates onto what M2L already wrote.
     s.add_parallel(
         "l2l." + std::to_string(L),
-        [](Query<LevelSlot<L> const> q, Res<Tree> t, Res<Coeffs> co) {
-            auto const base = t->level_begin[L];
-            auto const end  = t->level_begin[L + 1];
-            q.for_each_chunk([&](std::span<Entity const>, chunk<LevelSlot<L> const> sl) {
-                auto const idx = sl.template column<0>();
-                for (std::size_t r = 0; r < idx.size(); ++r) {
-                    std::uint32_t const node = base + idx[r];
-                    if (node >= end || t->is_leaf[node])
+        [](Query<Lc, NodeRef const, Lvl<L> const> q,
+           ColumnView<Lc, NodeRef, Lvl<L - 1>> above,
+           Res<Tree> t) {
+            LevelSpans<Lc> parent;
+            parent.gather(above);
+            auto const base  = t->level_begin[L];
+            auto const end   = t->level_begin[L + 1];
+            auto const pbase = t->level_begin[L - 1];
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Lc> l,
+                                 chunk<NodeRef const> nr,
+                                 chunk<Lvl<L> const>) {
+                auto out        = l.template column<0>();
+                auto const slot = nr.template column<0>();
+                for (std::size_t r = 0; r < out.size(); ++r) {
+                    std::uint32_t const node = base + slot[r];
+                    if (node >= end)
                         continue;
-                    cplx const cp {t->cx[node], t->cy[node]};
-                    for (std::uint32_t c = 0; c < t->nchild[node]; ++c) {
-                        auto const ch = static_cast<std::uint32_t>(t->child0[node]) + c;
-                        l2l(co->lc[ch], co->lc[node], cp, cplx {t->cx[ch], t->cy[ch]});
-                    }
+                    auto const par = t->parent[node];
+                    if (par < 0)
+                        continue;
+                    Lc acc {};
+                    acc.b = out[r];
+                    Lc up {};
+                    up.b = parent.level[L - 1][static_cast<std::uint32_t>(par) - pbase];
+                    l2l(acc,
+                        up,
+                        cplx {t->cx[par], t->cy[par]},
+                        cplx {t->cx[node], t->cy[node]});
+                    out[r] = acc.b;
                 }
             });
         },
-        phase {ph::kL2LBase + L});
+        grain {kNodeGrain});
 }
 
+// The two folds. Ls counts up; the level each maps to is what puts the
+// registrations in dependency order.
 template <int... Ls>
-static void register_levels(Schedule& s, std::integer_sequence<int, Ls...>) {
-    (register_level<Ls>(s), ...);
+static void register_m2m(Schedule& s, std::integer_sequence<int, Ls...>) {
+    (register_m2m_level<kMaxLevel - 1 - Ls>(s), ...); // deepest first
+}
+template <int... Ls>
+static void register_l2l(Schedule& s, std::integer_sequence<int, Ls...>) {
+    (register_l2l_level<Ls + 1>(s), ...); // shallowest first
 }
 
-// Grow the per-level and per-node entity pools to cover the current tree. Pool
-// rows are never destroyed, so in steady state this records nothing and the
-// tick is structurally quiet.
+// Grow the node pools to cover the current tree. Rows are never destroyed, so a
+// steady-state tick records nothing.
 struct Pools {
-    std::vector<std::uint32_t> level; // rows per level
-    std::uint32_t node = 0, leaf = 0;
-    Pools() { level.assign(kMaxLevel + 1, 0); }
+    std::array<std::uint32_t, kMaxLevel + 2> rows {};
 };
 
 template <int L>
 static void grow_level(Commands& cmd, Pools& pools, Tree const& t) {
     auto const want = t.level_begin[L + 1] - t.level_begin[L];
-    for (std::uint32_t i = pools.level[L]; i < want; ++i)
-        cmd.spawn(LevelSlot<L> {i});
-    pools.level[L] = std::max(pools.level[L], want);
+    for (std::uint32_t i = pools.rows[L]; i < want; ++i)
+        cmd.spawn(Mp {}, Lc {}, NodeRef {i, static_cast<std::uint32_t>(L)}, Lvl<L> {});
+    pools.rows[L] = std::max(pools.rows[L], want);
 }
 template <int... Ls>
 static void grow_levels(Commands& cmd,
@@ -555,8 +604,7 @@ static void grow_levels(Commands& cmd,
 }
 
 static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
-    // 1. Morton key per particle -- a plain data-parallel map, the shape the
-    //    library is built for.
+    // 1. Morton key per particle -- a plain data-parallel map.
     s.add_parallel(
         "morton",
         [](Query<Pos const, Key> q) {
@@ -573,48 +621,38 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
         phase {ph::kMorton});
 
     // 2. Sort the rows by Morton key, so every tree box is a contiguous ROW
-    //    RANGE of the particle archetype. This is what lets a node pass read
-    //    "its" particles as a contiguous span. Deferred to the phase barrier.
+    //    RANGE of the particle archetype -- what lets a node pass read "its"
+    //    particles as a span. A structural effect, hence the explicit phase.
     s.add_serial(
         "sort",
         [](Commands& c) { c.sort<Key>([](Key const& k) { return k.k; }); },
         phase {ph::kSort});
 
-    // 3. Build the adaptive tree + the dual-tree interaction lists, and grow
-    //    the node-entity pools. Serial by nature: a recursive traversal has no
-    //    row-shaped parallel form in this executor.
+    // 3. Build the adaptive tree + the dual-tree interaction lists, and grow the
+    //    node pools. Serial by nature: a recursive traversal has no row-shaped
+    //    parallel form in this executor.
     s.add_serial(
         "build",
-        [leaf_cap](WorldView view,
+        [leaf_cap](ColumnView<Key> keys_view,
                    ResMut<Tree> t,
-                   ResMut<Coeffs> co,
                    ResMut<Pools> pools,
                    ResMut<BuildStats> st,
                    Commands& cmd) {
             static std::vector<std::uint32_t> keys;
             keys.clear();
-            view.for_each_chunk<Key>([&](std::span<Entity const>, chunk<Key const> k) {
+            keys_view.for_each_chunk([&](std::span<Entity const>, chunk<Key const> k) {
                 auto const ks = k.column<0>();
                 keys.insert(keys.end(), ks.begin(), ks.end());
             });
             build_tree(*t, keys, leaf_cap);
             build_lists(*t);
-            co->reset(t->node_count);
-
             grow_levels(cmd,
                         *pools,
                         *t,
                         std::make_integer_sequence<int, kMaxLevel + 1> {});
-            for (std::uint32_t i = pools->node; i < t->node_count; ++i)
-                cmd.spawn(NodeSlot {i});
-            pools->node      = std::max(pools->node, t->node_count);
-            auto const nleaf = static_cast<std::uint32_t>(t->leaves.size());
-            for (std::uint32_t i = pools->leaf; i < nleaf; ++i)
-                cmd.spawn(LeafSlot {i});
-            pools->leaf = std::max(pools->leaf, nleaf);
 
             st->nodes     = t->node_count;
-            st->leaves    = nleaf;
+            st->leaves    = static_cast<std::uint32_t>(t->leaves.size());
             st->depth     = t->depth;
             st->m2l_pairs = t->m2l_off.back();
             st->p2p_pairs = t->p2p_off.back();
@@ -622,126 +660,150 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
         phase {ph::kBuild});
 
     // 4. P2M: one multipole per leaf, from that leaf's contiguous particle rows.
+    //    ONE system over every level archetype -- leaves live at many levels, and
+    //    a query matches every archetype containing its components.
     s.add_parallel(
         "p2m",
-        [](Query<LeafSlot const> q, Res<Tree> t, Res<Coeffs> co, WorldView view) {
-            auto const pc = particle_cols(view);
-            q.for_each_chunk([&](std::span<Entity const>, chunk<LeafSlot const> sl) {
-                auto const idx = sl.column<0>();
-                for (std::size_t r = 0; r < idx.size(); ++r) {
-                    if (idx[r] >= t->leaves.size())
+        [](Query<Mp, NodeRef const> q, ColumnView<Pos, Charge> parts, Res<Tree> t) {
+            auto const pc = particle_cols(parts);
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Mp> m,
+                                 chunk<NodeRef const> nr) {
+                auto out         = m.column<0>();
+                auto const slot  = nr.column<0>();
+                auto const level = nr.column<1>();
+                for (std::size_t r = 0; r < out.size(); ++r) {
+                    auto const node = t->level_begin[level[r]] + slot[r];
+                    if (node >= t->level_begin[level[r] + 1] || !t->is_leaf[node])
                         continue;
-                    auto const node = t->leaves[idx[r]];
-                    p2m(co->mp[node],
+                    Mp acc {};
+                    p2m(acc,
                         cplx {t->cx[node], t->cy[node]},
                         pc.x,
                         pc.y,
                         pc.q,
                         t->pbegin[node],
                         t->pend[node]);
+                    out[r] = acc.a;
                 }
             });
         },
-        phase {ph::kP2M});
+        grain {kNodeGrain});
 
-    // 5. M2M / L2L, one system per level (registered above).
-    register_levels(s, std::make_integer_sequence<int, kMaxLevel + 1> {});
+    // 5. M2M, deepest level first: each conflicts with the next on Mp, so the
+    //    scheduler chains them in registration order with no phases.
+    register_m2m(s, std::make_integer_sequence<int, kMaxLevel> {});
 
-    // 6. M2L: the dominant pass. One system over ALL nodes -- dual-tree M2L has
-    //    no cross-level dependency, so every level's targets share one wave and
-    //    one item list, which is the best load balance available here.
+    // 6. M2L: the dominant pass, and ONE system over every level archetype.
+    //    Dual-tree M2L has no cross-level dependency, so all levels' items land
+    //    in a single wave and one dynamically claimed list -- the best balance
+    //    available. Sources come from ColumnView<Mp>: every level's multipoles,
+    //    read-only, disjoint from the Lc this writes.
     s.add_parallel(
         "m2l",
-        [](Query<NodeSlot const> q, Res<Tree> t, Res<Coeffs> co) {
-            q.for_each_chunk([&](std::span<Entity const>, chunk<NodeSlot const> sl) {
-                auto const idx = sl.column<0>();
-                for (std::size_t r = 0; r < idx.size(); ++r) {
-                    std::uint32_t const node = idx[r];
-                    if (node >= t->node_count)
+        [](Query<Lc, NodeRef const> q, ColumnView<Mp, NodeRef> src, Res<Tree> t) {
+            LevelSpans<Mp> mp;
+            mp.gather(src);
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Lc> l,
+                                 chunk<NodeRef const> nr) {
+                auto out         = l.column<0>();
+                auto const slot  = nr.column<0>();
+                auto const level = nr.column<1>();
+                for (std::size_t r = 0; r < out.size(); ++r) {
+                    auto const node = t->level_begin[level[r]] + slot[r];
+                    if (node >= t->level_begin[level[r] + 1])
                         continue;
+                    Lc acc {}; // assigned, not accumulated: no clearing pass
                     cplx const ct {t->cx[node], t->cy[node]};
                     for (std::uint32_t k = t->m2l_off[node]; k < t->m2l_off[node + 1];
                          ++k) {
-                        auto const src = t->m2l_src[k];
-                        m2l(co->lc[node], co->mp[src], cplx {t->cx[src], t->cy[src]}, ct);
+                        auto const s2 = t->m2l_src[k];
+                        Mp sm {};
+                        sm.a = mp.level[t->level[s2]][s2 - t->level_begin[t->level[s2]]];
+                        m2l(acc, sm, cplx {t->cx[s2], t->cy[s2]}, ct);
                     }
+                    out[r] = acc.b;
                 }
             });
         },
-        phase {ph::kM2L});
+        grain {kNodeGrain});
 
-    // 7. Which leaf owns each particle. A DERIVED-ACCESS pass: it writes LeafId
-    //    and `evaluate` reads it, so the scheduler levels them itself -- no
-    //    phase needed between the two.
-    s.add_parallel(
-        "assign-leaf",
-        [](Query<Key const, LeafId> q, Res<Tree> t) {
-            q.for_each_chunk([&](std::span<Entity const>,
-                                 chunk<Key const> k,
-                                 chunk<LeafId> l) {
-                auto const ks = k.column<0>();
-                auto ls       = l.column<0>();
-                for (std::size_t i = 0; i < ks.size(); ++i) {
-                    auto const it = std::upper_bound(t->leaf_key_lo.begin(),
-                                                     t->leaf_key_lo.end(),
-                                                     ks[i]);
-                    ls[i] = static_cast<std::uint32_t>(it - t->leaf_key_lo.begin() - 1);
-                }
-            });
-        },
-        phase {ph::kEval});
+    // 7. L2L, shallowest level first (registered after M2L, which writes Lc, so
+    //    the chain orders itself).
+    register_l2l(s, std::make_integer_sequence<int, kMaxLevel> {});
 
-    // 8. L2P + P2P, over PARTICLE rows. The near field has to be driven from the
-    //    target particles rather than from the leaves: a parallel system may
-    //    only write its own rows' components, and leaf rows are not particle
-    //    rows.
-    s.add_parallel(
-        "evaluate",
-        [](Query<Field, LeafId const, Pos const> q,
-           Res<Tree> t,
-           Res<Coeffs> co,
-           WorldView view) {
-            auto const pc = particle_cols(view);
-            q.for_each_chunk([&](std::span<Entity const> ents,
-                                 chunk<Field> f,
-                                 chunk<LeafId const> l,
-                                 chunk<Pos const> p) {
-                // The executor does not hand a body its global row offset;
-                // recover it from the entity spans, which view the same array.
-                auto const base = static_cast<std::size_t>(ents.data() - pc.ents.data());
-                auto fx         = f.column<0>();
-                auto fy         = f.column<1>();
-                auto fp         = f.column<2>();
-                auto const lf   = l.column<0>();
-                auto const x    = p.column<0>();
-                auto const y    = p.column<1>();
-                for (std::size_t i = 0; i < x.size(); ++i) {
-                    auto const leaf = t->leaves[lf[i]];
-                    cplx const z {x[i], y[i]};
-                    double ax = 0, ay = 0, phi = 0;
-                    l2p(co->lc[leaf], z - cplx {t->cx[leaf], t->cy[leaf]}, ax, ay, phi);
-                    std::size_t const self = base + i;
-                    for (std::uint32_t k = t->p2p_off[leaf]; k < t->p2p_off[leaf + 1];
-                         ++k) {
-                        auto const src = t->p2p_src[k];
-                        for (std::uint32_t j = t->pbegin[src]; j < t->pend[src]; ++j) {
-                            if (j == self)
-                                continue;
-                            cplx const dz  = z - cplx {pc.x[j], pc.y[j]};
-                            double const q = pc.q[j];
-                            cplx const w   = q / dz;
-                            ax += w.real();
-                            ay -= w.imag();
-                            phi += q * std::log(std::abs(dz));
-                        }
-                    }
-                    fx[i] = ax;
-                    fy[i] = ay;
-                    fp[i] = phi;
-                }
-            });
-        },
-        phase {ph::kEval});
+    // 8. Which leaf owns each particle. Writes LeafId, which `evaluate` reads --
+    //    so those two order themselves with no phase.
+    s.add_parallel("assign-leaf", [](Query<Key const, LeafId> q, Res<Tree> t) {
+        q.for_each_chunk([&](std::span<Entity const>,
+                             chunk<Key const> k,
+                             chunk<LeafId> l) {
+            auto const ks = k.column<0>();
+            auto ls       = l.column<0>();
+            for (std::size_t i = 0; i < ks.size(); ++i) {
+                auto const it =
+                    std::upper_bound(t->leaf_key_lo.begin(), t->leaf_key_lo.end(), ks[i]);
+                ls[i] = static_cast<std::uint32_t>(it - t->leaf_key_lo.begin() - 1);
+            }
+        });
+    });
+
+    // 9. L2P + P2P, over PARTICLE rows: the near field has to be driven from the
+    //    target particles, because a system may only write its own rows and leaf
+    //    rows are not particle rows. chunk::row_begin() is how a particle finds
+    //    its own index in the sorted array, to skip itself in the direct sum.
+    s.add_parallel("evaluate",
+                   [](Query<Field, LeafId const, Pos const> q,
+                      ColumnView<Pos, Charge> parts,
+                      ColumnView<Lc, NodeRef> locals,
+                      Res<Tree> t) {
+                       auto const pc = particle_cols(parts);
+                       LevelSpans<Lc> lc;
+                       lc.gather(locals);
+                       q.for_each_chunk([&](std::span<Entity const>,
+                                            chunk<Field> f,
+                                            chunk<LeafId const> l,
+                                            chunk<Pos const> p) {
+                           auto const base = f.row_begin();
+                           auto fx         = f.column<0>();
+                           auto fy         = f.column<1>();
+                           auto fp         = f.column<2>();
+                           auto const lf   = l.column<0>();
+                           auto const x    = p.column<0>();
+                           auto const y    = p.column<1>();
+                           for (std::size_t i = 0; i < x.size(); ++i) {
+                               auto const leaf = t->leaves[lf[i]];
+                               auto const lv   = t->level[leaf];
+                               cplx const z {x[i], y[i]};
+                               double ax = 0, ay = 0, phi = 0;
+                               Lc loc {};
+                               loc.b = lc.level[lv][leaf - t->level_begin[lv]];
+                               l2p(loc, z - cplx {t->cx[leaf], t->cy[leaf]}, ax, ay, phi);
+                               std::size_t const self = base + i;
+                               for (std::uint32_t k = t->p2p_off[leaf];
+                                    k < t->p2p_off[leaf + 1];
+                                    ++k) {
+                                   auto const src = t->p2p_src[k];
+                                   for (std::uint32_t j = t->pbegin[src];
+                                        j < t->pend[src];
+                                        ++j) {
+                                       if (j == self)
+                                           continue;
+                                       cplx const dz  = z - cplx {pc.x[j], pc.y[j]};
+                                       double const q = pc.q[j];
+                                       cplx const w   = q / dz;
+                                       ax += w.real();
+                                       ay -= w.imag();
+                                       phi += q * std::log(std::abs(dz));
+                                   }
+                               }
+                               fx[i] = ax;
+                               fy[i] = ay;
+                               fp[i] = phi;
+                           }
+                       });
+                   });
 }
 
 // --- main ------------------------------------------------------------------
@@ -755,7 +817,6 @@ int main(int argc, char** argv) {
 
     World world;
     world.emplace_resource<Tree>();
-    world.emplace_resource<Coeffs>();
     world.emplace_resource<Pools>();
     world.emplace_resource<BuildStats>();
 

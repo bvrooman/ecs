@@ -200,9 +200,12 @@ public:
     // reference: ad-hoc iteration cannot write (an undeclared write the scheduler
     // never ordered is a data-race footgun). To MUTATE, run a Query in a system
     // -- it declares its writes and the scheduler serializes against them.
-    // WorldView re-exposes these to systems. Defined out-of-class at the end of
-    // this header (they need the chunk / for_each_row machinery, and count() must
-    // see matching_archetypes()' deduced return type).
+    // WorldView and ColumnView re-expose these to systems, which is why the
+    // match lookup is memoized (see ad_hoc_matches): a parallel body calls
+    // these once per WORK ITEM, so a locked map lookup plus a freshly built
+    // Signature per call would land on the hot path. Defined out-of-class at
+    // the end of this header (they need the chunk / for_each_row machinery, and
+    // count() must see matching_archetypes()' deduced return type).
     template <class... Cs>
     [[nodiscard]]
     std::size_t count() const;
@@ -275,6 +278,40 @@ public:
                 matches.push_back(id);
         }
         return query_cache_.emplace(required, std::move(matches)).first->second;
+    }
+
+    // The matching-archetype list for an ad-hoc read of {Cs...}, memoized.
+    // Two costs are hoisted out of the per-call path: the Signature (constant
+    // for a given component set, so built once per instantiation like
+    // Query::required(), rather than allocating a vector per call) and the
+    // match lookup itself (a locked map probe, so a steady-state call becomes
+    // two relaxed atomic loads). The memo is thread_local because lanes call
+    // this concurrently from inside a wave, and it is keyed by (world instance,
+    // archetype generation) so it cannot serve a stale list or one belonging to
+    // another World. The returned reference stays valid past this call for the
+    // same reason matching_archetypes' does: the cache is append-only and only
+    // grows at a flush, never mid-wave.
+    // The return type is spelled out, and the call sites name ArchetypeId
+    // explicitly rather than using `auto`: this is a template-id with a
+    // dependent argument, so its result is type-dependent, and letting that
+    // dependency reach `arch` would force a `template` disambiguator on every
+    // arch.column<C>() in the iteration bodies.
+    template <class... Cs>
+    std::vector<ArchetypeId> const& ad_hoc_matches() const {
+        static Signature const sig {component_id<std::remove_const_t<Cs>>...};
+        struct Memo {
+            std::vector<ArchetypeId> const* list = nullptr;
+            WorldId world                        = WorldId::none();
+            std::uint64_t gen                    = 0;
+        };
+        static thread_local Memo memo;
+        if (memo.list == nullptr || memo.world != instance_id() ||
+            memo.gen != archetype_generation()) {
+            memo.list  = &matching_archetypes(sig);
+            memo.world = instance_id();
+            memo.gen   = archetype_generation();
+        }
+        return *memo.list;
     }
 
 private:
@@ -561,15 +598,13 @@ private:
 template <class... Cs>
 std::size_t World::count() const {
     std::size_t n = 0;
-    for (auto const ai :
-         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...}))
+    for (ArchetypeId const ai : ad_hoc_matches<Cs...>())
         n += archetypes_[ai]->size();
     return n;
 }
 template <class... Cs, class F>
 void World::for_each(F&& fn) const {
-    for (auto const ai :
-         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+    for (ArchetypeId const ai : ad_hoc_matches<Cs...>()) {
         auto& arch    = *archetypes_[ai];
         auto entities = std::span(arch.entities);
         detail::for_each_row(fn,
@@ -582,8 +617,7 @@ void World::for_each(F&& fn) const {
 }
 template <class... Cs, class F>
 void World::for_each_chunk(F&& fn) const {
-    for (auto const ai :
-         matching_archetypes(Signature {component_id<std::remove_const_t<Cs>>...})) {
+    for (ArchetypeId const ai : ad_hoc_matches<Cs...>()) {
         auto& arch = *archetypes_[ai];
         if (arch.size() == 0)
             continue;

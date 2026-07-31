@@ -46,6 +46,26 @@ struct times {
     std::uint64_t n = 0;
 };
 
+// Work-item granularity for a PARALLEL system: the minimum rows per item,
+// replacing the executor's default floor (WavePlan::kMinItemRows). The
+// ~64-items-per-system target still caps the count, so this only ever RAISES
+// the item count of a small system -- it cannot shatter a large one into
+// thousands of items.
+//
+// The default floor assumes cheap per-row work, where a finer split costs more
+// in dispatch than it wins in parallelism. That assumption inverts for a heavy
+// kernel over few rows -- a tree-node pass doing thousands of flops per row --
+// which the default pins to ONE item, and therefore one lane, however many
+// lanes exist. Give those a grain matched to their row count:
+//
+//   sched.add_parallel("m2l", fn, grain {64});   // 500 rows -> 8 items, not 1
+//
+// 0 (the default) means "use the executor's floor". Ignored by add_serial
+// systems, which are a single opaque item by construction.
+struct grain {
+    std::size_t n = 0;
+};
+
 namespace detail {
 
     // The resolved option set an add_* hands to its emplace.
@@ -53,11 +73,12 @@ namespace detail {
         int phase           = 0;
         std::uint64_t every = 1;
         std::uint64_t times = 0;
+        std::size_t grain   = 0; // 0 = the executor's default item-row floor
     };
 
     template <class T>
-    concept AddOption =
-        std::same_as<T, phase> || std::same_as<T, every> || std::same_as<T, times>;
+    concept AddOption = std::same_as<T, phase> || std::same_as<T, every> ||
+                        std::same_as<T, times> || std::same_as<T, grain>;
 
     template <class Want, class... Opts>
     consteval bool at_most_one() {
@@ -76,6 +97,8 @@ namespace detail {
             out.every = opt.n;
         else if constexpr (std::same_as<Opt, ecs::times>)
             out.times = opt.n;
+        else if constexpr (std::same_as<Opt, ecs::grain>)
+            out.grain = opt.n;
         // anything else already failed resolve_options' static_assert; do nothing
         // here so that assert is the only diagnostic the caller sees.
     }
@@ -88,9 +111,9 @@ namespace detail {
         static_assert(
             (AddOption<Opts> && ...),
             "unsupported registration option -- a system may be registered with "
-            "phase{n}, every{n} and times{n}");
+            "phase{n}, every{n}, times{n} and grain{n}");
         static_assert(at_most_one<phase, Opts...>() && at_most_one<every, Opts...>() &&
-                          at_most_one<times, Opts...>(),
+                          at_most_one<times, Opts...>() && at_most_one<grain, Opts...>(),
                       "each registration option may be given at most once");
         AddOptions out;
         (pick(out, opts), ...);

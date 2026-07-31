@@ -3,28 +3,25 @@
 **Question.** Can this library carry an *adaptive fast multipole method* n-body
 simulation?
 
-**Verdict: yes, with a caveat that decides the whole design.** The library
-carries the particle half of FMM natively — SoA columns, a spatial row sort, and
-data-parallel passes are exactly what it is built for. It does **not** natively
-carry the tree half: FMM's tree passes are node-to-node *gathers*, and a
-`Query` shows a system only its own row slice, so the tree and the expansion
-coefficients end up in resources with entities acting purely as *rows to
-slice*. Everything then works — but three of the library's headline properties
-(derived access, automatic ordering, the parallel-primitive suite) stop
-applying to the tree passes, and the tree build stays serial.
+**Verdict: yes.** `examples/fmm2d.cpp` is a working one — adaptive quadtree,
+dual-tree traversal, verified against a direct O(N²) sum — and every FMM pass in
+it is an ordinary system whose access the scheduler derives and orders by
+itself. Getting there took four library changes, because the first version of
+the spike could *only* be written by stepping outside the access model. Those
+changes are the real output of this exercise; §3 is the list, with the
+before/after each one bought.
 
-This is not a paper exercise. `examples/fmm2d.cpp` is a working adaptive FMM
-built on the library, verified against a direct O(N²) sum, and every number
-below is measured — the per-system figures come from the library's own
-`ecs::diag::ScheduleReport`.
+What remains genuinely unsupported is one thing: the tree build and its
+traversal are recursive, so they have no row-shaped parallel form and run
+serially (§6.1). That is the scaling limit past roughly 16 lanes, and it is
+inherent to the executor's model rather than a gap to be patched.
 
 ```
 $ ./build/examples/fmm2d                  # n leaf_cap ticks max_lanes
 fmm2d: n=50000 leaf_cap=32 p=12 buffer=2.00 max_level=8
-schedule: 25 systems, 25 waves
-lanes=1  234.28 ms/tick   nodes=4505 leaves=3379 depth=8 m2l=102782 p2p=35441
-lanes=2  120.63 ms/tick   ...
-lanes=4   65.39 ms/tick   ...
+schedule: 23 systems, 22 waves
+lanes=1  236.45 ms/tick   nodes=4505 leaves=3379 depth=8 m2l=102782 p2p=35441
+lanes=4   63.94 ms/tick   ...
 accuracy vs direct (200 samples): force L2 rel err = 1.198e-06, potential L2 rel err = 4.820e-08
 ```
 
@@ -33,314 +30,271 @@ a direct near field, an adaptive quadtree (subdivide while a box holds more than
 `leaf_cap` particles), and a dual-tree traversal for the interaction lists — so
 source and target boxes sit at *different* levels, which is the adaptive case
 rather than a uniform grid. 3D changes the kernels and the list sizes, not one
-thing about the ECS mapping below.
+thing about the ECS mapping.
 
 Measurements: 4-core Intel Xeon @ 2.10GHz, clang-18, Release (`-O3 -DNDEBUG`),
 portable reflection backend, 100k particles unless stated. Run-to-run spread on
-this (shared, 4-core) box is roughly ±10%, so every timing below is a median of
-three runs and no claim rests on a difference smaller than that. Work-item
-counts are exact — they are structural, not timed.
+this shared box is roughly ±10%, so every timing is a median of three runs and
+no claim rests on a smaller difference. Work-item counts are exact — they are
+structural, not timed.
 
 ---
 
-## 1. How FMM maps onto the library
+## 1. The one property everything follows from
 
-| FMM stage | its shape | ECS construct | fit |
-|---|---|---|---|
-| particle storage | SoA over N | components in one archetype | **native** |
-| Morton key | per-row map | `add_parallel`, `Query<Pos const, Key>` | **native** |
-| spatial sort | permute rows by key | `Commands::sort<Key>` (`World::sort_rows`) | **native** |
-| tree build | recursive, irregular | `add_serial` writing a `Tree` resource | serial only |
-| interaction lists | recursive dual-tree | same serial system | serial only |
-| P2M | gather a leaf's contiguous particle rows | `add_parallel` over *leaf driver rows* + `WorldView` columns | needs driver entities |
-| M2M / L2L | per level, gather across one level | one `add_parallel` **per level** + `phase{}` | needs driver entities, manual order |
-| M2L | node ← many nodes, any level | one `add_parallel` over all node rows | needs the write escape hatch |
-| L2P + P2P | per particle, gather other particles | `add_parallel` `Query<Field, …>` + `WorldView` | **native** (with the trick in §3) |
-| integrate | per-row map | `add_parallel` | **native** |
-| render handoff | snapshot | `TripleBuffer` / `SnapshotChannel` | **native** |
+**A `Query` is bound to one work item, so it shows a system only that item's row
+slice** — which is exactly what makes a parallel write race-free by
+construction. FMM's kernels are *gathers*: M2M reads its children, M2L reads
+~25 source nodes anywhere in the tree, P2P reads neighbouring particles. Every
+one of those reads rows outside the slice.
 
-The three constructs that carry it are not obscure — they are the ones the
-library's own `static_assert` recommends for pairwise work ("build a spatial
-structure … read it via `Res<T>`"), plus `WorldView` for ad-hoc reads.
-`examples/mist` already does the one-level version of this: its `grid` system is
-a P2M into cells and `steer` reads the neighbourhood back. FMM is that pattern
-made hierarchical.
+The shape needed for that already existed twice over — `Query::for_each_chunk`
+clipped to the item, and `WorldView::for_each_chunk` over whole columns:
 
-## 2. What the library gives you for free
+```
+5000 rows, one archetype, inside one parallel body:
+  item: query chunk = 1024 rows starting at column offset    0   |   view chunk = 5000 rows
+  item: query chunk = 1024 rows starting at column offset 1024   |   view chunk = 5000 rows
+  ...
+```
 
-These are real advantages over rolling the loop by hand, and they are why the
-answer is "yes" rather than "use a task framework":
+What was missing was a whole-column read with an *honest access declaration*.
+`WorldView` declares "reads everything", which serializes the system against
+every writer in its phase, so a schedule built out of gathers collapses into a
+chain of one-system waves. The first version of this spike therefore put the
+expansion coefficients in a resource and wrote them through a raw pointer —
+outside the model entirely — and hand-placed 24 `phase{}` numbers to order
+passes the scheduler could no longer see.
 
-1. **The spatial sort is already a first-class, deterministic operation.**
-   `World::sort_rows<C>(key)` counting-sorts rows by a compact integral key and
-   patches every entity record; `Commands::sort` defers it to a barrier. FMM's
-   central data-layout precondition — *a box's particles are a contiguous row
-   range* — is one line, and it is stable, so the permutation is identical at
-   any lane count.
-2. **Dispatch is cheap enough that 25 barriers per tick do not matter.** The
-   persistent spin-wait pool costs ~1–3 µs per wave (measured: `m2m.0` runs 1.4
-   µs of work in a 2.1 µs wave), so the whole 25-wave tick spends well under
-   0.1 ms in barriers. FMM's phase-per-level structure is affordable.
-3. **Dynamic item claiming balances irregular work well** when there are enough
-   items: `evaluate` (L2P + P2P, per-row cost varying by an order of magnitude)
-   hit **3.83× on 4 lanes**, which is essentially the machine.
-4. **Zero-allocation steady state.** With node pools that only grow, a tick
-   records no commands and allocates nothing; `prewarm()` pre-pays the first
-   tick.
-5. **Per-system attribution is built in.** `ScheduleReport` gave every number in
-   §5 with no instrumentation of my own — including work-item counts, which is
-   how the granularity problem in §4.4 became visible at all.
-6. **Reflection handles the coefficient types.** Verified: a component holding
-   `std::array<double, 26>` is one column and round-trips; `std::complex<double>`
-   works as an opaque single field; a raw C array (`double c[26]`) is rejected
-   with a named diagnostic telling you to wrap it in `std::array`.
+## 2. Consequence: nodes are entities that carry their expansions
 
-## 3. The caveat that decides the design
+With the changes in §3, the mapping is direct:
 
-**A parallel system can only see its own slice, and can only write its own
-rows.** `Query::for_each_chunk` iterates `item_.units` — the rows the executor
-handed this item — so an M2L kernel cannot reach the source node's coefficients
-through its query, and a leaf-driven P2P cannot write the particles' fields.
-
-There are exactly two ways out, and a real FMM uses both:
-
-- **`WorldView::for_each_chunk<Cs...>`** hands back every matching archetype's
-  **full contiguous column spans**, read-only. Capture them once at the top of a
-  body and you have O(1) random access into the real SoA columns — no shadow
-  copy. This is how the spike's P2P reads source positions and charges. Cost:
-  `WorldView` declares *reads everything*, so the system serializes against
-  every writer in its phase.
-- **A resource.** The tree and the coefficient arrays live in resources, read
-  through `Res<T>`. Writing them is the problem — see §4.3.
-
-The consequence is architectural: **tree nodes become entities that carry
-nothing but a slot index.** Row count is the only unit of parallelism the
-executor has, so "one entity per node" is the only way a per-node pass reaches
-the lanes at all. The payload lives in the resource; the entity is a handle for
-the scheduler. In the spike these are pooled and never destroyed — the tree is
-rebuilt every tick, but the *rows* are not, so structural churn is zero in
-steady state.
-
-## 4. Friction, ranked by how much it costs you
-
-### 4.1 The tree build and traversal cannot be parallelized at all — **highest**
-
-A recursive build/traversal has no row shape, so it is an `add_serial` system:
-one opaque work item, one lane. There is no nested dispatch either (the pool
-throws on re-entrancy by design), so a serial system cannot fan out internally.
-
-Measured, and flat across lane counts (1 lane / 4 lanes):
-
-| leaf_cap | nodes | `build` | share of the 4-lane tick |
-|---|---|---|---|
-| 32 | 6205 | 2.88 / 2.84 ms | 1.6% |
-| 4 | 23531 | 11.9 / 11.9 ms | 6.7% |
-
-At 4 lanes this is nearly free; it is the **scaling** limit. Holding the
-measured serial part fixed and dividing the rest (`leaf_cap=4`: 178 ms at 4
-lanes, of which ~12 ms is serial), the tick would be ~56 ms at 16 lanes (75% of
-ideal) and ~25 ms at 64 (41%) — and that ignores §4.4, which makes it worse.
-Past roughly 16 lanes you are timing the tree build. *That extrapolation is
-arithmetic on measured serial fractions, not a measurement.*
-
-*Fixes, in order of cost:* rebuild the tree every k ticks and only re-sort in
-between (`every{n}` is already a registration option, and this is standard
-practice for slowly-evolving distributions); or express the traversal as a
-level-by-level expansion where the *pairs* are rows — which is expressible here,
-but only by making pairs entities, i.e. hundreds of thousands of spawns per
-tick.
-
-### 4.2 Ordering has to be done by hand — **high**
-
-The scheduler derives ordering from declared access. FMM's coefficient writes
-are invisible to it (§4.3), so the passes are ordered with `phase{}`: one phase
-per level for M2M, one for M2L, one per level for L2L. 25 systems, 25 waves,
-every edge hand-placed. Get one phase number wrong and you get a silently wrong
-answer, not a diagnostic — precisely the failure mode the library's derived
-access is designed to prevent.
-
-Note the one place it *does* work: `assign-leaf` writes `LeafId`, `evaluate`
-reads it, both in the same phase, and the scheduler levels them itself. That is
-the model working as advertised — it just cannot reach the passes whose state
-lives in a resource.
-
-There is a way to recover more of it that the spike deliberately does not take:
-give each level its **own resource type** (`MpAt<L>`, `LcAt<L>`) and write them
-with `Extract`. Then M2M at level L declares `res_write(MpAt<L>)` and
-`res_read(MpAt<L+1>)` and the upward pass orders itself. It breaks down on M2L,
-whose dual-tree sources span *all* levels — that system would need one
-`Res<MpAt<L>>` parameter per level (expressible with a pack-generated lambda,
-but ~10 parameters and a runtime level→pointer table), and `Extract`'s target is
-indexed by *row offset*, not node id, so the node arrays would have to be
-re-indexed per level. Worth doing if strict declared access matters more than
-the indexing complexity; not worth it otherwise.
-
-### 4.3 Node-indexed writes have no declared form — **high**
-
-Every FMM pass writes an array indexed by *node id* in pieces that are disjoint
-but not row-aligned. The parallel-primitive suite covers every other shape:
-
-| primitive | shape | why FMM doesn't fit |
+| FMM stage | its shape | ECS construct |
 |---|---|---|
-| `Reduce<T,Op,P>` | fold into one target | writes are disjoint, not folded |
-| `Extract<T>` | one output per row, at the item's row offset | output is indexed by node id, not row |
-| `Collect<T>` | filtered append | order/indexing is not preserved |
-| `Bin<V>` | group-by into buckets | rebuilt per tick from emitted pairs |
-| `ResMut<T>` | mutable resource | **rejected in `add_parallel`** |
+| particle storage | SoA over N | components in one archetype |
+| Morton key | per-row map | `add_parallel`, `Query<Pos const, Key>` |
+| spatial sort | permute rows by key | `Commands::sort<Key>` (`World::sort_rows`) |
+| tree build + lists | recursive, irregular | `add_serial` writing a `Tree` resource |
+| P2M | leaf ← its contiguous particle rows | `Query<Mp, NodeRef const>` + `ColumnView<Pos, Charge>` |
+| M2M | level L ← level L+1 | `Query<Mp, …, Lvl<L> const>` + `ColumnView<Mp, NodeRef, Lvl<L+1>>` |
+| M2L | node ← many nodes, any level | ONE `Query<Lc, NodeRef const>` + `ColumnView<Mp, NodeRef>` |
+| L2L | level L ← its parents at L−1 | `Query<Lc, …, Lvl<L> const>` + `ColumnView<Lc, NodeRef, Lvl<L-1>>` |
+| L2P + P2P | per particle, gathers other particles | `Query<Field, …>` + `ColumnView<Pos, Charge>` + `ColumnView<Lc, NodeRef>` |
 
-So the spike writes through a non-const pointer stored inside a resource read
-via `Res<Coeffs>`. It is safe — the writes are provably disjoint — but it is
-outside the model, and it is what forces §4.2.
+One entity per tree node, in the archetype of its level, carrying `Mp` and `Lc`
+as components. Two details make it work:
 
-*Suggested library change (small, and it would remove most of §4.2):* a
-`Disjoint<T>` parallel parameter that declares a resource **write** exactly like
-`Reduce`/`Extract` do, but binds a plain `T&`, on the body's promise that items
-touch disjoint elements. That is `Extract` minus the row-alignment assumption —
-same conflict analysis, same leveling, no new executor machinery.
+- **Writes stay own-row.** Every pass writes its own rows' expansions through
+  its Query, so the disjointness that makes parallel items safe still holds.
+  L2L is expressed as a *pull* from the parent rather than a push to the
+  children, because a system may only write rows it owns.
+- **Reads are narrowed by tag.** A `ColumnView` matches every archetype
+  *containing* its components, so naming `Lvl<L+1>` restricts an M2M read to
+  exactly the level below — provably disjoint from the level it writes, rather
+  than disjoint by the author's argument.
 
-### 4.4 The 1024-row work-item floor starves the tree passes — **medium**
+Node entities are pooled and never destroyed, so a steady-state tick records no
+commands and allocates nothing.
 
-`WavePlan::kMinItemRows = 1024` with a target of 64 items means a parallel
-system gets `ceil(rows / max(1024, rows/64))` items — so **a pass with 1024 rows
-or fewer gets exactly one item and runs on one lane**, however heavy each row
-is. FMM's per-level passes are exactly that shape: 10³-flop rows, and few of
-them.
+## 3. What building it changed in the library
 
-Item counts at 100k, leaf_cap=32 (exact), against 4-lane speedup:
+### 3.1 `ColumnView<Cs...>` — read every row, declare exactly what you read
 
-| system | rows | items | speedup at 4 lanes |
-|---|---|---|---|
-| `evaluate` | 100000 | 65 | 3.83× |
-| `m2l` | 6205 | 7 | 2.95× |
-| `m2m.*` (9 levels) | that level's nodes | 1–3 | 1.11× |
-| `l2l.*` (9 levels) | that level's nodes | 1–3 | 1.19× |
+`include/ecs/world/column_view.hpp`. Read-only, non-sliced, one chunk per
+matching archetype with full columns — the same access `WorldView` already
+allowed, declaring reads on exactly `Cs...` instead of on everything.
 
-Every `m2m`/`l2l` level except the deepest two is pinned to a single lane, which
-is why those two rows are flat. Rebuilding with the floor lowered to 64 rows (a
-one-constant patch, for this measurement only) turns them into 64-item systems.
-At `leaf_cap=4`, 4 lanes, median of three runs each:
+It is not a new data path (it forwards to `World::for_each_chunk`); the value is
+entirely in the conflict analysis. Measured, on the spike's schedule:
 
-| pass | items (1024 floor → 64) | wall |
+| | before (resource + raw pointer) | after (`ColumnView`) |
 |---|---|---|
-| `m2m.*` | 11 → 65 | 1.91 → **1.30 ms** |
-| `l2l.*` | 11 → 65 | 3.54 → **1.94 ms** |
-| `m2l` | 23 → 65 | 42.7 → 45.5 ms (no change — 23 items already exceeds 4 lanes) |
-| whole tick | | 178 → 187 ms (within noise) |
+| hand-placed `phase{}` numbers | 24 | **3** |
+| systems / waves | 25 / 25 | 23 / 22 |
+| writes outside the access model | all coefficient writes | none |
 
-So on *this* box the floor costs ~2 ms in a 178 ms tick — nothing. The reason it
-still matters is that those passes are pinned at 1–11 items **regardless of lane
-count**: on a 16- or 32-core host they cannot scale at all, and `m2l`'s 7 items
-(leaf_cap=32) become a hard ceiling of 7 busy lanes.
+The three remaining phases order the pipeline head (`morton` → `sort` →
+`build`), where the dependency is a *structural* effect — a row sort recorded as
+a command — which access analysis does not model (§6.2). Everything downstream
+now orders itself, and the scheduler finds parallelism the hand-phased version
+could not express: `p2m` and `assign-leaf` are independent, and it puts them in
+the same wave.
 
-*Suggested library change:* a `grain{n}` registration option next to
-`phase`/`every`/`times`, overriding `kMinItemRows` per system. The floor is a
-sensible default for cheap per-row work and simply the wrong default for a
-kernel doing 10³ flops per row.
+### 3.2 `grain{n}` — work-item granularity per system
 
-### 4.5 No query filters, so each pool needs its own component type — **low**
+`WavePlan::kMinItemRows` is 1024, which assumes cheap per-row work. A tree-level
+pass is the opposite — thousands of flops per row, and few rows — so the default
+pinned each level to **one item, and therefore one lane, at any lane count**.
+`grain{n}` overrides the floor per system; the ~64-item target still caps the
+count, so it can only raise a small system's item count, never shatter a large
+one.
 
-Matching is "archetype includes all requested components" with no `Without<>`,
-so a `Query<NodeSlot const>` would also match the per-level pools if they shared
-`NodeSlot`. Each pool therefore gets a distinct type (`LeafSlot`, `NodeSlot`,
-`LevelSlot<L>`), and per-level passes become `LevelSlot<L>`-templated systems
-registered over a compile-time `kMaxLevel` bound. It works (the spike registers
-9 levels × 2 passes from an `integer_sequence`) but the max depth is baked in at
-compile time, and every level costs two system registrations whether or not the
-runtime tree ever reaches it. `Without<>` is already on the roadmap in
-`IMPROVEMENTS.md` §6.1.
+| pass | items before | items after | 4-lane wall before → after |
+|---|---|---|---|
+| `m2m.*` | 1–3 | 12–20 | 0.94 → **0.44 ms** |
+| `l2l.*` | 1–3 | 16–45 | 1.41 → **0.55 ms** |
+| `m2l` | 7 | 70 | 15.55 → **11.95 ms** |
 
-### 4.6 A body cannot learn its own global row index — **low**
+`m2l` is the one that matters: it went from 2.95× to **3.97×** on 4 lanes. Seven
+lumpy items (row-range slices of a node pool whose per-row cost varies by orders
+of magnitude across levels) became 70 homogeneous ones.
 
-Needed constantly in FMM (self-exclusion in P2P, mapping a row to a sorted-array
-position). `Extract` knows the offset — it slices the target by it — but nothing
-exposes it. The spike recovers it with pointer arithmetic on the entity spans
-(`ents.data() - all_ents.data()`), which is sound but not obvious. Exposing
-`item.begin` on the bound `Query` (e.g. `q.row_offset()`) would be a two-line
-addition.
+### 3.3 `chunk::row_begin()` — where a slice sits
 
-### 4.7 `WorldView` is all-or-nothing — **low**
+The executor hands a body rows, not their positions, so a body could not tell
+where its slice sat in the archetype. FMM needs that constantly: to skip its own
+row in the direct sum, and to join rows against anything indexed the same way.
+The spike previously recovered it with pointer arithmetic on entity spans
+(`ents.data() - all_ents.data()`) — sound, but not something a user should have
+to derive. `chunk::row_begin()` is the three-line accessor for the `begin_` the
+chunk already held.
 
-It is the only route to other rows, and it declares *reads everything*, so any
-system using it serializes against every writer in the phase. FMM's passes are
-sequential anyway, so it costs nothing here — but it would in a schedule where
-FMM runs alongside unrelated systems.
+### 3.4 The ad-hoc read path: a per-call allocation and a global lock
+
+Found by profiling the spike, not by reading it. `World::for_each_chunk<Cs...>`
+— what `WorldView` and now `ColumnView` forward to — built a `Signature` (a
+`std::vector`, so a heap allocation) and took the query-cache mutex **on every
+call**. A gather-shaped body calls it once per work item, so this was squarely
+on the hot path.
+
+The `Signature` is now a per-instantiation static (the same idiom
+`Query::required()` already used) and the resolved match list is memoized per
+(world instance, archetype generation) in a thread_local, so a steady-state call
+is two relaxed atomic loads:
+
+| | before | after |
+|---|---|---|
+| one `for_each_chunk<Pos>` call | 26 ns | **3 ns** |
+
+This one is a straight win for existing `WorldView` users too.
+
+## 4. What the library already gave for free
+
+1. **The spatial sort is first-class.** `World::sort_rows<C>(key)` counting-sorts
+   rows by a compact integral key and patches every entity record;
+   `Commands::sort` defers it to a barrier. FMM's central layout precondition —
+   *a box's particles are a contiguous row range* — is one line, and the
+   permutation is identical at any lane count.
+2. **Dispatch is cheap enough that 22 barriers per tick do not matter**: ~1–3 µs
+   per wave, so well under 0.1 ms of a 165 ms tick.
+3. **Dynamic item claiming absorbs irregular work.** `evaluate` (L2P + P2P,
+   per-row cost varying by an order of magnitude) hits 3.88× on 4 lanes.
+4. **Zero-allocation steady state**, with `prewarm()` pre-paying the first tick.
+5. **Per-system attribution is built in.** `ScheduleReport` produced every number
+   here, including the work-item counts that made §3.2 visible at all.
+6. **Reflection handles the coefficient types.** A component holding
+   `std::array<std::complex<double>, 13>` is one column and round-trips; a raw C
+   array is rejected with a named diagnostic telling you to wrap it in
+   `std::array`.
 
 ## 5. Measured scaling
 
-100k particles, leaf_cap=32, clang-18 `-O3`, 4 cores. Each figure is the wave's
-wall time as the scheduler measured it, median of three runs; the last column is
-1-lane wall / 4-lane wall.
+100k particles, leaf_cap=32, 4 cores. Each figure is the wave's wall time as the
+scheduler measured it, median of three runs.
 
 | system | items | 1 lane | 2 lanes | 4 lanes | 4-lane speedup |
 |---|---|---|---|---|---|
-| `morton` | 65 | 0.87 ms | 0.45 ms | 0.24 ms | 3.69× |
-| `sort` (command flush) | 1 | 0.27 ms | 0.25 ms | 0.25 ms | 1.09× |
-| `build` (serial) | 1 | 2.88 ms | 2.85 ms | 2.84 ms | 1.01× |
-| `p2m` | 5 | 2.73 ms | 1.47 ms | 0.88 ms | 3.11× |
-| `m2m.*` (9 waves) | 1–3 | 1.05 ms | 0.93 ms | 0.94 ms | 1.11× |
-| `m2l` | 7 | 45.89 ms | 24.23 ms | 15.55 ms | 2.95× |
-| `l2l.*` (9 waves) | 1–3 | 1.68 ms | 1.45 ms | 1.41 ms | 1.19× |
-| `assign-leaf` | 65 | 1.71 ms | 0.82 ms | 0.43 ms | 3.99× |
-| `evaluate` | 65 | 573.9 ms | 293.8 ms | 149.9 ms | 3.83× |
-| **whole tick** | | **634 ms** | **326 ms** | **173 ms** | **3.66×** |
+| `morton` | 65 | 0.86 ms | 0.46 ms | 0.23 ms | 3.69× |
+| `sort` (command flush) | 1 | 0.27 ms | 0.24 ms | 0.27 ms | 1.00× |
+| `build` (serial) | 1 | 2.54 ms | 2.40 ms | 2.47 ms | 1.03× |
+| `p2m` + `assign-leaf` (one wave) | 70, 65 | 4.52 ms | 2.43 ms | 1.19 ms | 3.79× |
+| `m2m.*` (8 waves) | 12–20 | 1.23 ms | 0.75 ms | 0.44 ms | 2.77× |
+| `m2l` | 70 | 47.40 ms | 24.61 ms | 11.95 ms | 3.97× |
+| `l2l.*` (8 waves) | 16–45 | 1.78 ms | 0.94 ms | 0.55 ms | 3.21× |
+| `evaluate` | 65 | 576.2 ms | 290.0 ms | 148.5 ms | 3.88× |
+| **whole tick** | | **644 ms** | **326 ms** | **165 ms** | **3.89×** |
 
-In the tree-heavy regime (`leaf_cap=4`: 23.5k nodes, 485k M2L pairs, 173k P2P
-pairs) the tick goes 615 → 178 ms (**3.5×**), with `m2l` at 23 items and `build`
-now 11.9 ms of serial floor.
+Against the pre-change version of the same spike (identical physics, verified by
+identical output): whole tick 173 → 165 ms at 4 lanes, and whole-tick scaling
+3.66× → **3.89×** of a 4-core machine. In the tree-heavy regime (`leaf_cap=4`:
+23.5k nodes, 485k M2L pairs) the tick goes 178 → 166 ms.
 
-Two things to read off this:
+Results are lane-invariant: the same run at 1 and 4 lanes reports an identical
+force error (8.780e-07), as the library's determinism guarantee requires.
 
-- **The parts the library is meant to parallelize, it parallelizes essentially
-  perfectly** (3.83×/4 on the dominant pass, whose per-row cost varies by more
-  than an order of magnitude — the dynamic claiming absorbs it).
-- **What limits scaling is everything that isn't row-shaped**: the serial build,
-  and the item-starved per-level passes. Both are addressable — one by cadence
-  (§4.1), one by a grain option (§4.4).
-
-Absolute performance is not the point of the spike (the kernels are unoptimized
+Absolute performance is not the point of the spike — the kernels are unoptimized
 `std::complex<double>` with a `log()` per direct pair, and the near field is
-computed with the potential, which a force-only sim would skip). The *shape* is
-the point.
+computed with the potential a force-only sim would skip. The *shape* is.
 
-## 6. If you build this for real
+## 6. What remains
 
-Recommended architecture — it is what the spike converged on:
+### 6.1 The tree build and traversal cannot be parallelized — **inherent**
 
-1. **Particles are entities.** `Pos`/`Charge`/`Field`/`Key` as components, one
-   archetype, sorted by Morton key with `Commands::sort` every tick.
-2. **The tree and the coefficients are resources.** Node ids assigned
-   level-major so a level is a contiguous id range.
-3. **Node entities are pooled row-drivers**, one pool per pass shape
-   (leaves, all-nodes, per-level), each with its own slot component type. Grow
-   only; never destroy.
-4. **Reads go through `Res<Tree>`/`Res<Coeffs>`; particle reads go through
-   `WorldView` column spans.** No shadow copies.
-5. **Order with `phase{}`**, one per level for the upward and downward passes,
-   one shared phase for all M2L levels (dual-tree M2L has no cross-level
-   dependency, so a single system over all nodes gives the best load balance
-   available).
-6. **Rebuild the tree on a cadence** (`every{n}`), re-sorting rows every tick.
+A recursive build/traversal has no row shape, so it is an `add_serial` system:
+one opaque work item, one lane. The pool rejects nested dispatch by design, so a
+serial system cannot fan out internally either.
 
-Library changes worth making first, in value order:
+| leaf_cap | nodes | `build`, 1 lane / 4 lanes | share of the 4-lane tick |
+|---|---|---|---|
+| 32 | 6205 | 2.54 / 2.47 ms | 1.5% |
+| 4 | 23531 | 10.9 / 10.9 ms | 6.5% |
 
-| change | effort | buys |
-|---|---|---|
-| `grain{n}` registration option (§4.4) | ~10 lines | per-level passes scale past 1 lane |
-| `Disjoint<T>` parallel param (§4.3) | ~40 lines | declared writes ⇒ automatic ordering, kills the escape hatch |
-| `q.row_offset()` (§4.6) | ~2 lines | removes a pointer-arithmetic workaround |
-| `Without<C>` filter (§4.5, already roadmap) | moderate | one slot component instead of one type per pool |
+At 4 lanes this is nearly free; it is the **scaling** limit. Holding the measured
+serial part fixed and dividing the rest (`leaf_cap=4`: 166 ms at 4 lanes, ~11 ms
+of it serial), the tick would be ~50 ms at 16 lanes (78% of ideal) and ~21 ms at
+64 (48%). Past roughly 16 lanes you are timing the tree build. *That is
+arithmetic on measured serial fractions, not a measurement.*
 
-## 7. What this does not answer
+The practical answer is a cadence — rebuild the tree every k ticks (`every{n}`)
+and re-sort rows in between, which is standard for slowly-evolving
+distributions. The structural answer would be making the traversal's *pairs*
+rows, which the executor can express but only at the cost of hundreds of
+thousands of spawns per tick.
 
-- **3D.** The kernels get bigger (spherical harmonics, ~189-box V-lists) and the
-  arithmetic intensity per node rises — which makes §4.4 *more* important, not
-  less. The ECS mapping is unchanged.
-- **Beyond 4 cores.** Every lane-scaling claim past 4 is Amdahl arithmetic on
-  measured serial fractions, not a measurement. The item-count ceilings (7 items
-  for `m2l`) are the numbers to watch on a bigger host.
-- **Distributed or GPU FMM.** The library is a single-process, CPU, shared-memory
-  executor; neither is in scope for it.
-- **The P2996 reflection backend** (needs GCC 16) — the spike was built on the
-  portable backend only.
-- **A full time-stepping simulation.** The spike computes forces; integration
-  and the render handoff are the parts of the library that already have examples.
+### 6.2 Structural effects are outside the access model — **minor**
+
+`sort` records a command; `build` depends on it having been applied. That
+ordering is not a read/write relation, so it needs `phase{}`. Three phases for
+the pipeline head is a fair price, but worth knowing: a structural dependency
+will not order itself the way a data dependency now does.
+
+### 6.3 No `Without<>` filter — **minor**
+
+Matching is "archetype includes all requested components", so per-level
+selection is done with `Lvl<L>` tags and per-level systems registered over a
+compile-time `kMaxLevel` bound. This turned out to be as much a feature as a
+limitation — the same tags are what let a `ColumnView` name the level below —
+but the max depth is baked in at compile time, and every level costs two
+registrations whether or not the runtime tree reaches it. `Without<>` remains on
+the roadmap in `IMPROVEMENTS.md` §6.1.
+
+### 6.4 Cross-row reads are disjoint by construction, not by proof — **inherent**
+
+The scheduler knows a system reads `Mp` and writes `Mp`; it cannot know the rows
+are in different archetypes. Narrowing a `ColumnView` with a tag makes the
+disjointness structural and obvious at the call site, which is the best the
+model can do without archetype-level access tracking.
+
+## 7. If you build this for real
+
+The spike's architecture, which is what the library now supports directly:
+
+1. **Particles are entities**, one archetype, sorted by Morton key with
+   `Commands::sort` every tick.
+2. **Tree nodes are entities**, one per node, in their level's archetype
+   (`Lvl<L>` tag), carrying `Mp`/`Lc` as components. Pools grow, never shrink.
+3. **The tree topology and interaction lists are a resource**, read via
+   `Res<Tree>` — variable-length CSR data has no component shape.
+4. **Every gather is a `ColumnView`**, narrowed with a tag wherever the source
+   level is statically known.
+5. **Give every node pass `grain{n}`** — their row counts are far below the
+   default floor.
+6. **Register in dependency order** (deepest-first upward, shallowest-first
+   downward) and let conflicts place the barriers; use `phase{}` only where the
+   dependency is structural.
+7. **Rebuild the tree on a cadence** (`every{n}`), re-sorting rows every tick.
+
+## 8. What this does not answer
+
+- **3D.** Bigger kernels (spherical harmonics, ~189-box V-lists) and higher
+  arithmetic intensity per node, which makes `grain{n}` matter more, not less.
+  The mapping is unchanged.
+- **Beyond 4 cores.** Every lane claim past 4 is Amdahl arithmetic on measured
+  serial fractions. The item counts in §5 are what to watch on a bigger host.
+- **Distributed or GPU FMM.** Out of scope for a single-process shared-memory
+  executor.
+- **The P2996 reflection backend** (needs GCC 16) — built on the portable
+  backend only.
+- **A full time-stepping simulation.** The spike computes forces; integration and
+  the render handoff are already covered by the other examples.

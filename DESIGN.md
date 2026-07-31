@@ -29,6 +29,8 @@ include/ecs/
     commands.hpp         Commands -- the deferred mutation API systems see
     res.hpp              Res<T> / ResMut<T> resource parameters
     view.hpp             WorldView -- the read-only ad-hoc read parameter
+    column_view.hpp      ColumnView<Cs...> -- read every row of named
+                         components (the gather parameter)
   schedule/            conflict analysis + the WorkerPool executor
     access.hpp           phase/every/times options, SystemAccess, conflicts()
     system.hpp           SystemRecord + system_param, the per-parameter
@@ -228,6 +230,10 @@ query<Position, const Velocity>(w).for_each_chunk(
   });
 ```
 
+A `chunk` also reports `row_begin()`, the archetype row its slice starts at, so
+a body can place itself -- needed to join rows against anything indexed the same
+way (a row-sorted side array) or to skip its own row in a gather.
+
 `for_each` is the **row** shape: each entity's components are handed to the kernel
 accessed as `p.x` (a write-through proxy referencing the SoA column in place under
 P2996; a gathered local on the portable backend), with an optional leading
@@ -278,10 +284,13 @@ The system parameters are:
 | `Query<Cs...>` | each `const C` a read, each non-const `C` a write | iterate matching entities |
 | `Res<T>` / `ResMut<T>` | read / write resource T | typed resource handle |
 | `Commands&` | none (deferred side channel) | record structural edits |
+| `ColumnView<Cs...>` | a read on each `C` | read **every row** of those components, whole columns |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
-Trailing `phase{n}`/`every{n}`/`times{n}` options are the only non-parameter
-arguments. A raw
+Trailing `phase{n}`/`every{n}`/`times{n}`/`grain{n}` options are the only
+non-parameter arguments (`grain{n}` sets a parallel system's minimum rows per
+work item, for a heavy kernel whose row count the default floor would leave on
+one lane). A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through
@@ -388,12 +397,24 @@ or write a component/resource it did not declare -- `Query`/`Res`/`ResMut` are
 the only way to reach that state, and each contributes its access. The two
 remaining caveats:
 
-* **`WorldView` is the read-only escape hatch.** When a system needs ad-hoc
-  reads (`size`, `alive`, `has`, `get`, or a `view.query<Cs...>()` that forces
-  every component to const) beyond what a single `Query`/`Res` expresses, take a
-  `WorldView`. It exposes nothing that can mutate, so it declares "reads
-  everything": it still runs concurrently with other readers and is serialized
-  only against writers.
+* **Reading rows outside your own slice is `ColumnView<Cs...>`.** A `Query` is
+  bound to one work item, which is what makes a parallel write race-free; a
+  gather-shaped kernel (a tree pass reading other nodes, a solver reading its
+  neighbours) needs more reach. `ColumnView<Cs...>` gives it -- every matching
+  archetype's FULL columns, read-only -- while declaring a read on exactly
+  `Cs...`, so conflict analysis stays as precise as a Query's. Because it
+  matches every archetype *containing* those components, listing a tag narrows
+  it (`ColumnView<Multipole, Level<3>>` reads only level 3), which is how a
+  cross-row read is kept provably disjoint from the system's own writes -- the
+  one thing the analysis cannot check, since items write disjoint rows but a
+  view can read any row.
+* **`WorldView` is the wide read-only escape hatch.** When a system needs ad-hoc
+  reads (`size`, `alive`, `has`, `get`, iteration over sets it cannot name)
+  beyond what `Query`/`Res`/`ColumnView` express, take a `WorldView`. It exposes
+  nothing that can mutate, so it declares "reads everything": it runs
+  concurrently with other readers and is serialized against every writer --
+  which is the cost `ColumnView` exists to avoid when the component set IS
+  known.
 * **There is no raw-`World&` parameter.** Unanalyzable read-write access has no
   safe meaning under a concurrent executor, so the type system simply does not
   offer it; `add_dynamic_serial` can declare a system `exclusive` when a runtime-typed

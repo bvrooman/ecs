@@ -135,6 +135,13 @@ that introduced this document; the rest are recorded as a roadmap.
 - **[done]** Query match lookup took a global mutex and hashed a signature
   vector on every `for_each_*`; now memoized per query type against a world
   archetype-generation counter (steady state: one relaxed load).
+- **[done]** The AD-HOC read path (`World::count/for_each/for_each_chunk`, which
+  `WorldView` and `ColumnView` forward to) kept paying that cost: it built a
+  `Signature` — a heap-allocating vector — and took the query-cache mutex on
+  every call. A gather-shaped parallel body calls it once per WORK ITEM, so it
+  sat on the hot path. The signature is now a per-instantiation static and the
+  match list is memoized per (world, archetype generation) in a thread_local:
+  26 ns -> 3 ns per call (see `docs/FMM_FEASIBILITY.md` §3.4).
 - **[done]** `rebuild()` captured an id vector **by value** per `intersects`
   call, used O(n²·|ids|²) linear scans and a per-rebuild `std::map`; now
   by-reference, sorted-merge intersection, and flat vectors.
@@ -226,6 +233,17 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
 ## 6. ECS feature gaps vs bevy_ecs / flecs / EnTT (roadmap)
 
+0. **[done]** Cross-row reads with precise access — `ColumnView<Cs...>`
+   (`world/column_view.hpp`): every matching archetype's FULL columns,
+   read-only, declaring a read on exactly `Cs...`. `WorldView` already permitted
+   the access but declared "reads everything", which serializes a gather-shaped
+   system against every writer in its phase; a schedule built out of gathers (a
+   tree pass, a solver reading its neighbours) collapsed into one-system waves,
+   or left the model entirely via a resource holding raw pointers. Because a
+   view matches every archetype *containing* its components, a tag narrows it,
+   which is how a cross-row read is kept provably disjoint from the system's own
+   writes. Also `chunk::row_begin()`, so a body can place its slice.
+   `docs/FMM_FEASIBILITY.md` §3.1/§3.3 has the measured before/after.
 1. `Without<C>` / `With<C>` / `Optional<C>` query filters — `Without` is
    nearly free (extend the match-cache key with an excluded set); `Optional`
    is a nullable per-archetype chunk.
@@ -245,8 +263,12 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    is the roadmap replacement for genuinely exclusive work.)
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
    spike), ~~`Local<T>` per-system state~~ (**done** — see item 7),
-   per-dispatch grain hints, a thin `App`/fixed-timestep layer; larger:
-   structural-change hooks, entity relationships.
+   ~~per-dispatch grain hints~~ (**done** — the `grain{n}` registration option
+   overrides `WavePlan::kMinItemRows` per system; the 1024-row default pins a
+   heavy-per-row, few-row kernel to a single item and therefore one lane at any
+   lane count, which `docs/FMM_FEASIBILITY.md` §3.2 measures), a thin
+   `App`/fixed-timestep layer; larger: structural-change hooks, entity
+   relationships.
 7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a
    kernel system needs is ONE mechanism — per-item private slots plus an
    optional deterministic barrier-time merge — wearing different typed faces.
