@@ -4,6 +4,16 @@ target_link_libraries(nbody PRIVATE ecs::ecs)
 target_compile_options(nbody PRIVATE $<$<CONFIG:Release>:-O2>)
 
 # ---------------------------------------------------------------------------
+# fmm2d: an adaptive fast multipole method solver, the feasibility spike behind
+# docs/FMM_FEASIBILITY.md. Verifies itself against a direct O(N^2) sum and
+# reports the tick time at 1..N lanes; FMM_STATS=1 attaches the library's own
+# ScheduleReport for per-system attribution (hence ecs::profiler).
+# ---------------------------------------------------------------------------
+add_executable(fmm2d fmm2d.cpp)
+target_link_libraries(fmm2d PRIVATE ecs::ecs ecs::profiler)
+target_compile_options(fmm2d PRIVATE $<$<CONFIG:Release>:-O3>)
+
+# ---------------------------------------------------------------------------
 # mist-headless: the murmuration simulation without the renderer. Runs the
 # kernel schedule at 1 lane and 4 lanes with the same seed and verifies the
 # flock evolves BITWISE identically (the parallel-primitives determinism

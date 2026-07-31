@@ -75,7 +75,12 @@ public:
     template <class Fn, class... Opts>
     SystemId add_serial(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
-        return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.phase, o.every);
+        return emplace(std::move(name),
+                       std::forward<Fn>(fn),
+                       o.times,
+                       o.phase,
+                       o.every,
+                       o.grain);
     }
 
     // Register a PARALLEL system. Same signature rules as add_serial() -- the system's
@@ -121,7 +126,8 @@ public:
                                 std::forward<Fn>(fn),
                                 o.phase,
                                 o.every,
-                                o.times);
+                                o.times,
+                                o.grain);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -148,6 +154,7 @@ public:
                                o.phase,
                                o.every,
                                o.times,
+                               o.grain,
                                /*is_parallel=*/false);
     }
 
@@ -173,6 +180,7 @@ public:
                                o.phase,
                                o.every,
                                o.times,
+                               o.grain,
                                /*is_parallel=*/true);
     }
 
@@ -320,6 +328,7 @@ private:
                              int phase,
                              std::uint64_t every,
                              std::uint64_t times,
+                             std::size_t grain,
                              bool is_parallel) {
         System sys;
         sys.name        = std::move(name);
@@ -328,6 +337,7 @@ private:
         sys.phase       = phase;
         sys.every       = every;
         sys.times       = times;
+        sys.grain       = grain;
         sys.is_parallel = is_parallel;
         sys.run         = std::forward<Run>(run);
         return register_system(std::move(sys));
@@ -369,6 +379,7 @@ private:
                           std::uint64_t const times,
                           int const phase,
                           std::uint64_t const every,
+                          std::size_t const grain,
                           bool const is_parallel) {
         using Args       = detail::system_args_t<Fn>;
         constexpr auto N = std::tuple_size_v<Args>;
@@ -379,6 +390,7 @@ private:
         sys.phase       = phase;
         sys.times       = times;
         sys.every       = std::max<std::uint64_t>(1, every);
+        sys.grain       = grain;
         sys.is_parallel = is_parallel;
         detail::declare<Param, Args>(sys.access, Seq {});
         if constexpr (detail::query_info<Args>::has_query) {
@@ -410,7 +422,8 @@ private:
                      Fn&& fn,
                      std::uint64_t const times,
                      int const phase,
-                     std::uint64_t const every) {
+                     std::uint64_t const every,
+                     std::size_t const grain) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -426,8 +439,8 @@ private:
         static_assert(detail::params_allowed<ParamS, Fn>(),
                       "unsupported system parameter type: a system may take "
                       "Query<Cs...>, Res<T>, ResMut<T>, Commands&, WorldView, "
-                      "and Local<T> (spelled exactly so -- e.g. Query by "
-                      "value, Commands by reference); raw World& is "
+                      "ColumnView<Cs...>, and Local<T> (spelled exactly so -- "
+                      "e.g. Query by value, Commands by reference); raw World& is "
                       "deliberately not a system parameter, and the per-item "
                       "primitives (Reduce/Extract/Collect/Bin/EventWriter/"
                       "EventReader/Scratch/Random) are parallel-only (register "
@@ -440,6 +453,7 @@ private:
                                         times,
                                         phase,
                                         every,
+                                        grain,
                                         /*is_parallel=*/false);
         return SystemId::none(); // reached only when a static_assert above fired
     }
@@ -449,7 +463,8 @@ private:
                               Fn&& fn,
                               int const phase,
                               std::uint64_t const every,
-                              std::uint64_t const times) {
+                              std::uint64_t const times,
+                              std::size_t const grain) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -483,7 +498,7 @@ private:
             detail::params_allowed<ParamP, Fn>() || detail::has_res_mut<Fn>(),
             "add_parallel: unsupported parallel parameter type -- a parallel "
             "system may take one Query<Cs...>, plus Res<T>, Commands&, "
-            "WorldView, Reduce<T, Op>, Extract<T>, Collect<T>, "
+            "WorldView, ColumnView<Cs...>, Reduce<T, Op>, Extract<T>, Collect<T>, "
             "EventWriter<T>, EventReader<T>, Bin<V>, Scratch<T>, and "
             "Random (Local<T> is serial-only: per-system state has "
             "no race-free meaning across a parallel system's concurrent items)");
@@ -495,6 +510,7 @@ private:
                                         times,
                                         phase,
                                         every,
+                                        grain,
                                         /*is_parallel=*/true);
         return SystemId::none(); // reached only when a static_assert above fired
     }

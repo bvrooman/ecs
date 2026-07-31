@@ -144,6 +144,19 @@ struct system_param<WorldView> {
     static void declare(SystemAccess& a) { a.reads_all = true; }
     static WorldView bind(World& w, Commands&, WorkItem const&) { return WorldView(w); }
 };
+// Read every row of NAMED components: the gather parameter. Unlike WorldView it
+// declares a read on exactly Cs..., so conflict analysis stays as precise as a
+// Query's -- it is serialized against writers of those components and nothing
+// else. Read-only, so const on a component is accepted and ignored.
+template <class... Cs>
+struct system_param<ColumnView<Cs...>> {
+    static void declare(SystemAccess& a) {
+        (a.reads.push_back(component_id<std::remove_const_t<Cs>>), ...);
+    }
+    static ColumnView<Cs...> bind(World& w, Commands&, WorkItem const&) {
+        return ColumnView<Cs...>(w);
+    }
+};
 // Note there is deliberately NO system_param<World&>: raw world access cannot
 // be analyzed and is dangerous under any concurrent executor, so it is not a
 // system parameter. Setup happens on the World directly (outside a run),
@@ -272,7 +285,10 @@ struct SystemRecord {
     // is every tick). A skipped system contributes no work items that tick;
     // a wave left empty by skips runs no barrier. Always >= 1.
     std::uint64_t every = 1;
-    bool is_parallel    = false;
+    // Minimum rows per work item for a parallel system (the grain{n} option);
+    // 0 = the executor's default floor. See WavePlan::build_parallel.
+    std::size_t grain = 0;
+    bool is_parallel  = false;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {

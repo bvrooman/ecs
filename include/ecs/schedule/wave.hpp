@@ -247,7 +247,8 @@ public:
     }
 
     // Flatten this tick's due systems into the reused Wave: one opaque item per
-    // serial system, ~kTargetItemsPerSystem row-range items per parallel system, plus
+    // serial system, up to kTargetItemsPerSystem row-range items per parallel
+    // system (each at least kMinItemRows rows, or the system's own grain{n}), plus
     // a prepare/finish context per due system. Sorted longest-first with a
     // deterministic tie-break (a 1-lane run replays identically). Requires
     // prepare() to have populated due_ this tick.
@@ -300,7 +301,15 @@ private:
         auto total          = 0uz;
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
-        auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerSystem);
+        // grain{n} is authoritative when given: exactly n rows per item. The
+        // default -- a floor of kMinItemRows, relaxed to hit ~kTargetItemsPerSystem
+        // items on a large system -- is a policy for cheap per-row work, and it
+        // is wrong in BOTH directions for a heavy kernel: it pins a few-row
+        // system to one item (one lane, at any lane count), and it caps a large
+        // one at the item target however unevenly its rows are weighted.
+        auto const grain = system.grain
+                               ? system.grain
+                               : std::max(kMinItemRows, total / kTargetItemsPerSystem);
         std::uint32_t ordinal = 0;
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();

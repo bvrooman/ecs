@@ -54,6 +54,17 @@ public:
     std::size_t size() const noexcept {
         return end_ - begin_;
     }
+
+    // Where this chunk starts in its archetype's columns: column<I>()[i] is
+    // archetype row row_begin() + i. A body otherwise has no way to place its
+    // slice, because the executor hands it rows, not their positions -- needed
+    // whenever rows are joined to something indexed the same way (a row-sorted
+    // side array, a spatial structure built from the same order) or when a
+    // gather over a ColumnView must skip the reader's own row.
+    [[nodiscard]]
+    std::size_t row_begin() const noexcept {
+        return begin_;
+    }
     [[nodiscard]]
     bool empty() const noexcept {
         return begin_ == end_;
