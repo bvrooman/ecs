@@ -11,10 +11,11 @@ the spike could *only* be written by stepping outside the access model. Those
 changes are the real output of this exercise; §3 is the list, with the
 before/after each one bought.
 
-What remains genuinely unsupported is one thing: the tree build and its
-traversal are recursive, so they have no row-shaped parallel form and run
-serially (§6.1). That is the scaling limit past roughly 16 lanes, and it is
-inherent to the executor's model rather than a gap to be patched.
+What remains serial is the tree build, which is the scaling limit past roughly
+16 lanes. Four fifths of it is the interaction-list traversal, and that is
+*not* inherently serial — §6.1 measures it, shows why the obvious
+parallelization is wrong, and identifies what the library would need to make
+the correct one pay (a parallel `Bin` merge, already on the roadmap).
 
 ```
 $ ./build/examples/fmm2d                  # n leaf_cap ticks max_lanes
@@ -269,16 +270,59 @@ What binds at 64 lanes is §6.1: the serial tree build.
 
 ## 6. What remains
 
-### 6.1 The tree build and traversal cannot be parallelized — **inherent**
+### 6.1 The tree build is serial — but mostly for a fixable reason
 
-A recursive build/traversal has no row shape, so it is an `add_serial` system:
-one opaque work item, one lane. The pool rejects nested dispatch by design, so a
-serial system cannot fan out internally either.
+A recursive build has no row shape, so it is an `add_serial` system: one opaque
+work item, one lane. The pool rejects nested dispatch by design, so a serial
+system cannot fan out internally either.
 
 | leaf_cap | nodes | `build`, 1 lane / 4 lanes | share of the 4-lane tick |
 |---|---|---|---|
-| 32 | 6205 | 2.54 / 2.47 ms | 1.5% |
+| 32 | 6205 | 2.42 / 2.42 ms | 1.5% |
 | 4 | 23531 | 10.9 / 10.9 ms | 6.5% |
+
+Inside it, the two halves are not alike:
+
+| | key read | subdivide (BFS) | **interaction-list traversal** |
+|---|---|---|---|
+| leaf_cap=32 | 0 (in place) | 445 µs | **1.80 ms (79%)** |
+| leaf_cap=4 | 0 | 1.46 ms | **8.4 ms (84%)** |
+
+The BFS subdivision is genuinely sequential — level L+1 does not exist until
+level L has been split. The traversal is not, and it is the 80%.
+
+**The obvious parallelization is wrong.** Descending from the root once per
+*target* node is perfectly row-shaped, and it does not reproduce the same
+lists: measured force error 0.64 instead of 9.6e-07. A dual-tree traversal's
+decisions are path-dependent — when it splits the target at (A, B), the pair
+moves to A's children with B *already descended*, and a fresh descent for a
+child re-derives a different stopping point. Either the rule must be made
+path-independent (the classic U/V/W/X list construction, which is defined per
+box precisely so it can be built in parallel — and which needs the M2P/P2L
+kernels the W and X lists imply), or the same recursion must be split: run it
+serially until the target reaches a cut level, then complete each subtree in
+parallel, one work item per cut node.
+
+**And the output shape hits a real limit.** A traversal emits a variable-length
+list per target, which is exactly `Bin<V>`: bucket = target node, value =
+source node, counting-sorted at the barrier into contiguous per-bucket spans —
+the CSR the serial version builds by hand. Prototyped, and the barrier merge
+measured **3.20 ms** at ~4.6× the true pair count, so ≈0.7 ms at the real one:
+comparable to the entire 1.8 ms serial traversal it replaces, and it does not
+shrink with lanes. `Bin`'s count → prefix-sum → scatter runs serially in the
+finish hook, so parallelizing the traversal would move the bottleneck rather
+than remove it.
+
+`IMPROVEMENTS.md` §6 already scopes the fix — *parallel two-pass `Bin`*: a
+parallel per-(item, key) count, a barrier prefix-sum into disjoint precomputed
+ranges, then a parallel scatter, preserving canonical within-bucket order. That
+is the change that would make a parallel traversal worth building; without it,
+the traversal is worth parallelizing only past ~8 lanes, and even then the merge
+caps it.
+
+Until then the practical answer is a cadence — rebuild the tree every k ticks
+(`every{n}`) and re-sort rows in between, which is standard for slowly-evolving
+distributions.
 
 At 4 lanes this is nearly free; it is the **scaling** limit, and the §5.1
 simulation puts a number on it. In the tree-heavy configuration (`leaf_cap=4`,
@@ -286,12 +330,6 @@ where `build` is 10.5 ms) the predicted tick is 50.9 ms at 16 lanes (12.7× of
 1-lane, 1.25× off ideal) and 21.2 ms at 64 (30.7×, 2.08× off) — at which point
 **the serial build is 49% of the tick**, and every other system still has lane
 headroom of 30× or more. Past roughly 16 lanes you are timing the tree build.
-
-The practical answer is a cadence — rebuild the tree every k ticks (`every{n}`)
-and re-sort rows in between, which is standard for slowly-evolving
-distributions. The structural answer would be making the traversal's *pairs*
-rows, which the executor can express but only at the cost of hundreds of
-thousands of spawns per tick.
 
 ### 6.2 Structural effects are outside the access model — **minor**
 

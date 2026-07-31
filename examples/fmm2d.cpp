@@ -643,11 +643,11 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
                    ResMut<Pools> pools,
                    ResMut<BuildStats> st,
                    Commands& cmd) {
-            static std::vector<std::uint32_t> keys;
-            keys.clear();
+            // The key column is already contiguous and already sorted, so the
+            // tree build reads it in place -- a ColumnView chunk IS the column.
+            std::span<std::uint32_t const> keys;
             keys_view.for_each_chunk([&](std::span<Entity const>, chunk<Key const> k) {
-                auto const ks = k.column<0>();
-                keys.insert(keys.end(), ks.begin(), ks.end());
+                keys = k.column<0>();
             });
             build_tree(*t, keys, leaf_cap);
             build_lists(*t);
