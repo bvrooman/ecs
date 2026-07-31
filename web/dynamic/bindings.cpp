@@ -312,7 +312,7 @@ public:
             // slice. Field views span the whole archetype column (base = row 0)
             // while the kernel runs over [lo, hi) only, so slices dispatched to
             // different lanes touch disjoint rows -- no double work, and no
-            // parallel_for on the pool the scheduler is already fanning us across.
+            // dispatch on the pool the scheduler is already fanning us across.
             for (auto const& u : item.units) {
                 auto& arch       = WorldOps::archetype_at(w, u.archetype);
                 auto const count = arch.size();

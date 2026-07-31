@@ -8,7 +8,6 @@
 #include <ecs/strong_id.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <concepts>
@@ -134,9 +133,8 @@ public:
         state_ = State::Prepared;
     }
 
-    // Execute the item list. A lone item runs inline on the caller; several are
-    // claimed from an atomic cursor across the pool's lanes. Each item's busy
-    // time is rolled up per system into result_.
+    // Execute the item list: each item is claimed by whichever lane is free.
+    // Each item's busy time is rolled up per system into result_.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
@@ -147,17 +145,7 @@ public:
             system.run(world, cmds, item);
             item.busy_us = detail::elapsed_us(t0);
         };
-        if (items_.size() == 1) {
-            run_one(items_[0]);
-        } else if (items_.size() > 1) {
-            auto next = std::atomic {0uz};
-            pool.parallel_for(items_.size(), 2, [&](std::size_t, std::size_t) {
-                for (auto i = next.fetch_add(1, std::memory_order_relaxed);
-                     i < items_.size();
-                     i = next.fetch_add(1, std::memory_order_relaxed))
-                    run_one(items_[i]);
-            });
-        }
+        pool.for_each(items_, run_one);
         for (auto const& item : items_) {
             result_.busy_us[item.system] += item.busy_us;
             result_.item_counts[item.system]++;

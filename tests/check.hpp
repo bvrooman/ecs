@@ -1,6 +1,9 @@
 // Minimal test harness: CHECK(expr) records a failure but keeps going; main
 // returns non-zero if anything failed. Wrap comma-containing expressions in
 // extra parens, e.g. CHECK((w.count<A, B>() == 2)).
+//
+// NOT thread-safe -- the counters below are plain ints. In a concurrent test,
+// record the condition in an atomic and CHECK it after the join.
 #pragma once
 #include <cstdio>
 

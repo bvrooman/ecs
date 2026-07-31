@@ -1,18 +1,17 @@
 // ecs/parallel/worker_pool.hpp
 //
-// A persistent fork-join worker pool for *data-parallel* system execution -- the
-// runtime behind Schedule::run(World&, WorkerPool&) and Query::for_each_chunk.
+// A persistent fork-join worker pool for *data-parallel* system execution --
+// the runtime behind Schedule::run(World&, WorkerPool&).
 //
 // It is built once and reused every tick. `lanes` execution lanes (the calling
 // thread is lane 0; lanes-1 resident OS threads are lanes 1..N) stay alive and
 // spin-wait on a generation counter, so a dispatch never creates, wakes, or
-// sleeps a thread -- the source of the tail latency a general work-stealing pool
-// (woken per wave) suffers. parallel_for() splits [0, count) into `lanes`
-// contiguous, equal slices (deterministic load balancing -- no work stealing, no
-// random victim selection, so the per-call cost is predictable) and runs the
-// kernel on every lane concurrently, blocking until all finish. The kernel is
-// referenced, never copied or type-erased onto the heap, so a dispatch allocates
-// nothing. On macOS workers request the performance-core QoS.
+// sleeps a thread -- the source of the tail latency a general work-stealing
+// pool suffers. for_each() hands a range out to the lanes, one element claimed
+// at a time, and blocks until all finish; for_each_index() is the same over an
+// index space. The body is referenced, never copied or type-erased onto the
+// heap, so a dispatch allocates nothing. On macOS workers request the
+// performance-core QoS.
 //
 // Trade-off: resident workers spin while idle -- lowest dispatch latency, but
 // they keep their cores busy. That is the right trade for a latency-sensitive,
@@ -29,18 +28,18 @@
 // -- a paused app that must not burn idle cores should own that decision
 // explicitly rather than have the pool guess at it.
 //
-// A dispatch is NOT re-entrant: there is one job slot, so a nested
-// parallel_for on the same pool -- e.g. a query iterated from inside another
-// query's kernel -- throws std::logic_error rather than corrupting the
-// in-flight dispatch. Run inner iteration serially (for_each / an
-// ad-hoc 1-lane query) or restructure the system.
+// A dispatch is NOT re-entrant: there is one job slot, so a nested dispatch on
+// the same pool -- e.g. a query iterated from inside another query's kernel --
+// throws std::logic_error rather than corrupting the in-flight dispatch. Run
+// the inner iteration serially (Query::for_each, or an ad-hoc 1-lane query) or
+// restructure the system.
 
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <exception>
+#include <ranges>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -69,7 +68,7 @@ public:
     explicit WorkerPool(unsigned lanes)
         : lanes_(lanes < 1 ? 1u : lanes) {
         for (unsigned w = 1; w < lanes_; ++w)
-            threads_.emplace_back([this, w] { worker_main(w); });
+            threads_.emplace_back([this] { worker_main(); });
     }
 
     ~WorkerPool() {
@@ -87,51 +86,69 @@ public:
         return lanes_;
     }
 
-    // Run kernel(begin, end) over a deterministic, equal partition of [0, count)
-    // across all lanes; blocks until every lane finishes. Allocation-free: the
-    // kernel is referenced via a static trampoline, not stored. Small ranges run
-    // serially on the caller (dispatch is not worth it).
+    // Run body(element) once per element of `range`, each element claimed by
+    // whichever lane is free.
     //
-    // Exceptions: if a kernel invocation on any lane throws, every lane still
-    // runs to completion (so the referenced kernel stays alive for the whole
-    // dispatch), then the first exception is rethrown on the calling thread --
-    // so a throwing system propagates out of Schedule::run as it would inline,
-    // with no std::terminate from a worker and no use-after-unwind.
-    template <class Kernel>
-    void parallel_for(std::size_t count, Kernel&& kernel) {
-        parallel_for(count, kMinParallel, std::forward<Kernel>(kernel));
+    //   pool.for_each(items, run_one);   // not for_each_index(items.size(), ...)
+    template <class R, class Body>
+        requires std::ranges::random_access_range<R> && std::ranges::sized_range<R>
+    void for_each(R&& range, Body&& body) {
+        auto const first = std::ranges::begin(range);
+        for_each_index(std::ranges::size(range), [&](std::size_t index) {
+            auto i = static_cast<std::ptrdiff_t>(index);
+            body(first[i]);
+        });
     }
 
-    // As above, with a caller-chosen serial threshold: dispatch whenever
-    // count >= min_parallel. The schedule executor uses this to fan a handful
-    // of coarse tasks (whole systems) across lanes, where the default 256-row
-    // threshold would always run serial.
-    template <class Kernel>
-    void parallel_for(std::size_t count, std::size_t min_parallel, Kernel&& kernel) {
-        if (lanes_ == 1 || count < min_parallel) {
-            kernel(std::size_t {0}, count); // serial: exception propagates directly
+    // The same, over an index space rather than a container: body(i) once per
+    // index in [0, count), each claimed by whichever lane is free. Reach for it
+    // when there is nothing to iterate -- indices into several parallel arrays,
+    // or a computed range. A single element, or a 1-lane pool, runs inline on
+    // the caller rather than paying for a dispatch.
+    template <class Body>
+    void for_each_index(std::size_t count, Body&& body) {
+        if (count == 0)
+            return;
+        if (lanes_ == 1 || count == 1) {
+            for (std::size_t i = 0; i < count; ++i)
+                body(i); // serial: exception propagates directly
             return;
         }
-        // Re-entrancy guard: there is ONE job slot. A nested dispatch -- a
-        // kernel that itself iterates a pool-bound Query, or a second thread
-        // sharing the pool -- would overwrite count_/fn_/ctx_ while lanes are
-        // mid-flight on the outer job (corruption or deadlock). Disallowed:
-        // thrown from inside an outer kernel, this surfaces at the outer
-        // dispatch's join like any kernel exception.
+        auto next = std::atomic<std::size_t> {0};
+        for_each_lane([&] {
+            std::size_t i = 0;
+            while ((i = next.fetch_add(1, std::memory_order_relaxed)) < count)
+                body(i);
+        });
+    }
+
+private:
+    // Run kernel() once on every lane (the caller is lane 0) and block until
+    // all finish; a 1-lane pool calls it inline.
+    //
+    // Exceptions: if the kernel throws on any lane, every lane still runs to
+    // completion (so the referenced kernel stays alive for the whole dispatch),
+    // then the first exception is rethrown on the calling thread.
+    template <class Kernel>
+    void for_each_lane(Kernel&& kernel) {
+        if (lanes_ == 1) {
+            kernel(); // serial: exception propagates directly
+            return;
+        }
+        // One job slot: a nested dispatch would overwrite fn_/ctx_ while lanes
+        // are still reading them. Thrown from inside an outer kernel, this
+        // surfaces at that dispatch's join like any other kernel exception.
         if (dispatching_.exchange(true, std::memory_order_acquire))
             throw std::logic_error(
-                "WorkerPool::parallel_for: nested dispatch on a pool that is "
+                "WorkerPool::for_each_lane: nested dispatch on a pool that is "
                 "already mid-dispatch (a Query iterated inside another query's "
-                "kernel?); use for_each for inner iteration");
-        count_ = count;
-        fn_    = +[](void* ctx, std::size_t b, std::size_t e) {
-            (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(b, e);
-        };
+                "kernel?); iterate the inner query serially");
+        fn_ = +[](void* ctx) { (*static_cast<std::remove_reference_t<Kernel>*>(ctx))(); };
         ctx_ = static_cast<void*>(&kernel);
         has_err_.store(false, std::memory_order_relaxed);
         remaining_.store(lanes_, std::memory_order_relaxed);
         gen_.fetch_add(1, std::memory_order_release); // publish the job
-        run_lane(0);                                  // the caller is lane 0
+        run_lane();                                   // the caller is lane 0
         while (remaining_.load(std::memory_order_acquire) != 0)
             cpu_relax();
         dispatching_.store(false, std::memory_order_release);
@@ -141,21 +158,14 @@ public:
         }
     }
 
-private:
-    static constexpr std::size_t kMinParallel = 256; // below this, just run serial
     // Padding so the two atomics every lane hammers do not share a line with
     // each other or the job slot (128 covers x86's 64B lines and the 128B
     // spatial prefetcher / Apple Silicon).
     static constexpr std::size_t kNoShare = 128;
 
-    void run_lane(unsigned lane) {
-        // Equal contiguous slices without the count*(lane+1) overflow hazard.
-        std::size_t const q = count_ / lanes_;
-        std::size_t const r = count_ % lanes_;
-        std::size_t const b = q * lane + std::min<std::size_t>(lane, r);
-        std::size_t const e = b + q + (lane < r ? 1 : 0);
+    void run_lane() {
         try {
-            fn_(ctx_, b, e);
+            fn_(ctx_);
         } catch (...) {
             // Keep the first exception; let other lanes finish (the kernel must
             // stay alive until the join), then the caller rethrows.
@@ -165,7 +175,7 @@ private:
         remaining_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    void worker_main(unsigned lane) {
+    void worker_main() {
 #if defined(__APPLE__)
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
@@ -179,7 +189,7 @@ private:
             last = gen_.load(std::memory_order_acquire);
             if (stop_.load(std::memory_order_acquire))
                 return;
-            run_lane(lane);
+            run_lane();
         }
     }
 
@@ -188,9 +198,8 @@ private:
 
     // Job slot: written by the caller before it bumps gen_, read by each lane
     // after it observes the new gen_ (release/acquire handshake).
-    std::size_t count_                           = 0;
-    void (*fn_)(void*, std::size_t, std::size_t) = nullptr;
-    void* ctx_                                   = nullptr;
+    void (*fn_)(void*) = nullptr;
+    void* ctx_         = nullptr;
 
     // gen_ and remaining_ each get their own cache line: every lane spins on
     // gen_ and every lane's fetch_sub invalidates remaining_ -- sharing a line
@@ -207,7 +216,7 @@ private:
 };
 
 // A process-wide 1-lane WorkerPool. One lane spawns no threads and its
-// parallel_for just calls the kernel on the calling thread -- it never touches
+// dispatches just call the body on the calling thread -- they never touch
 // the job slot -- so it is free and safe to share across threads: at 1 lane
 // there is no per-dispatch state. Ad-hoc queries (query()/WorldView), the
 // schedule's serial run(world), and imperative work items inside a multi-item

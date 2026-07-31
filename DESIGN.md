@@ -370,7 +370,7 @@ for a fixed-timestep loop — twice: on a condition variable and again on a
 bounded-spin-then-futex hybrid — the per-tick wakeup latency dwarfs the
 idle-core cost it saves (so spinning stays). A dispatch is allocation-free (the
 kernel is referenced via a static trampoline, not stored) and **not
-re-entrant**: there is one job slot, so a nested `parallel_for` on the same pool
+re-entrant**: there is one job slot, so a nested dispatch on the same pool
 throws rather than corrupting the in-flight dispatch (parallel systems cannot
 reach this by construction; a serial system that iterates one pool-bound
 query inside another's kernel can). The first exception from any lane is

@@ -17,6 +17,8 @@
 
 #include <ecs/parallel/worker_pool.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <emscripten.h>
@@ -34,7 +36,22 @@ int main() {
         arr[i] = static_cast<float>(i);
 
     unsigned const lanes = 4;
-    std::vector<std::uintptr_t> tids(lanes, 0); // which thread ran each slice
+
+    // The unit of work is a slice, so that is what the pool iterates: a range of
+    // slice descriptors handed to for_each, one claimed per call. A JS call per
+    // *element* would be 4000 EM_ASM round trips, hence slices rather than
+    // indices -- but that is this spike's choice to make, not something the pool
+    // needs an API for. Well above `lanes` so every lane draws several.
+    struct Slice {
+        std::size_t begin;
+        std::size_t end;
+        std::uintptr_t tid = 0; // which thread ran it; filled in by the body
+    };
+    constexpr std::size_t kSlices = 40;
+    std::vector<Slice> slices;
+    slices.reserve(kSlices);
+    for (std::size_t s = 0; s < kSlices; ++s)
+        slices.push_back({N * s / kSlices, N * (s + 1) / kSlices});
 
     // A pure JS kernel: x10 over [begin,end) of a Float32 view at byte offset
     // `base` into the shared heap. No closures -- only its arguments.
@@ -46,8 +63,16 @@ int main() {
     auto const base = reinterpret_cast<std::uintptr_t>(arr.data());
 
     WorkerPool pool {lanes};
-    pool.parallel_for(N, [&](std::size_t b, std::size_t e) {
-        // Runs on each lane (main thread + workers). EM_ASM executes in THIS
+    // Slices are claimed dynamically, so the pool does not *promise* that every
+    // lane draws one -- but with kSlices well above `lanes`, and workers already
+    // spin-waiting on the generation counter (so they observe a dispatch within
+    // nanoseconds, long before the first EM_ASM finishes its eval), a single
+    // thread taking all of them is not a case that occurs in practice. The
+    // distinct-thread check below is the assertion this spike exists for; if it
+    // ever does flake, that is a real signal about worker startup, not noise to
+    // paper over.
+    pool.for_each(slices, [&](Slice& s) {
+        // Runs on whichever lane claimed this slice. EM_ASM executes in THAT
         // lane's JS context; eval() defines the kernel there (cached per source).
         EM_ASM(
             {
@@ -61,10 +86,10 @@ int main() {
                 fn($1, $2, $3);
             },
             src.c_str(),
-            static_cast<int>(b),
-            static_cast<int>(e),
+            static_cast<int>(s.begin),
+            static_cast<int>(s.end),
             static_cast<int>(base));
-        tids[b * lanes / N] = reinterpret_cast<std::uintptr_t>(pthread_self());
+        s.tid = reinterpret_cast<std::uintptr_t>(pthread_self());
     });
 
     bool ok = true;
@@ -74,7 +99,9 @@ int main() {
             std::printf("mismatch at %zu: got %f\n", i, arr[i]);
             break;
         }
-    std::set<std::uintptr_t> const distinct(tids.begin(), tids.end());
+    std::set<std::uintptr_t> distinct;
+    for (auto const& s : slices)
+        distinct.insert(s.tid);
     bool const pass = ok && distinct.size() >= 2;
     std::printf(
         "%s: %zu elements x10 via worker-eval'd JS kernels across %zu thread(s)\n",

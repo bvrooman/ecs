@@ -1,9 +1,14 @@
-// WorkerPool tests: correctness of the data-parallel dispatch -- exact disjoint
-// partition, dispatch across idle gaps (the fixed-timestep pattern), the 1-lane
-// inline path, and exception propagation from a lane back to the caller.
+// WorkerPool tests: correctness of the data-parallel dispatch -- exact,
+// exactly-once coverage of [0, count) however the lanes claim it, dispatch
+// across idle gaps (the fixed-timestep pattern), the inline paths that skip
+// the job slot, and exception propagation from a lane back to the caller.
+//
+// CHECK is not thread-safe (see check.hpp), so it must not be called from
+// inside a dispatched body.
 #include <ecs/parallel/worker_pool.hpp>
 
 #include "check.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
@@ -12,17 +17,81 @@
 
 using namespace ecs;
 
-// Every lane covers a disjoint, contiguous slice and together they cover
-// [0, count) exactly once -- the property the data-parallel split relies on.
-static void partition_is_exact_and_disjoint() {
+// Every index is handed to the body exactly once across all lanes. Claiming is
+// dynamic, so *which* lane gets an index is not fixed -- the coverage is.
+static void every_index_runs_exactly_once() {
+    for (unsigned lanes : {1u, 2u, 4u}) {
+        WorkerPool pool {lanes};
+        std::size_t const n = 10'000;
+        std::vector<int> hits(n, 0);
+        pool.for_each_index(n, [&](std::size_t i) {
+            hits[i] += 1; // distinct i per claim -> no data race on any element
+        });
+        CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
+    }
+}
+
+// The range overload: every element handed to the body exactly once, and the
+// body gets a mutable reference into the caller's range, not a copy.
+static void for_each_over_a_range_covers_every_element() {
+    for (unsigned lanes : {1u, 2u, 4u}) {
+        WorkerPool pool {lanes};
+        std::vector<int> items(10'000, 0);
+        pool.for_each(items, [](int& v) { v += 1; }); // distinct element per claim
+        CHECK(std::all_of(items.begin(), items.end(), [](int v) { return v == 1; }));
+    }
+}
+
+// A const range yields const references -- the body sees T const&, so a
+// read-only pass over someone else's data compiles as such.
+static void for_each_over_a_const_range_reads() {
     WorkerPool pool {4};
-    std::size_t const n = 100'000;
-    std::vector<int> hits(n, 0);
-    pool.parallel_for(n, [&](std::size_t b, std::size_t e) {
-        for (std::size_t i = b; i < e; ++i)
-            hits[i] += 1; // disjoint ranges -> no data race on any element
-    });
-    CHECK(std::all_of(hits.begin(), hits.end(), [](int h) { return h == 1; }));
+    std::vector<int> const items(10'000, 3);
+    std::atomic<long> total {0};
+    pool.for_each(items,
+                  [&](int const& v) { total.fetch_add(v, std::memory_order_relaxed); });
+    CHECK(total.load() == 30'000);
+}
+
+// An empty range never calls the body, matching for_each_index(0, ...).
+static void for_each_over_an_empty_range_is_a_noop() {
+    WorkerPool pool {4};
+    std::vector<int> empty;
+    bool called = false;
+    pool.for_each(empty, [&](int&) { called = true; });
+    CHECK(!called);
+}
+
+// A single element runs inline instead of dispatching. Probed by nesting it
+// inside a real dispatch: running inline never touches the job slot, so it is
+// legal there, where a second dispatch would trip the re-entrancy guard.
+//
+// Neither a claim count nor thread identity can tell the two apart -- only one
+// lane ever draws index 0, and the caller runs as lane 0, so it often draws
+// that index itself even when the work was dispatched.
+static void single_element_runs_inline() {
+    WorkerPool pool {4};
+    auto ran   = std::atomic<int> {0};
+    bool threw = false;
+    try {
+        pool.for_each_index(4, [&](std::size_t) {
+            pool.for_each_index(1, [&](std::size_t) {
+                ran.fetch_add(1, std::memory_order_relaxed);
+            });
+        });
+    } catch (std::logic_error const&) {
+        threw = true; // the inner call dispatched rather than running inline
+    }
+    CHECK(!threw);
+    CHECK(ran.load() == 4);
+}
+
+// An empty range never calls the body and never dispatches.
+static void empty_range_is_a_noop() {
+    WorkerPool pool {4};
+    bool called = false;
+    pool.for_each_index(0, [&](std::size_t) { called = true; });
+    CHECK(!called);
 }
 
 // Many dispatches separated by idle gaps -- the fixed-timestep usage pattern.
@@ -35,8 +104,8 @@ static void dispatch_after_idle_gap() {
     constexpr int rounds = 50;
     for (int r = 0; r < rounds; ++r) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1)); // idle between ticks
-        pool.parallel_for(n, [&](std::size_t b, std::size_t e) {
-            total.fetch_add(long(e - b), std::memory_order_relaxed);
+        pool.for_each_index(n, [&](std::size_t) {
+            total.fetch_add(1, std::memory_order_relaxed);
         });
     }
     CHECK(total.load() == long(n) * rounds);
@@ -47,21 +116,18 @@ static void single_lane_runs_inline() {
     WorkerPool pool {1};
     CHECK(pool.lanes() == 1);
     long sum = 0;
-    pool.parallel_for(1000, [&](std::size_t b, std::size_t e) {
-        for (std::size_t i = b; i < e; ++i)
-            sum += 1;
-    });
+    pool.for_each_index(1000, [&](std::size_t) { sum += 1; }); // no atomic needed
     CHECK(sum == 1000);
 }
 
-// An exception on any lane propagates out of parallel_for on the caller (after
-// every lane has finished, so the kernel stays alive for the whole dispatch).
+// An exception on any lane propagates out to the caller (after every lane has
+// finished, so the body stays alive for the whole dispatch).
 static void exception_propagates() {
     WorkerPool pool {4};
     bool caught = false;
     try {
-        pool.parallel_for(100'000, [](std::size_t b, std::size_t e) {
-            if (b != e)
+        pool.for_each_index(100'000, [](std::size_t i) {
+            if (i == 0)
                 throw std::runtime_error("boom");
         });
     } catch (std::runtime_error const&) {
@@ -70,10 +136,31 @@ static void exception_propagates() {
     CHECK(caught);
 }
 
+// One job slot: a dispatch nested inside another throws rather than corrupting
+// the in-flight job. It surfaces at the outer join like any kernel exception.
+static void nested_dispatch_throws() {
+    WorkerPool pool {4};
+    bool caught = false;
+    try {
+        pool.for_each_index(1000, [&](std::size_t) {
+            pool.for_each_index(10, [](std::size_t) {});
+        });
+    } catch (std::logic_error const&) {
+        caught = true;
+    }
+    CHECK(caught);
+}
+
 int main() {
-    RUN_SUITE(partition_is_exact_and_disjoint);
+    RUN_SUITE(every_index_runs_exactly_once);
+    RUN_SUITE(for_each_over_a_range_covers_every_element);
+    RUN_SUITE(for_each_over_a_const_range_reads);
+    RUN_SUITE(for_each_over_an_empty_range_is_a_noop);
+    RUN_SUITE(single_element_runs_inline);
+    RUN_SUITE(empty_range_is_a_noop);
     RUN_SUITE(dispatch_after_idle_gap);
     RUN_SUITE(single_lane_runs_inline);
     RUN_SUITE(exception_propagates);
+    RUN_SUITE(nested_dispatch_throws);
     return REPORT();
 }
