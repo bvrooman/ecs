@@ -123,22 +123,32 @@ the same wave.
 
 ### 3.2 `grain{n}` — work-item granularity per system
 
-`WavePlan::kMinItemRows` is 1024, which assumes cheap per-row work. A tree-level
-pass is the opposite — thousands of flops per row, and few rows — so the default
-pinned each level to **one item, and therefore one lane, at any lane count**.
-`grain{n}` overrides the floor per system; the ~64-item target still caps the
-count, so it can only raise a small system's item count, never shatter a large
-one.
+The executor sizes items with a floor of `kMinItemRows` (1024), relaxed so a
+large system lands near `kTargetItemsPerSystem` items. That is a policy for
+*cheap per-row work*, and an FMM kernel breaks it in **both** directions:
 
-| pass | items before | items after | 4-lane wall before → after |
+- **Too coarse below the floor.** A tree-level pass is a few hundred rows of
+  thousand-flop work, so the floor made it ONE item — one lane, at any lane
+  count.
+- **Too coarse above the target.** The near field has rows to spare, but per-row
+  cost tracks local density, so the 64-item cap left items differing ~2× and the
+  heaviest became the straggler every lane waits on.
+
+`grain{n}` is therefore *exactly n rows per item*, replacing the sizing rather
+than raising its floor — an earlier floor-only version could fix the first
+problem but not the second.
+
+| pass | items before | items after | effect |
 |---|---|---|---|
-| `m2m.*` | 1–3 | 12–20 | 0.94 → **0.44 ms** |
-| `l2l.*` | 1–3 | 16–45 | 1.41 → **0.55 ms** |
-| `m2l` | 7 | 70 | 15.55 → **11.95 ms** |
+| `m2m.*` | 1–3 | 12–20 | 0.94 → **0.44 ms** at 4 lanes |
+| `l2l.*` | 1–3 | 16–45 | 1.41 → **0.55 ms** at 4 lanes |
+| `m2l` | 7 | 101 | 15.55 → **11.95 ms**; scaling 2.95× → **3.97×** |
+| `evaluate` | 65 | 391 | 4-lane wall unchanged; longest item 15.03 → **3.07 ms** |
 
-`m2l` is the one that matters: it went from 2.95× to **3.97×** on 4 lanes. Seven
-lumpy items (row-range slices of a node pool whose per-row cost varies by orders
-of magnitude across levels) became 70 homogeneous ones.
+The `evaluate` row is the one that only the exact-size semantics can express,
+and it buys nothing on 4 lanes — it is worth 33× → 46× at 64 (§5.1). More items
+cost dispatch bookkeeping and re-bind the system's parameters once per item, so
+this is a tuning knob, not a default to lower globally.
 
 ### 3.3 `chunk::row_begin()` — where a slice sits
 
@@ -217,6 +227,46 @@ Absolute performance is not the point of the spike — the kernels are unoptimiz
 `std::complex<double>` with a `log()` per direct pair, and the near field is
 computed with the potential a force-only sim would skip. The *shape* is.
 
+### 5.1 Beyond four lanes
+
+Only a 4-core machine was available, so higher lane counts are answered by
+**re-scheduling the measured work items offline**. The executor claims items
+from one list per wave, so a wave's makespan on N lanes is a greedy
+longest-first assignment of its item durations — the same policy the pool
+implements. Item durations come from a run at 1 lane (an instrumented build
+dumping every item's measured busy time), and each wave is charged the ~2 µs
+barrier measured on this box.
+
+The model reproduces the one point that can be checked: it predicts 160.6 ms at
+4 lanes against 166.1 ms measured, 3% optimistic. It is an **upper bound** —
+1-lane item durations carry no memory-system contention, which N lanes would.
+
+| lanes | predicted tick | speedup | vs ideal |
+|---|---|---|---|
+| 1 | 633.3 ms | 1.00× | 1.00× |
+| 2 | 318.2 ms | 1.99× | 1.00× |
+| 4 | 160.6 ms | 3.94× | 1.01× |
+| 8 | 81.7 ms | 7.75× | 1.03× |
+| 16 | 42.7 ms | 14.83× | 1.08× |
+| 32 | 23.2 ms | 27.25× | 1.17× |
+| 64 | 13.7 ms | 46.29× | 1.38× |
+
+The item-count ceilings that motivated `grain{n}` are gone: no system is now
+capped below ~34 lanes, where before `m2m`/`l2l` were capped at 1–3 and
+`evaluate`'s longest item capped it at 38.
+
+| system | items | work | longest item | most lanes it can use |
+|---|---|---|---|---|
+| `build` | 1 | 2.33 ms | 2.33 ms | **1** |
+| `m2m.*` | 56 | 1.39 ms | 0.10 ms | 14 |
+| `assign-leaf` | 65 | 1.64 ms | 0.10 ms | 17 |
+| `p2m` | 101 | 2.92 ms | 0.08 ms | 34 |
+| `l2l.*` | 100 | 1.76 ms | 0.04 ms | 48 |
+| `m2l` | 101 | 47.6 ms | 0.80 ms | 59 |
+| `evaluate` | 391 | 575.7 ms | 3.07 ms | 188 |
+
+What binds at 64 lanes is §6.1: the serial tree build.
+
 ## 6. What remains
 
 ### 6.1 The tree build and traversal cannot be parallelized — **inherent**
@@ -230,11 +280,12 @@ serial system cannot fan out internally either.
 | 32 | 6205 | 2.54 / 2.47 ms | 1.5% |
 | 4 | 23531 | 10.9 / 10.9 ms | 6.5% |
 
-At 4 lanes this is nearly free; it is the **scaling** limit. Holding the measured
-serial part fixed and dividing the rest (`leaf_cap=4`: 166 ms at 4 lanes, ~11 ms
-of it serial), the tick would be ~50 ms at 16 lanes (78% of ideal) and ~21 ms at
-64 (48%). Past roughly 16 lanes you are timing the tree build. *That is
-arithmetic on measured serial fractions, not a measurement.*
+At 4 lanes this is nearly free; it is the **scaling** limit, and the §5.1
+simulation puts a number on it. In the tree-heavy configuration (`leaf_cap=4`,
+where `build` is 10.5 ms) the predicted tick is 50.9 ms at 16 lanes (12.7× of
+1-lane, 1.25× off ideal) and 21.2 ms at 64 (30.7×, 2.08× off) — at which point
+**the serial build is 49% of the tick**, and every other system still has lane
+headroom of 30× or more. Past roughly 16 lanes you are timing the tree build.
 
 The practical answer is a cadence — rebuild the tree every k ticks (`every{n}`)
 and re-sort rows in between, which is standard for slowly-evolving
@@ -290,8 +341,11 @@ The spike's architecture, which is what the library now supports directly:
 - **3D.** Bigger kernels (spherical harmonics, ~189-box V-lists) and higher
   arithmetic intensity per node, which makes `grain{n}` matter more, not less.
   The mapping is unchanged.
-- **Beyond 4 cores.** Every lane claim past 4 is Amdahl arithmetic on measured
-  serial fractions. The item counts in §5 are what to watch on a bigger host.
+- **Beyond 4 cores — measured indirectly.** §5.1 re-schedules the real item
+  durations rather than guessing, and is calibrated against the one lane count
+  that could be checked, but it models neither memory-bandwidth contention nor
+  NUMA. Treat it as the ceiling the *item structure* allows, and re-measure on
+  real hardware.
 - **Distributed or GPU FMM.** Out of scope for a single-process shared-memory
   executor.
 - **The P2996 reflection backend** (needs GCC 16) — built on the portable

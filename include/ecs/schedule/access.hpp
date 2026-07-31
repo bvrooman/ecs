@@ -46,22 +46,30 @@ struct times {
     std::uint64_t n = 0;
 };
 
-// Work-item granularity for a PARALLEL system: the minimum rows per item,
-// replacing the executor's default floor (WavePlan::kMinItemRows). The
-// ~64-items-per-system target still caps the count, so this only ever RAISES
-// the item count of a small system -- it cannot shatter a large one into
-// thousands of items.
+// Work-item granularity for a PARALLEL system: exactly n rows per work item,
+// replacing the executor's default sizing entirely.
 //
-// The default floor assumes cheap per-row work, where a finer split costs more
-// in dispatch than it wins in parallelism. That assumption inverts for a heavy
-// kernel over few rows -- a tree-node pass doing thousands of flops per row --
-// which the default pins to ONE item, and therefore one lane, however many
-// lanes exist. Give those a grain matched to their row count:
+// The default -- a floor of WavePlan::kMinItemRows (1024), relaxed so a large
+// system lands near kTargetItemsPerSystem items -- is a policy for CHEAP
+// per-row work, where a finer split costs more in dispatch than it wins in
+// parallelism. A heavy kernel breaks it in both directions:
 //
-//   sched.add_parallel("m2l", fn, grain {64});   // 500 rows -> 8 items, not 1
+//   too coarse below the floor   a tree-level pass of 500 thousand-flop rows
+//                                becomes ONE item, so it runs on one lane
+//                                however many lanes exist:
+//                                  grain {64}   // 500 rows -> 8 items, not 1
+//   too coarse above the target  a large system with unevenly weighted rows
+//                                (an n-body near field, where per-row cost
+//                                tracks local density) is capped at the item
+//                                target, and its longest item becomes the
+//                                straggler every lane waits on:
+//                                  grain {256}  // 100k rows -> 391 items, not 65
 //
-// 0 (the default) means "use the executor's floor". Ignored by add_serial
-// systems, which are a single opaque item by construction.
+// More items cost more dispatch bookkeeping and re-bind the system's parameters
+// once per item, so this is a tuning knob, not a default to lower globally: aim
+// for a few items per lane, sized so the heaviest is a small fraction of the
+// wave. 0 (the default) means "use the executor's sizing". Ignored by
+// add_serial systems, which are a single opaque item by construction.
 struct grain {
     std::size_t n = 0;
 };

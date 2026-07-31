@@ -288,9 +288,10 @@ The system parameters are:
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
 Trailing `phase{n}`/`every{n}`/`times{n}`/`grain{n}` options are the only
-non-parameter arguments (`grain{n}` sets a parallel system's minimum rows per
-work item, for a heavy kernel whose row count the default floor would leave on
-one lane). A raw
+non-parameter arguments (`grain{n}` sets a parallel system's rows per work
+item outright, for a heavy kernel that the default sizing would leave on one
+lane -- or, above the item target, would leave with a straggler item every lane
+waits on). A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through

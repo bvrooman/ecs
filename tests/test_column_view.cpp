@@ -235,16 +235,15 @@ void grain_raises_the_item_count_of_a_small_system() {
     CHECK(count_items(world, 100) == 3); // ceil(300 / 100)
 }
 
-// It raises the floor; it cannot shatter a large system, because the
-// per-system item target still caps the count.
-void grain_cannot_shatter_a_large_system() {
+// It sets the item size outright, so it can also make a LARGE system finer
+// than the executor's item target would -- what an unevenly weighted kernel
+// needs, since its longest item is what every lane waits on.
+void grain_sets_rows_per_item_on_a_large_system() {
     World world;
     spawn_n<Val>(world, 100000);
-    // grain = max(1, 100000 / 64) = 1562 rows, so 64 full items plus the
-    // truncating division's short remainder -- not the 100000 a floor of 1
-    // would give if the target did not cap it.
-    CHECK(count_items(world, 1) == 65);
-    CHECK(count_items(world, 0) == 65); // same: the target, not the floor, binds
+    CHECK(count_items(world, 0) == 65);    // default: max(1024, 100000/64) rows
+    CHECK(count_items(world, 256) == 391); // ceil(100000 / 256)
+    CHECK(count_items(world, 2000) == 50); // coarser than the default, too
 }
 
 // grain is a parallel-system concept: a serial system stays one opaque item.
@@ -275,7 +274,7 @@ int main() {
     RUN_SUITE(chunk_row_begin_locates_the_slice);
     RUN_SUITE(row_begin_of_an_adhoc_chunk_is_zero);
     RUN_SUITE(grain_raises_the_item_count_of_a_small_system);
-    RUN_SUITE(grain_cannot_shatter_a_large_system);
+    RUN_SUITE(grain_sets_rows_per_item_on_a_large_system);
     RUN_SUITE(grain_does_not_split_a_serial_system);
     return REPORT();
 }

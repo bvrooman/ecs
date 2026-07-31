@@ -264,9 +264,12 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
    spike), ~~`Local<T>` per-system state~~ (**done** — see item 7),
    ~~per-dispatch grain hints~~ (**done** — the `grain{n}` registration option
-   overrides `WavePlan::kMinItemRows` per system; the 1024-row default pins a
-   heavy-per-row, few-row kernel to a single item and therefore one lane at any
-   lane count, which `docs/FMM_FEASIBILITY.md` §3.2 measures), a thin
+   sets a parallel system's rows per work item outright, replacing the default
+   sizing. That default is a policy for cheap per-row work and a heavy kernel
+   breaks it both ways: below the 1024-row floor it becomes one item — one lane
+   at any lane count — and above the ~64-item target its longest item becomes
+   the straggler every lane waits on. `docs/FMM_FEASIBILITY.md` §3.2/§5.1
+   measures both), a thin
    `App`/fixed-timestep layer; larger: structural-change hooks, entity
    relationships.
 7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a

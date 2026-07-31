@@ -301,11 +301,15 @@ private:
         auto total          = 0uz;
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
-        // A system may raise the row floor with grain{n} (a heavy per-row
-        // kernel over few rows is pinned to one item -- one lane -- by the
-        // default); the per-system target still caps the item count.
-        auto const floor      = system.grain ? system.grain : kMinItemRows;
-        auto const grain      = std::max(floor, total / kTargetItemsPerSystem);
+        // grain{n} is authoritative when given: exactly n rows per item. The
+        // default -- a floor of kMinItemRows, relaxed to hit ~kTargetItemsPerSystem
+        // items on a large system -- is a policy for cheap per-row work, and it
+        // is wrong in BOTH directions for a heavy kernel: it pins a few-row
+        // system to one item (one lane, at any lane count), and it caps a large
+        // one at the item target however unevenly its rows are weighted.
+        auto const grain = system.grain
+                               ? system.grain
+                               : std::max(kMinItemRows, total / kTargetItemsPerSystem);
         std::uint32_t ordinal = 0;
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();

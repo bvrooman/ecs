@@ -443,6 +443,11 @@ constexpr int kBuild  = -1;
 // Heavy per-row kernels over few rows: the default 1024-row item floor would
 // pin a level's pass to one item -- one lane -- so ask for a finer split.
 constexpr std::size_t kNodeGrain = 64;
+// The near field is the opposite problem: plenty of rows, but per-row cost
+// tracks local density, so the default item target leaves items that differ by
+// ~2x and the heaviest becomes the straggler every lane waits on. Smaller items
+// than the default sizing would ever choose.
+constexpr std::size_t kParticleGrain = 256;
 
 // Level -> that level's contiguous column, gathered from a ColumnView. Every
 // FMM gather is "read node n's expansion", and node ids are level-major, so one
@@ -753,57 +758,56 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
     //    target particles, because a system may only write its own rows and leaf
     //    rows are not particle rows. chunk::row_begin() is how a particle finds
     //    its own index in the sorted array, to skip itself in the direct sum.
-    s.add_parallel("evaluate",
-                   [](Query<Field, LeafId const, Pos const> q,
-                      ColumnView<Pos, Charge> parts,
-                      ColumnView<Lc, NodeRef> locals,
-                      Res<Tree> t) {
-                       auto const pc = particle_cols(parts);
-                       LevelSpans<Lc> lc;
-                       lc.gather(locals);
-                       q.for_each_chunk([&](std::span<Entity const>,
-                                            chunk<Field> f,
-                                            chunk<LeafId const> l,
-                                            chunk<Pos const> p) {
-                           auto const base = f.row_begin();
-                           auto fx         = f.column<0>();
-                           auto fy         = f.column<1>();
-                           auto fp         = f.column<2>();
-                           auto const lf   = l.column<0>();
-                           auto const x    = p.column<0>();
-                           auto const y    = p.column<1>();
-                           for (std::size_t i = 0; i < x.size(); ++i) {
-                               auto const leaf = t->leaves[lf[i]];
-                               auto const lv   = t->level[leaf];
-                               cplx const z {x[i], y[i]};
-                               double ax = 0, ay = 0, phi = 0;
-                               Lc loc {};
-                               loc.b = lc.level[lv][leaf - t->level_begin[lv]];
-                               l2p(loc, z - cplx {t->cx[leaf], t->cy[leaf]}, ax, ay, phi);
-                               std::size_t const self = base + i;
-                               for (std::uint32_t k = t->p2p_off[leaf];
-                                    k < t->p2p_off[leaf + 1];
-                                    ++k) {
-                                   auto const src = t->p2p_src[k];
-                                   for (std::uint32_t j = t->pbegin[src];
-                                        j < t->pend[src];
-                                        ++j) {
-                                       if (j == self)
-                                           continue;
-                                       cplx const dz  = z - cplx {pc.x[j], pc.y[j]};
-                                       double const q = pc.q[j];
-                                       cplx const w   = q / dz;
-                                       ax += w.real();
-                                       ay -= w.imag();
-                                       phi += q * std::log(std::abs(dz));
-                                   }
-                               }
-                               fx[i] = ax;
-                               fy[i] = ay;
-                               fp[i] = phi;
-                           }
-                       });
-                   });
+    s.add_parallel(
+        "evaluate",
+        [](Query<Field, LeafId const, Pos const> q,
+           ColumnView<Pos, Charge> parts,
+           ColumnView<Lc, NodeRef> locals,
+           Res<Tree> t) {
+            auto const pc = particle_cols(parts);
+            LevelSpans<Lc> lc;
+            lc.gather(locals);
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Field> f,
+                                 chunk<LeafId const> l,
+                                 chunk<Pos const> p) {
+                auto const base = f.row_begin();
+                auto fx         = f.column<0>();
+                auto fy         = f.column<1>();
+                auto fp         = f.column<2>();
+                auto const lf   = l.column<0>();
+                auto const x    = p.column<0>();
+                auto const y    = p.column<1>();
+                for (std::size_t i = 0; i < x.size(); ++i) {
+                    auto const leaf = t->leaves[lf[i]];
+                    auto const lv   = t->level[leaf];
+                    cplx const z {x[i], y[i]};
+                    double ax = 0, ay = 0, phi = 0;
+                    Lc loc {};
+                    loc.b = lc.level[lv][leaf - t->level_begin[lv]];
+                    l2p(loc, z - cplx {t->cx[leaf], t->cy[leaf]}, ax, ay, phi);
+                    std::size_t const self = base + i;
+                    for (std::uint32_t k = t->p2p_off[leaf]; k < t->p2p_off[leaf + 1];
+                         ++k) {
+                        auto const src = t->p2p_src[k];
+                        for (std::uint32_t j = t->pbegin[src]; j < t->pend[src]; ++j) {
+                            if (j == self)
+                                continue;
+                            cplx const dz  = z - cplx {pc.x[j], pc.y[j]};
+                            double const q = pc.q[j];
+                            cplx const w   = q / dz;
+                            ax += w.real();
+                            ay -= w.imag();
+                            phi += q * std::log(std::abs(dz));
+                        }
+                    }
+                    fx[i] = ax;
+                    fy[i] = ay;
+                    fp[i] = phi;
+                }
+            });
+        },
+        grain {kParticleGrain});
 }
 
 // --- main ------------------------------------------------------------------
