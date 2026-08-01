@@ -67,13 +67,21 @@ struct StrongId {
         return StrongId {std::numeric_limits<Rep>::max()};
     }
 
-    // Mint a fresh, process-unique id from a monotonic atomic counter (one
-    // static counter per StrongId type), starting at 0. Thread-safe with a
-    // relaxed fetch_add: id types are first touched on arbitrary threads (the
-    // magic-static init of component_id<T>, resource_id<T>, ... each guards only
-    // its OWN initialization), so two distinct types minted concurrently must
-    // never be handed the same value. Centralizes the counter boilerplate the
-    // per-type id minters otherwise repeat.
+    // Mint a fresh id from a monotonic atomic counter (one static counter per
+    // StrongId type), starting at 0. Thread-safe with a relaxed fetch_add: id
+    // types are first touched on arbitrary threads (the magic-static init of
+    // component_id<T>, resource_id<T>, ... each guards only its OWN
+    // initialization), so two distinct types minted concurrently must never be
+    // handed the same value. Centralizes the counter boilerplate the per-type
+    // id minters otherwise repeat.
+    //
+    // Unique per LINKAGE UNIT, not per process. The counter is a static local
+    // in an inline function: one copy after normal linking, but a second copy
+    // if the header is compiled into a dlopen'd plugin, or into a shared
+    // library built -fvisibility=hidden. Two counters hand out the same id for
+    // different component types, which aliases their columns silently. See
+    // "Known limitations" in DESIGN.md for the linkage rules that keep it to
+    // one copy.
     [[nodiscard]]
     static StrongId next() noexcept {
         static std::atomic<Rep> counter {0};

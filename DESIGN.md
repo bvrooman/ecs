@@ -632,4 +632,27 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
 * `SnapshotChannel` allocates a buffer per publish; a buffer pool that recycles
   snapshots whose last reader has dropped them would remove the steady-state
   allocations.
+* **Component and resource ids are unique per linkage unit, not per process.**
+  `component_id<T>` is an inline variable template whose initializer draws from
+  a `static` counter inside `StrongId::next()`. Normal linking merges every
+  copy, which is what makes an id usable as a column index. Two situations
+  split it, and both are ordinary practice:
+
+  | | |
+  | --- | --- |
+  | `dlopen`ed plugin | splits unless the **host** is linked `-rdynamic` (`RTLD_GLOBAL` alone is not enough) |
+  | directly-linked shared library | splits if that library is built `-fvisibility=hidden` |
+
+  Two counters hand out id 0 to a host component and to a plugin component, so
+  the two alias each other's columns -- wrong-column reads, with no diagnostic
+  anywhere. Measured, not theorised. So: keep everything sharing a `World` in
+  one linkage unit, or link the host `-rdynamic` and leave ecs's symbols at
+  default visibility.
+
+  The fix that removes the constraint is to move these counters into a single
+  non-inline TU **and ship it as a shared library** — a static library linked
+  into both host and plugin still gives each its own copy, so the compiled-TU
+  cost buys nothing on its own (measured). That costs header-only status. It is
+  also a prerequisite for any C++20 modules migration, for the same underlying
+  reason (see [docs/MODULES.md](docs/MODULES.md)).
 ```

@@ -201,21 +201,38 @@ that introduced this document; the rest are recorded as a roadmap.
 
 ## 5. C++ modules & packaging (roadmap)
 
-Ship a thin module interface unit wrapping the headers (the fmt pattern):
-`src/ecs.cppm` with the std includes in the global module fragment, then
-`export module ecs;` + `#define ECS_EXPORT export` + `#include "ecs/ecs.hpp"`.
+**Spiked and measured — see [MODULES.md](MODULES.md) for the findings.**
+Verdict: viable on Clang, blocked on GCC, which cannot carry global-module-
+fragment declarations into cross-TU template instantiation. Since P2996
+reflection currently requires GCC 16 or the Bloomberg clang fork, the compiler
+the reflection backend needs is the one whose modules cannot carry the library.
+Parked until GCC's module support and CMake's `import std` mature.
+
+The prediction below ("expect Clang-first") held; the rest of this section is
+superseded by MODULES.md, except the ODR hazard, which remains the item most
+worth acting on and is still unaddressed.
+
+Original sketch — ship a thin module interface unit wrapping the headers (the
+fmt pattern): `src/ecs.cppm` with the std includes in the global module
+fragment, then `export module ecs;` + `#define ECS_EXPORT export` +
+`#include "ecs/ecs.hpp"`. (The spike found a better shape: separate top-level
+modules under one CMake target, which preserves subset imports.)
 
 Blockers to clear first:
 - Presets pin `Unix Makefiles` (modules need Ninja); `cmake_minimum_required`
   3.24 → 3.28 for `FILE_SET CXX_MODULES`.
 - Config macros (`ECS_USE_P2996`, `ECS_REFLECT_NAMES`) need an always-textual
   `config.hpp` + `ecs::config` constants for `if constexpr` in importers.
-- **Hazard**: inline-function singletons (`next_component_id`,
-  `dynamic::registry()`, `detail::serial_pool()`, name maps) mean mixing
-  `#include` and `import` TUs yields two id counters → colliding component
-  ids. Move them into a small non-inline TU in the module target.
+- **Hazard, now confirmed**: inline-function singletons (`StrongId::next()`'s
+  id counter, `dynamic::registry()`, `detail::serial_pool()`, the
+  flush-attribution counter) mean mixing `#include` and `import` TUs yields two
+  id counters → colliding component ids, silently. Measured on gcc-14 and
+  clang-18 (clang-20 does not exhibit it, which makes it worse — it is
+  version-dependent). Move them into a small non-inline TU in the module
+  target. See MODULES.md for the root cause (module attachment) and the
+  measurements.
 - Expect Clang-first (GCC modules are shakiest with heavy templates, which
-  cuts across the GCC-16 P2996 preset); keep wasm on headers.
+  cuts across the GCC-16 P2996 preset); keep wasm on headers. **Confirmed.**
 
 Packaging (prerequisite, currently absent): `install(TARGETS ... FILE_SET
 HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
