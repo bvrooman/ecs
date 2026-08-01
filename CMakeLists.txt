@@ -2,13 +2,38 @@ cmake_minimum_required(VERSION 3.24)
 project(ecs VERSION 0.1.0 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
+# Toolchain requirements
+# ---------------------------------------------------------------------------
+# The library uses C++23 deducing this (P0847) throughout -- soa.hpp,
+# archetype.hpp, schedule.hpp -- so an older compiler configures cleanly and
+# only then dies inside a template instantiation whose diagnostics name neither
+# the feature nor the fix (Ubuntu 24.04's default g++ 13 is the common way to
+# land here). Fail up front with the requirement instead. Only the two
+# compilers CI covers are checked; anything else is left alone rather than
+# guessed at.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
+    message(FATAL_ERROR
+            "ecs requires GCC >= 14 (found ${CMAKE_CXX_COMPILER_VERSION}): the "
+            "library uses C++23 deducing this (P0847), which GCC gained in 14. "
+            "Build with g++-14 or newer, or with Clang >= 18.")
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
+    message(FATAL_ERROR
+            "ecs requires Clang >= 18 (found ${CMAKE_CXX_COMPILER_VERSION}): the "
+            "library uses C++23 deducing this (P0847), which Clang gained in 18. "
+            "Build with clang++-18 or newer, or with GCC >= 14.")
+endif ()
+
+# ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
 # ECS_USE_P2996: build the reflection facade against C++26 static reflection
 # (P2996 std::meta). Requires a toolchain with P2996 support such as GCC 16
-# (g++-16, which ships libstdc++). When OFF the portable structured-bindings
-# backend is used so the project builds on stock Clang/GCC.
-option(ECS_USE_P2996 "Use C++26 P2996 static reflection" ON)
+# (g++-16, which ships libstdc++). OFF by default: the portable
+# structured-bindings backend builds on stock Clang/GCC, which is what the
+# README quickstart, every CI leg, and the sanitizer/wasm presets use. Turn it
+# ON explicitly -- or via the dev-config/release-config presets, which pin
+# g++-16 -- to get real member names out of std::meta.
+option(ECS_USE_P2996 "Use C++26 P2996 static reflection" OFF)
 option(ECS_BUILD_TESTS "Build the test suite" ON)
 option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
@@ -33,6 +58,40 @@ endif ()
 if (EMSCRIPTEN AND ECS_USE_P2996)
     message(STATUS "ecs: Emscripten toolchain -- forcing ECS_USE_P2996=OFF (portable reflection)")
     set(ECS_USE_P2996 OFF CACHE BOOL "Use C++26 P2996 static reflection" FORCE)
+endif ()
+
+# ECS_USE_P2996=ON is only meaningful if the toolchain can actually compile the
+# backend. Check it HERE, while CMAKE_CXX_STANDARD is still unset -- otherwise
+# the first find_package() that runs a compile check (Threads, below) fails
+# with "the current compiler does not support CXX26", which names neither this
+# option nor the flag that would fix it. The probe mirrors what
+# reflection/reflect_p2996.hpp actually uses, so a toolchain carrying an older
+# or partial reflection implementation is rejected too -- not just one with no
+# <meta> at all.
+if (ECS_USE_P2996)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-std=c++26 -freflection")
+    check_cxx_source_compiles("
+        #include <cstddef>
+        #include <meta>
+        struct Probe { int a; };
+        consteval std::size_t fields() {
+            return std::meta::nonstatic_data_members_of(
+                       ^^Probe, std::meta::access_context::current()).size();
+        }
+        static_assert(fields() == 1);
+        int main() { return 0; }
+    " ECS_HAVE_P2996)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if (NOT ECS_HAVE_P2996)
+        message(FATAL_ERROR
+                "ECS_USE_P2996=ON, but ${CMAKE_CXX_COMPILER_ID} "
+                "${CMAKE_CXX_COMPILER_VERSION} cannot compile the P2996 "
+                "reflection backend (-std=c++26 -freflection with <meta>). "
+                "Build with a toolchain that supports it (e.g. GCC 16 / "
+                "g++-16), or configure with -DECS_USE_P2996=OFF to use the "
+                "portable reflection backend.")
+    endif ()
 endif ()
 
 if (ECS_USE_P2996)

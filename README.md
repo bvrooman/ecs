@@ -64,8 +64,12 @@ int main() {
 
 ## Build
 
-Requires CMake ≥ 3.24 and a C++23 compiler with libstdc++ (the library uses
-`std::move_only_function`). No external dependencies — header-only, linking only
+Requires CMake ≥ 3.24 and a C++23 compiler with libstdc++ — **GCC ≥ 14 or
+Clang ≥ 18**, the versions CI builds and the minimum for C++23 deducing `this`
+(P0847), which the library uses throughout. (It also uses
+`std::move_only_function`, with a polyfill where the standard library lacks
+it.) Configure fails with the requirement rather than letting an older compiler
+fail deep in a template. No external dependencies — header-only, linking only
 the system threads library.
 
 ```sh

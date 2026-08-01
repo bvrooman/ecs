@@ -25,6 +25,12 @@ jobs:
   # Portable-reflection builds on stock compilers, Debug (assert paths) and
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.
+  #
+  # One leg configures with NO reflection flag at all, so the option's DEFAULT
+  # is on a tested path. Without it every leg (and every preset) pins the flag
+  # explicitly, and a default that no stock toolchain can configure -- which is
+  # what ECS_USE_P2996=ON was -- stays green in CI while breaking anyone who
+  # follows the README quickstart.
   native:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
@@ -36,18 +42,22 @@ jobs:
             cxx: clang++-18
             build_type: Debug
             packages: clang-18
-          - name: clang-18 Release
+            reflection: -DECS_USE_P2996=OFF
+          - name: clang-18 Release (default config)
             cxx: clang++-18
             build_type: Release
             packages: clang-18
+            reflection: ""
           - name: gcc-14 Debug
             cxx: g++-14
             build_type: Debug
             packages: g++-14
+            reflection: -DECS_USE_P2996=OFF
           - name: gcc-14 Release
             cxx: g++-14
             build_type: Release
             packages: g++-14
+            reflection: -DECS_USE_P2996=OFF
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -59,7 +69,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          -DECS_USE_P2996=OFF
+          ${{ matrix.reflection }}
       - name: Build
         run: cmake --build build
       - name: Test
