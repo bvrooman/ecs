@@ -74,7 +74,66 @@ struct grain {
     std::size_t n = 0;
 };
 
+// Partition a PARALLEL system's rows by the value of key component K: one work
+// item per distinct key, holding EVERY row carrying that key -- so a group is
+// never split across lanes, and the body sees the whole group at once.
+//
+//   sched.add_parallel("m2l", fn, partition_by<Subtree> {});
+//
+// grain{n} says how big an item may be; partition_by<K> says what an item MEANS.
+// The default slicing is free to cut anywhere, which is exactly right when rows
+// are independent and exactly wrong when they are not: a tree traversal, a
+// per-cell solve, a per-island constraint batch all have a unit of work that is
+// a GROUP of rows, and a group half-processed on one lane while its other half
+// runs on another is not a smaller version of the same job -- it is a race, or a
+// wrong answer. The usual workaround is to lift the group loop into a serial
+// system and fan out by hand from inside it; declaring the partition instead
+// keeps the work in the executor's one flat item list, where it is leveled,
+// load-balanced against every other system in the wave, and ordered canonically.
+//
+// What the executor does with it: it scans K down each matched archetype for
+// runs of equal key, gathers the runs of one key (they may span archetypes) into
+// one item, and emits items in ascending key order -- so the ordinals every
+// barrier fold replays in stay canonical. Grouping is by VALUE, not by locality,
+// so unsorted rows still yield exactly one item per key; they just make that
+// item hold many small runs instead of one, which costs a longer scan at build
+// and a scattered walk at run. Sorting the rows by K (World::sort_rows /
+// Commands::sort) collapses each group back to a single contiguous range.
+//
+// K must be a component with exactly one integral field. The system reads it
+// implicitly (declared for conflict analysis) and matches only archetypes that
+// have it -- a row with no K has no group. Mutually exclusive with grain{n}: a
+// partition item is atomic by construction. Ignored by add_serial, which is one
+// item already -- so passing it there is a compile error rather than a silent
+// no-op.
+template <class K>
+struct partition_by {};
+
 namespace detail {
+
+    template <class T>
+    inline constexpr bool is_partition_by_v = false;
+    template <class K>
+    inline constexpr bool is_partition_by_v<ecs::partition_by<K>> = true;
+
+    // The key type of the pack's partition_by<K>, or void when it has none.
+    // Carried as a TYPE all the way to build_system rather than stored in
+    // AddOptions: a key type is not a value, and threading it through the option
+    // struct would make access.hpp (deliberately execution-free) depend on
+    // Archetype to do anything with it.
+    template <class... Opts>
+    struct partition_key {
+        using type = void;
+    };
+    template <class K, class... Rest>
+    struct partition_key<ecs::partition_by<K>, Rest...> {
+        using type = K;
+    };
+    template <class First, class... Rest>
+    struct partition_key<First, Rest...> : partition_key<Rest...> {};
+
+    template <class... Opts>
+    using partition_key_t = typename partition_key<Opts...>::type;
 
     // The resolved option set an add_* hands to its emplace.
     struct AddOptions {
@@ -85,12 +144,23 @@ namespace detail {
     };
 
     template <class T>
-    concept AddOption = std::same_as<T, phase> || std::same_as<T, every> ||
-                        std::same_as<T, times> || std::same_as<T, grain>;
+    concept AddOption =
+        std::same_as<T, phase> || std::same_as<T, every> || std::same_as<T, times> ||
+        std::same_as<T, grain> || is_partition_by_v<T>;
 
     template <class Want, class... Opts>
     consteval bool at_most_one() {
         return (std::size_t(std::same_as<Opts, Want>) + ... + 0) <= 1;
+    }
+
+    template <class... Opts>
+    consteval bool at_most_one_partition() {
+        return (std::size_t(is_partition_by_v<Opts>) + ... + 0) <= 1;
+    }
+
+    template <class... Opts>
+    consteval bool has_partition() {
+        return (is_partition_by_v<Opts> || ... || false);
     }
 
     // Store one option into the resolved set. A function template rather than a
@@ -107,8 +177,10 @@ namespace detail {
             out.times = opt.n;
         else if constexpr (std::same_as<Opt, ecs::grain>)
             out.grain = opt.n;
-        // anything else already failed resolve_options' static_assert; do nothing
-        // here so that assert is the only diagnostic the caller sees.
+        // partition_by<K> carries no value -- it is read off the pack as a type
+        // (partition_key_t), so there is nothing to store. Anything else already
+        // failed resolve_options' static_assert; do nothing here so that assert
+        // is the only diagnostic the caller sees.
     }
 
     // Fold a registration option pack into AddOptions. Unknown or repeated options
@@ -119,10 +191,18 @@ namespace detail {
         static_assert(
             (AddOption<Opts> && ...),
             "unsupported registration option -- a system may be registered with "
-            "phase{n}, every{n}, times{n} and grain{n}");
+            "phase{n}, every{n}, times{n}, grain{n} and partition_by<K>{}");
         static_assert(at_most_one<phase, Opts...>() && at_most_one<every, Opts...>() &&
-                          at_most_one<times, Opts...>() && at_most_one<grain, Opts...>(),
+                          at_most_one<times, Opts...>() &&
+                          at_most_one<grain, Opts...>() &&
+                          at_most_one_partition<Opts...>(),
                       "each registration option may be given at most once");
+        static_assert(!(has_partition<Opts...>() &&
+                        (std::same_as<Opts, ecs::grain> || ... || false)),
+                      "partition_by<K> and grain{n} are mutually exclusive -- grain "
+                      "sizes an item, partition_by defines what one IS, and a "
+                      "partition item is atomic (a group split across lanes is the "
+                      "thing partition_by exists to prevent)");
         AddOptions out;
         (pick(out, opts), ...);
         // tick % every: a cadence of 0 would divide by zero in WavePlan::prepare.

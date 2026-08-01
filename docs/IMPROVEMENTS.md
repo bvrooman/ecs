@@ -233,6 +233,25 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
 
 ## 6. ECS feature gaps vs bevy_ecs / flecs / EnTT (roadmap)
 
+0a. **[done]** A work item that is a GROUP of rows — `partition_by<K>{}`
+   (`schedule/access.hpp`, executed by `WavePlan::build_partitioned`). The
+   executor's default sizing may cut a parallel system's rows anywhere, which is
+   right when rows are independent and wrong when the unit of work is a *set* of
+   them: one subtree of a tree, one cell of a grid, one island of a constraint
+   solver. `partition_by<K>{}` declares the equivalence classes — rows sharing a
+   value of key component `K` become one work item, gathered across archetypes
+   and emitted in ascending key order, so the group runs whole on one lane while
+   still being leveled, load-balanced and canonically ordered like every other
+   item. The row count of a group is also a far better cost estimate than
+   uniform slicing gives, so LPT can actually order the wave. Cost is a linear
+   boundary scan of one contiguous field buffer per archetype at wave build.
+   Measured on the FMM dual-tree traversal, which it lets be an ordinary
+   `add_parallel` system instead of a hand-fanned exclusive one: 9% faster on
+   the build path at leaf_cap=32 and 17% at leaf_cap=4 (4 lanes, 100k
+   particles), with bit-identical interaction lists — the win being that the
+   serial CSR flatten disappears (the lists become node data, written by the
+   item that owns the rows) and the traversal now overlaps with the rest of its
+   wave. See `docs/FMM_FEASIBILITY.md` §3.6.
 0. **[done]** Fan-out without rows — `Exec` (`schedule/params/exec.hpp`). Every
    other route to the pool is row-shaped: a parallel system is sliced by the
    rows its Query matches, so an irregular stage with parallelism but no rows

@@ -7,6 +7,7 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <mutex>
 #include <set>
@@ -281,10 +282,23 @@ void exec_fans_work_onto_the_pool() {
 
     Schedule sched;
     sched.add_serial("fanout", [&](Exec exec) {
+        // The claiming lane can drain 256 trivial indices before the others even
+        // wake, so "more than one lane ran" is a race unless the body gives them
+        // a chance. Hold each index until a second thread shows up -- against ONE
+        // shared deadline, so a genuinely single-lane run costs that wait once
+        // rather than 256 times, and fails the check below instead of hanging.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         exec.for_each_index(256, [&](std::size_t) {
             ++visited;
-            auto lk = std::lock_guard(m);
-            threads.insert(std::this_thread::get_id());
+            {
+                auto lk = std::lock_guard(m);
+                threads.insert(std::this_thread::get_id());
+            }
+            while (std::chrono::steady_clock::now() < deadline) {
+                auto lk = std::lock_guard(m);
+                if (threads.size() > 1)
+                    break;
+            }
         });
     });
     WorkerPool pool {4};

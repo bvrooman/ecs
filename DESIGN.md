@@ -288,11 +288,15 @@ The system parameters are:
 | `Exec` | *exclusive* — runs alone in its wave | fan an arbitrary index space onto the schedule's lanes |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
-Trailing `phase{n}`/`every{n}`/`times{n}`/`grain{n}` options are the only
-non-parameter arguments (`grain{n}` sets a parallel system's rows per work
-item outright, for a heavy kernel that the default sizing would leave on one
-lane -- or, above the item target, would leave with a straggler item every lane
-waits on). A raw
+Trailing `phase{n}`/`every{n}`/`times{n}`/`grain{n}`/`partition_by<K>{}` options
+are the only non-parameter arguments. `grain{n}` sets a parallel system's rows
+per work item outright, for a heavy kernel that the default sizing would leave
+on one lane -- or, above the item target, would leave with a straggler item
+every lane waits on. `partition_by<K>{}` goes further and replaces the sizing:
+rows sharing a value of key component `K` become ONE work item, gathered across
+archetypes and emitted in ascending key order, so a unit of work that is a
+*group* of rows (a subtree, a cell, a constraint island) is never split across
+lanes. The two are mutually exclusive -- a partition item is atomic. A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through
@@ -346,13 +350,19 @@ system's own items run concurrently, so writes through `ResMut` would race
 between them); a system that writes a resource is a *reduction* — spelled
 `Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a parallel system, with
 the shared-target writes confined to the single-threaded barrier hooks.
-Genuinely ordered iteration still belongs in `add()` systems. Work that has
-parallelism but no ROWS -- building a tree, walking one, partitioning a broad
-phase -- takes `Exec` in an `add_serial` system instead: it fans an arbitrary
-index space onto the same lanes. That is safe because `Exec` declares its
-system exclusive, so the system is alone in its wave, its wave holds one item,
-and a one-item wave runs inline on the caller with the pool idle -- the body's
-dispatch is a fresh one, not a nested one. The cost is the exclusivity. An
+Genuinely ordered iteration still belongs in `add()` systems. Work whose unit is
+a GROUP of rows rather than a row -- one subtree of a tree, one cell of a grid,
+one island of a constraint solver -- is `partition_by<K>{}` on an ordinary
+`add_parallel` system: rows sharing a key value become one item, so the group
+runs whole on one lane while still being leveled, load-balanced and ordered like
+every other item in the wave. Work that has parallelism but no ROWS AT ALL --
+building a tree, filling a CSR, partitioning a broad phase -- takes `Exec` in an
+`add_serial` system instead: it fans an arbitrary index space onto the same
+lanes. That is safe because `Exec` declares its system exclusive, so the system
+is alone in its wave, its wave holds one item, and a one-item wave runs inline on
+the caller with the pool idle -- the body's dispatch is a fresh one, not a nested
+one. The cost is that exclusivity, which is why `partition_by` is the better
+answer whenever the work CAN be phrased as groups of rows. An
 **serial system** (`add_serial`/`add_dynamic_serial` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
 persisting across ticks, do reductions or ordered work)
