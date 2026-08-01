@@ -75,6 +75,10 @@ public:
     template <class Fn, class... Opts>
     SystemId add_serial(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
+        static_assert(!detail::has_partition<Opts...>(),
+                      "add_serial: partition_by<K> has no meaning on a serial system "
+                      "-- it is ONE opaque work item by construction, so there is "
+                      "nothing for a partition to split it into. Use add_parallel");
         return emplace(std::move(name),
                        std::forward<Fn>(fn),
                        o.times,
@@ -122,12 +126,13 @@ public:
     template <class Fn, class... Opts>
     SystemId add_parallel(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
-        return emplace_parallel(std::move(name),
-                                std::forward<Fn>(fn),
-                                o.phase,
-                                o.every,
-                                o.times,
-                                o.grain);
+        // partition_by<K> travels as a type, not a value -- see access.hpp.
+        return emplace_parallel<detail::partition_key_t<Opts...>>(std::move(name),
+                                                                  std::forward<Fn>(fn),
+                                                                  o.phase,
+                                                                  o.every,
+                                                                  o.times,
+                                                                  o.grain);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -373,7 +378,7 @@ private:
     // function boundary only as a template argument. Only ever called from a
     // validated `if constexpr` branch, so it never instantiates on a rejected
     // parameter list (keeping each static_assert the lone diagnostic; see above).
-    template <template <class> class Param, class Fn>
+    template <template <class> class Param, class PKey = void, class Fn>
     SystemId build_system(std::string name,
                           Fn&& fn,
                           std::uint64_t const times,
@@ -397,6 +402,15 @@ private:
             constexpr auto QI = detail::query_info<Args>::index;
             using Q           = std::tuple_element_t<QI, Args>;
             sys.query_sig     = detail::system_param<Q>::signature();
+        }
+        if constexpr (!std::is_void_v<PKey>) {
+            sys.partition = detail::make_partition<PKey>();
+            // The key is read (conflict analysis must see it: a system that
+            // WRITES the key must not run alongside one partitioned by it), and
+            // it narrows the match -- a row with no K has no group, so an
+            // archetype without K is not this system's business.
+            sys.access.reads.push_back(component_id<PKey>);
+            sys.query_sig = sys.query_sig.with(component_id<PKey>);
         }
 
         auto states = std::make_shared<typename Info::states>();
@@ -458,7 +472,8 @@ private:
         return SystemId::none(); // reached only when a static_assert above fired
     }
 
-    template <class Fn>
+    // PKey is the partition_by<K> key type, or void when the system has none.
+    template <class PKey, class Fn>
     SystemId emplace_parallel(std::string name,
                               Fn&& fn,
                               int const phase,
@@ -505,13 +520,13 @@ private:
         if constexpr (detail::IntrospectableSystem<Fn> &&
                       detail::at_most_one_query<Fn>() && detail::has_query<Fn>() &&
                       !detail::has_res_mut<Fn>() && detail::params_allowed<ParamP, Fn>())
-            return build_system<ParamP>(std::move(name),
-                                        std::forward<Fn>(fn),
-                                        times,
-                                        phase,
-                                        every,
-                                        grain,
-                                        /*is_parallel=*/true);
+            return build_system<ParamP, PKey>(std::move(name),
+                                              std::forward<Fn>(fn),
+                                              times,
+                                              phase,
+                                              every,
+                                              grain,
+                                              /*is_parallel=*/true);
         return SystemId::none(); // reached only when a static_assert above fired
     }
 

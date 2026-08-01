@@ -26,8 +26,17 @@
 //                                  (ColumnView<Mp, NodeRef, Lvl<L+1>>) it names
 //                                  the level below, so the rows read are
 //                                  provably disjoint from the rows written.
-//   the tree itself is a resource  variable-length CSR interaction lists have
-//                                  no component shape; read via Res<Tree>.
+//   the tree itself is a resource  geometry and topology are flat arrays with
+//                                  no component shape; read via Res<Tree>. The
+//                                  interaction LISTS are not -- they are one
+//                                  per box, so they are box components
+//                                  (M2LList/P2PList).
+//   the traversal is PARTITIONED   a dual-tree descent's unit of work is a
+//                                  subtree, not a row, so the traversal is an
+//                                  add_parallel system with
+//                                  partition_by<Subtree>: rows sharing a
+//                                  subtree become ONE work item, which is
+//                                  exactly the set of boxes that item writes.
 //   ordering is DERIVED            only the pipeline head carries phases
 //                                  (morton -> sort -> build, ordered by a
 //                                  structural effect). The upward and downward
@@ -36,8 +45,9 @@
 //                                  order fixes the direction.
 //
 // See docs/FMM_FEASIBILITY.md for the write-up, including what this cost the
-// library (ColumnView, grain{n}, chunk::row_begin(), and a memoized ad-hoc read
-// path) and what is still unsupported (the serial tree build).
+// library (ColumnView, grain{n}, chunk::row_begin(), partition_by<K>, and a
+// memoized ad-hoc read path) and what is still unsupported (the serial BFS
+// subdivision).
 //
 // Run:  fmm2d [n] [leaf_cap] [ticks] [max_lanes]
 // Verifies against a direct O(N^2) sum on a random sample and reports the
@@ -48,6 +58,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -131,8 +142,27 @@ struct NodeRef {
 template <int L>
 struct Lvl {};
 
+// A node's interaction lists: the source boxes the dual-tree traversal decided
+// this box takes as a multipole translation (M2L) or as a direct sum (P2P).
+// Node DATA, not a side table in the Tree resource -- which is what lets the
+// traversal be an ordinary parallel system: it writes its own rows.
+struct M2LList {
+    std::vector<std::uint32_t> src;
+};
+struct P2PList {
+    std::vector<std::uint32_t> src;
+};
+
+// The traversal's partition key: which cut-level box's subtree this node lies
+// in. 0 means "above the cut" -- the shallow part the serial head already
+// decided, plus the unused tail of each level pool. See partition_by<Subtree>
+// on the `traverse` system.
+struct Subtree {
+    std::uint32_t root;
+};
+
 // --- resources -------------------------------------------------------------
-// The tree: topology, geometry and the CSR interaction lists. Nodes are
+// The tree: topology and geometry, plus the traversal's serial head. Nodes are
 // numbered level-major (BFS order), so level L owns ids
 // [level_begin[L], level_begin[L+1]) and a level pool's slot i is node
 // level_begin[L] + i -- which is how a node pass finds its node without ever
@@ -142,30 +172,46 @@ struct Tree {
     std::vector<std::uint8_t> level, is_leaf;
     std::vector<std::int32_t> child0; // first child id; children are contiguous
     std::vector<std::uint8_t> nchild;
-    std::vector<std::int32_t> parent;            // -1 for the root; L2L pulls through it
-    std::vector<std::uint32_t> pbegin, pend;     // particle row range (sorted order)
-    std::vector<std::uint32_t> key_lo;           // Morton key range of the box
-    std::vector<std::uint32_t> leaves;           // leaf node ids
-    std::vector<std::uint32_t> leaf_key_lo;      // parallel to leaves, for lookup
-    std::vector<std::uint32_t> level_begin;      // level -> first node id
-    std::vector<std::uint32_t> m2l_off, m2l_src; // CSR, per node
-    std::vector<std::uint32_t> p2p_off, p2p_src; // CSR, per node (leaf targets)
+    std::vector<std::int32_t> parent;        // -1 for the root; L2L pulls through it
+    std::vector<std::uint32_t> pbegin, pend; // particle row range (sorted order)
+    std::vector<std::uint32_t> key_lo;       // Morton key range of the box
+    std::vector<std::uint32_t> leaves;       // leaf node ids
+    std::vector<std::uint32_t> leaf_key_lo;  // parallel to leaves, for lookup
+    std::vector<std::uint32_t> level_begin;  // level -> first node id
     std::uint32_t node_count = 0;
     int depth                = 0;
 
-    // Scratch reused across ticks so a steady-state build does not allocate.
-    std::vector<std::vector<std::uint32_t>> m2l_tmp, p2p_tmp;
-    // The parallel traversal's hand-off: seeds[A] holds the source boxes the
-    // serial phase stopped at when the target reached the cut level, so each
-    // cut node's subtree can be finished independently.
+    // --- the traversal's serial head, all reused across ticks ---------------
+    // The descent stops when a target reaches the cut level: seeds[A] holds the
+    // source boxes it stopped at, so each cut box's subtree can be finished
+    // independently. head_m2l/head_p2p hold the pairs decided ABOVE the cut,
+    // which no subtree owns -- the `traverse` system copies them onto the rows
+    // they belong to.
     std::vector<std::vector<std::uint32_t>> seeds;
+    std::vector<std::vector<std::uint32_t>> head_m2l, head_p2p;
+    // node -> the cut-level ancestor whose subtree it lies in (0 above the cut).
+    // Copied onto the node rows as Subtree, which is what the executor
+    // partitions the traversal by.
+    std::vector<std::uint32_t> subtree_of;
     int cut_level = -1;
 };
 
 // Per-tick counters the build fills for the report.
 struct BuildStats {
-    std::uint32_t nodes = 0, leaves = 0, m2l_pairs = 0, p2p_pairs = 0;
+    std::uint32_t nodes = 0, leaves = 0;
     int depth = 0;
+};
+
+// Interaction-pair totals, folded out of the traversal's items at the barrier
+// (the lists live on the nodes now, so nothing else counts them).
+struct PairCounts {
+    std::uint64_t m2l = 0, p2p = 0;
+};
+struct AddPairs {
+    void operator()(PairCounts& into, PairCounts& part) const {
+        into.m2l += part.m2l;
+        into.p2p += part.p2p;
+    }
 };
 
 // --- Morton key ------------------------------------------------------------
@@ -390,71 +436,84 @@ static void build_tree(Tree& t,
 // Dual-tree traversal: the adaptive interaction lists. Source and target may
 // sit at different levels; every particle pair is covered exactly once, either
 // by an M2L or by a direct P2P.
-// cut < 0 traverses everything (the serial algorithm). Otherwise the recursion
-// stops as soon as the TARGET reaches the cut level and records the pair as a
-// seed: everything below belongs to that target's subtree, and subtrees of
-// distinct cut nodes write disjoint node lists, so they can run concurrently.
-static void traverse(Tree& t, std::uint32_t A, std::uint32_t B, int const cut) {
+// One walk, two sinks. `cut < 0` runs the whole traversal and hands every
+// decided pair to `sink`; `cut >= 0` stops as soon as the TARGET reaches the cut
+// level and hands the pair over as a seed instead. Templating the sink is what
+// lets the serial head and the parallel tail share the MAC and the descent rule
+// exactly -- the lists a split run produces are bit-identical to a serial one's.
+template <class Sink>
+static void walk(
+    Tree const& t, std::uint32_t A, std::uint32_t B, int const cut, Sink& sink) {
     if (cut >= 0 && int(t.level[A]) >= cut) {
-        t.seeds[A].push_back(B);
+        sink.seed(A, B);
         return;
     }
     double const dx = std::abs(t.cx[B] - t.cx[A]), dy = std::abs(t.cy[B] - t.cy[A]);
     double const sep = kBuffer * (t.half[A] + t.half[B]);
     if (std::max(dx, dy) >= sep * (1.0 - 1e-9)) {
-        t.m2l_tmp[A].push_back(B);
+        sink.m2l(A, B);
         return;
     }
     bool const al = t.is_leaf[A], bl = t.is_leaf[B];
     if (al && bl) {
-        t.p2p_tmp[A].push_back(B);
+        sink.p2p(A, B);
         return;
     }
     if (bl || (!al && t.half[A] >= t.half[B])) {
         for (std::uint32_t c = 0; c < t.nchild[A]; ++c)
-            traverse(t, static_cast<std::uint32_t>(t.child0[A]) + c, B, cut);
+            walk(t, static_cast<std::uint32_t>(t.child0[A]) + c, B, cut, sink);
     } else {
         for (std::uint32_t c = 0; c < t.nchild[B]; ++c)
-            traverse(t, A, static_cast<std::uint32_t>(t.child0[B]) + c, cut);
+            walk(t, A, static_cast<std::uint32_t>(t.child0[B]) + c, cut, sink);
     }
 }
 
-// The serial half: descend until every target has reached the cut level.
+// The serial head: descend until every target has reached the cut level,
+// stashing what it decides on the way down. Also marks each node with the cut
+// box it descends from -- one sweep in id order, because a node's parent always
+// has the smaller id in this level-major numbering.
 static void seed_lists(Tree& t, int const cut) {
-    t.m2l_tmp.resize(t.node_count);
-    t.p2p_tmp.resize(t.node_count);
+    t.head_m2l.resize(t.node_count);
+    t.head_p2p.resize(t.node_count);
     t.seeds.resize(t.node_count);
     for (std::uint32_t i = 0; i < t.node_count; ++i) {
-        t.m2l_tmp[i].clear();
-        t.p2p_tmp[i].clear();
+        t.head_m2l[i].clear();
+        t.head_p2p[i].clear();
         t.seeds[i].clear();
     }
     t.cut_level = cut;
-    traverse(t, 0, 0, cut);
+
+    struct HeadSink {
+        Tree& t;
+        void seed(std::uint32_t A, std::uint32_t B) { t.seeds[A].push_back(B); }
+        void m2l(std::uint32_t A, std::uint32_t B) { t.head_m2l[A].push_back(B); }
+        void p2p(std::uint32_t A, std::uint32_t B) { t.head_p2p[A].push_back(B); }
+    } sink {t};
+    walk(t, 0, 0, cut, sink);
+
+    t.subtree_of.assign(t.node_count, 0);
+    if (cut < 0)
+        return; // one group, and the head sink already filled it
+    for (std::uint32_t i = 0; i < t.node_count; ++i) {
+        if (int(t.level[i]) == cut)
+            t.subtree_of[i] = i; // a cut box roots its own group
+        else if (int(t.level[i]) > cut)
+            t.subtree_of[i] = t.subtree_of[static_cast<std::uint32_t>(t.parent[i])];
+    }
 }
 
-static void flatten_lists(Tree& t) {
-    auto flatten = [](auto const& tmp, auto& off, auto& src, std::uint32_t n) {
-        off.assign(n + 1, 0);
-        for (std::uint32_t i = 0; i < n; ++i)
-            off[i + 1] = off[i] + static_cast<std::uint32_t>(tmp[i].size());
-        src.resize(off[n]);
-        for (std::uint32_t i = 0; i < n; ++i)
-            std::copy(tmp[i].begin(), tmp[i].end(), src.begin() + off[i]);
-    };
-    flatten(t.m2l_tmp, t.m2l_off, t.m2l_src, t.node_count);
-    flatten(t.p2p_tmp, t.p2p_off, t.p2p_src, t.node_count);
-}
+// Where to cut: the shallowest level with enough boxes to give the executor a
+// few items per lane at any lane count. Note what this does NOT ask for -- the
+// lane count. A partition declares the groups; the executor is what matches
+// them to hardware, so the cut is a property of the tree alone.
+constexpr std::uint32_t kTargetGroups = 64;
 
-// Where to cut: the shallowest level with enough nodes to keep the lanes fed.
-// Above it the traversal stays serial (a few hundred pairs); below it every
-// subtree is independent.
-static int choose_cut(Tree const& t, unsigned const lanes) {
-    if (t.node_count < 512 || lanes <= 1)
-        return -1; // not worth splitting: traverse it serially
+static int choose_cut(Tree const& t) {
+    if (t.node_count < 512)
+        return -1; // not worth splitting: one group, walked serially
     for (int L = 1; L <= t.depth; ++L)
         if (t.level_begin[std::size_t(L) + 1] - t.level_begin[std::size_t(L)] >=
-            4 * lanes)
+            kTargetGroups)
             return L;
     return -1;
 }
@@ -486,9 +545,9 @@ constexpr std::size_t kParticleGrain = 256;
 // FMM gather is "read node n's expansion", and node ids are level-major, so one
 // pass over the view's chunks (one per level archetype) turns a node id into a
 // span index: node n at level l is slot n - level_begin[l] of levels[l].
-template <class Coeff>
+template <class Coeff, class Elem = std::array<cplx, kP + 1>>
 struct LevelSpans {
-    std::array<std::span<std::array<cplx, kP + 1> const>, kMaxLevel + 2> level {};
+    std::array<std::span<Elem const>, kMaxLevel + 2> level {};
 
     template <class View>
     void gather(View const& view) {
@@ -630,7 +689,13 @@ template <int L>
 static void grow_level(Commands& cmd, Pools& pools, Tree const& t) {
     auto const want = t.level_begin[L + 1] - t.level_begin[L];
     for (std::uint32_t i = pools.rows[L]; i < want; ++i)
-        cmd.spawn(Mp {}, Lc {}, NodeRef {i, static_cast<std::uint32_t>(L)}, Lvl<L> {});
+        cmd.spawn(Mp {},
+                  Lc {},
+                  M2LList {},
+                  P2PList {},
+                  Subtree {},
+                  NodeRef {i, static_cast<std::uint32_t>(L)},
+                  Lvl<L> {});
     pools.rows[L] = std::max(pools.rows[L], want);
 }
 template <int... Ls>
@@ -666,16 +731,15 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
         [](Commands& c) { c.sort<Key>([](Key const& k) { return k.k; }); },
         phase {ph::kSort});
 
-    // 3. Build the adaptive tree + the dual-tree interaction lists, and grow the
-    //    node pools. Serial by nature: a recursive traversal has no row-shaped
-    //    parallel form in this executor.
+    // 3. Build the adaptive tree and grow the node pools, then descend the dual
+    //    tree far enough to hand every subtree off. Serial: subdividing is a
+    //    sequential recursion, and growing the pools is a structural edit.
     s.add_serial(
         "build",
         [leaf_cap](ColumnView<Key> keys_view,
                    ResMut<Tree> t,
                    ResMut<Pools> pools,
                    ResMut<BuildStats> st,
-                   Exec exec,
                    Commands& cmd) {
             // The key column is already contiguous and already sorted, so the
             // tree build reads it in place -- a ColumnView chunk IS the column.
@@ -685,37 +749,145 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
             });
             build_tree(*t, keys, leaf_cap);
 
-            // Interaction lists. The traversal is recursive, so it has no rows
-            // to slice -- but Exec does not need rows: descend serially until
-            // every target reaches a cut level, then finish each cut node's
-            // subtree on the pool. Distinct subtrees write distinct nodes'
-            // lists, so the split needs no merge, and the per-node lists come
-            // out in the same order the fully serial walk produces.
-            int const cut = choose_cut(*t, exec.lanes());
-            seed_lists(*t, cut);
-            if (cut >= 0) {
-                auto const base = t->level_begin[std::size_t(cut)];
-                auto const n    = t->level_begin[std::size_t(cut) + 1] - base;
-                Tree& tree      = *t;
-                exec.for_each_index(n, [&tree, base](std::size_t const i) {
-                    auto const a = base + static_cast<std::uint32_t>(i);
-                    for (auto const b : tree.seeds[a])
-                        traverse(tree, a, b, -1);
-                });
-            }
-            flatten_lists(*t);
+            // Only the HEAD of the traversal happens here: descend until every
+            // target box reaches the cut level, then stop. What is left is one
+            // independent subtree per cut box, which the `traverse` system below
+            // runs as ordinary parallel work.
+            seed_lists(*t, choose_cut(*t));
             grow_levels(cmd,
                         *pools,
                         *t,
                         std::make_integer_sequence<int, kMaxLevel + 1> {});
 
-            st->nodes     = t->node_count;
-            st->leaves    = static_cast<std::uint32_t>(t->leaves.size());
-            st->depth     = t->depth;
-            st->m2l_pairs = t->m2l_off.back();
-            st->p2p_pairs = t->p2p_off.back();
+            st->nodes  = t->node_count;
+            st->leaves = static_cast<std::uint32_t>(t->leaves.size());
+            st->depth  = t->depth;
         },
         phase {ph::kBuild});
+
+    // 3b. Copy the cut-box marking onto the node rows. The partition key has to
+    //     BE a component -- the executor scans it to find the groups -- and the
+    //     tree that decides it is rebuilt every tick, so this is the one pass
+    //     that turns the resource into rows. Slack rows (a level pool is grown
+    //     but never shrunk) fall into group 0 with the above-cut boxes.
+    s.add_parallel(
+        "mark-subtrees",
+        [](Query<Subtree, NodeRef const> q, Res<Tree> t) {
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<Subtree> s2,
+                                 chunk<NodeRef const> nr) {
+                auto out         = s2.column<0>();
+                auto const slot  = nr.column<0>();
+                auto const level = nr.column<1>();
+                for (std::size_t r = 0; r < out.size(); ++r) {
+                    auto const node = t->level_begin[level[r]] + slot[r];
+                    out[r] =
+                        node < t->level_begin[level[r] + 1] ? t->subtree_of[node] : 0;
+                }
+            });
+        },
+        grain {kNodeGrain});
+
+    // 3c. Finish the traversal: ONE WORK ITEM PER SUBTREE.
+    //
+    //     This is the shape the whole example was built to reach. A dual-tree
+    //     descent is not row-shaped -- there is no per-entity map to slice -- so
+    //     the obvious form is a serial system that fans out by hand, which needs
+    //     an escape hatch to the pool, knows the lane count, and overlaps with
+    //     nothing else in the wave. partition_by<Subtree> says the same thing
+    //     declaratively: rows carrying the same key are ONE unit of work. The
+    //     executor scans the key, finds one contiguous run per (subtree, level),
+    //     gathers the runs of a subtree into one item, and drops those items in
+    //     the same flat list as every other system's -- load-balanced, ordered,
+    //     and weighted by the subtree's node count, which is exactly its cost.
+    //
+    //     The item's rows ARE the boxes the walk will write, so the traversal
+    //     writes its own rows and needs nothing unsafe: within a level, row ==
+    //     slot and the group's rows are contiguous, so a node id indexes the
+    //     chunk directly.
+    s.add_parallel(
+        "traverse",
+        [](Query<M2LList, P2PList, NodeRef const, Subtree const> q,
+           Res<Tree> t,
+           Reduce<PairCounts, AddPairs> pairs) {
+            // Level -> this group's rows at that level, and the node id of the
+            // first of them.
+            struct LevelRows {
+                std::span<std::vector<std::uint32_t>> m2l, p2p;
+                std::uint32_t first = 0;
+            };
+            std::array<LevelRows, kMaxLevel + 2> rows {};
+            std::uint32_t root = 0;
+
+            q.for_each_chunk([&](std::span<Entity const>,
+                                 chunk<M2LList> m,
+                                 chunk<P2PList> p,
+                                 chunk<NodeRef const> nr,
+                                 chunk<Subtree const> st) {
+                auto ml         = m.column<0>();
+                auto pl         = p.column<0>();
+                auto const slot = nr.column<0>();
+                if (ml.empty())
+                    return;
+                auto const lv = nr.column<1>()[0]; // one chunk, one level
+                root          = st.column<0>()[0]; // one item, one key
+                // One run per (group, level) is the invariant the O(1) node ->
+                // chunk-index arithmetic below rests on. It holds because level
+                // L's boxes are generated parent by parent, so they come out
+                // ordered by cut ancestor; if that ever stopped being true the
+                // sink would index the wrong row, so say so here.
+                assert(rows[lv].m2l.empty() &&
+                       "traverse: a group must be one contiguous run per level");
+                rows[lv] = {ml, pl, t->level_begin[lv] + slot[0]};
+                // Seed every row with what the serial head decided for it --
+                // empty for everything below the cut, so this doubles as the
+                // per-tick clear.
+                for (std::size_t r = 0; r < ml.size(); ++r) {
+                    auto const node = t->level_begin[lv] + slot[r];
+                    if (node >= t->level_begin[lv + 1]) {
+                        ml[r].clear();
+                        pl[r].clear();
+                        continue;
+                    }
+                    ml[r] = t->head_m2l[node];
+                    pl[r] = t->head_p2p[node];
+                }
+            });
+
+            // Group 0 is the head: already done above. Everything else is a cut
+            // box, and finishing it is the same walk with no cut.
+            if (root != 0) {
+                struct RowSink {
+                    std::array<LevelRows, kMaxLevel + 2>& rows;
+                    Tree const& t;
+                    void seed(std::uint32_t, std::uint32_t) {} // no cut here
+                    void m2l(std::uint32_t A, std::uint32_t B) {
+                        row(A).m2l[A - rows[t.level[A]].first].push_back(B);
+                    }
+                    void p2p(std::uint32_t A, std::uint32_t B) {
+                        row(A).p2p[A - rows[t.level[A]].first].push_back(B);
+                    }
+                    // The walk only ever descends from this group's root, so
+                    // every target it decides is one of this item's rows.
+                    LevelRows& row(std::uint32_t A) {
+                        auto& lr = rows[t.level[A]];
+                        assert(A >= lr.first && A - lr.first < lr.m2l.size() &&
+                               "traverse: walked outside the item's own rows");
+                        return lr;
+                    }
+                } sink {rows, *t};
+                for (auto const b : t->seeds[root])
+                    walk(*t, root, b, -1, sink);
+            }
+
+            for (auto const& lr : rows) {
+                for (auto const& v : lr.m2l)
+                    pairs->m2l += v.size();
+                for (auto const& v : lr.p2p)
+                    pairs->p2p += v.size();
+            }
+        },
+        partition_by<Subtree> {});
 
     // 4. P2M: one multipole per leaf, from that leaf's contiguous particle rows.
     //    ONE system over every level archetype -- leaves live at many levels, and
@@ -759,24 +931,26 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
     //    read-only, disjoint from the Lc this writes.
     s.add_parallel(
         "m2l",
-        [](Query<Lc, NodeRef const> q, ColumnView<Mp, NodeRef> src, Res<Tree> t) {
+        [](Query<Lc, NodeRef const, M2LList const> q,
+           ColumnView<Mp, NodeRef> src,
+           Res<Tree> t) {
             LevelSpans<Mp> mp;
             mp.gather(src);
             q.for_each_chunk([&](std::span<Entity const>,
                                  chunk<Lc> l,
-                                 chunk<NodeRef const> nr) {
+                                 chunk<NodeRef const> nr,
+                                 chunk<M2LList const> ml) {
                 auto out         = l.column<0>();
                 auto const slot  = nr.column<0>();
                 auto const level = nr.column<1>();
+                auto const lists = ml.column<0>();
                 for (std::size_t r = 0; r < out.size(); ++r) {
                     auto const node = t->level_begin[level[r]] + slot[r];
                     if (node >= t->level_begin[level[r] + 1])
                         continue;
                     Lc acc {}; // assigned, not accumulated: no clearing pass
                     cplx const ct {t->cx[node], t->cy[node]};
-                    for (std::uint32_t k = t->m2l_off[node]; k < t->m2l_off[node + 1];
-                         ++k) {
-                        auto const s2 = t->m2l_src[k];
+                    for (auto const s2 : lists[r]) {
                         Mp sm {};
                         sm.a = mp.level[t->level[s2]][s2 - t->level_begin[t->level[s2]]];
                         m2l(acc, sm, cplx {t->cx[s2], t->cy[s2]}, ct);
@@ -816,10 +990,16 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
         [](Query<Field, LeafId const, Pos const> q,
            ColumnView<Pos, Charge> parts,
            ColumnView<Lc, NodeRef> locals,
+           ColumnView<P2PList, NodeRef> near,
            Res<Tree> t) {
             auto const pc = particle_cols(parts);
             LevelSpans<Lc> lc;
             lc.gather(locals);
+            // The near field is driven from the TARGET PARTICLES, so a particle
+            // has to reach its leaf's list -- another node's row, hence the same
+            // per-level gather the coefficients use.
+            LevelSpans<P2PList, std::vector<std::uint32_t>> p2p;
+            p2p.gather(near);
             q.for_each_chunk([&](std::span<Entity const>,
                                  chunk<Field> f,
                                  chunk<LeafId const> l,
@@ -840,9 +1020,7 @@ static void build_schedule(Schedule& s, std::uint32_t const leaf_cap) {
                     loc.b = lc.level[lv][leaf - t->level_begin[lv]];
                     l2p(loc, z - cplx {t->cx[leaf], t->cy[leaf]}, ax, ay, phi);
                     std::size_t const self = base + i;
-                    for (std::uint32_t k = t->p2p_off[leaf]; k < t->p2p_off[leaf + 1];
-                         ++k) {
-                        auto const src = t->p2p_src[k];
+                    for (auto const src : p2p.level[lv][leaf - t->level_begin[lv]]) {
                         for (std::uint32_t j = t->pbegin[src]; j < t->pend[src]; ++j) {
                             if (j == self)
                                 continue;
@@ -876,6 +1054,7 @@ int main(int argc, char** argv) {
     world.emplace_resource<Tree>();
     world.emplace_resource<Pools>();
     world.emplace_resource<BuildStats>();
+    world.emplace_resource<PairCounts>();
 
     {
         // A clustered (non-uniform) distribution, so the tree is genuinely
@@ -940,17 +1119,18 @@ int main(int argc, char** argv) {
         auto const ms =
             std::chrono::duration<double, std::milli>(t1 - t0).count() / ticks;
         auto const& st = world.resource<BuildStats>();
+        auto const& pc = world.resource<PairCounts>();
         if (report)
             report->flush();
         std::printf("lanes=%u  %.2f ms/tick   nodes=%u leaves=%u depth=%d "
-                    "m2l=%u p2p=%u\n",
+                    "m2l=%llu p2p=%llu\n",
                     lanes,
                     ms,
                     st.nodes,
                     st.leaves,
                     st.depth,
-                    st.m2l_pairs,
-                    st.p2p_pairs);
+                    static_cast<unsigned long long>(pc.m2l),
+                    static_cast<unsigned long long>(pc.p2p));
     }
 
     // --- accuracy: compare against a direct O(N^2) sum on a random sample ---

@@ -299,7 +299,47 @@ public:
     }
 
 private:
+    // partition_by<K>: one item per distinct key, holding every run of rows that
+    // carries it. Runs are gathered across ALL matched archetypes and sorted by
+    // key, because a group is defined by its key value, not by where its rows
+    // happen to live -- an entity that gained a tag component moved archetype
+    // without leaving its group. Items come out in ascending key order, which is
+    // the canonical order the barrier folds replay in.
+    void build_partitioned(auto& world, auto& system, auto& items) {
+        auto id             = system.id;
+        auto const& matches = system.match.resolve(world, system.query_sig);
+        runs_.clear();
+        for (auto const ai : matches)
+            system.partition(world, ai, runs_);
+        // Ties broken by (archetype, begin) so a group's units are laid out the
+        // same way on every run and at every lane count.
+        std::ranges::sort(runs_, [](auto const& a, auto const& b) {
+            return std::tie(a.key, a.archetype, a.begin) <
+                   std::tie(b.key, b.archetype, b.begin);
+        });
+        std::uint32_t ordinal = 0;
+        for (auto i = 0uz; i < runs_.size();) {
+            auto units     = detail::SmallVector<detail::Unit, 1> {};
+            auto rows      = 0u;
+            auto const key = runs_[i].key;
+            for (; i < runs_.size() && runs_[i].key == key; ++i) {
+                units.push_back(detail::Unit {runs_[i].archetype,
+                                              runs_[i].begin,
+                                              runs_[i].end});
+                rows += runs_[i].end - runs_[i].begin;
+            }
+            // begin/end are the item's WEIGHT here, not a row range into one
+            // archetype -- a multi-unit item has no single range, and weight is
+            // all the LPT sort reads them for.
+            items.push_back(WorkItem {id, std::move(units), 0, rows, ordinal++});
+        }
+    }
+
     void build_parallel(auto& world, auto& system, auto& items) {
+        if (system.partition) {
+            build_partitioned(world, system, items);
+            return;
+        }
         auto id             = system.id;
         auto const& matches = system.match.resolve(world, system.query_sig);
         auto total          = 0uz;
@@ -360,9 +400,10 @@ private:
     }
 
     using WorkItem = detail::WorkItem;
-    std::vector<SystemId> systems_; // wave membership (fixed at rebuild)
-    std::vector<SystemId> due_;     // due this tick (reused scratch)
-    Wave wave_;                     // this tick's compiled wave (reused buffers)
-    WavePlanResult result_;         // build timings of the last build()
+    std::vector<SystemId> systems_;          // wave membership (fixed at rebuild)
+    std::vector<SystemId> due_;              // due this tick (reused scratch)
+    std::vector<detail::PartitionRun> runs_; // build_partitioned scratch (reused)
+    Wave wave_;                              // this tick's compiled wave (reused buffers)
+    WavePlanResult result_;                  // build timings of the last build()
 };
 } // namespace ecs

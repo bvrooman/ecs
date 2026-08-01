@@ -16,11 +16,13 @@
 #include <ecs/detail/compat/move_only_function.hpp>
 #include <ecs/detail/work_item.hpp>
 #include <ecs/parallel/worker_pool.hpp>
-#include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
+#include <ecs/query.hpp>              // Query -- system_param<Query<Cs...>>
+#include <ecs/reflection/reflect.hpp> // field_count_v, field_type_t -- make_partition
 #include <ecs/schedule/access.hpp>
 #include <ecs/world.hpp> // World, Commands, WorldView
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -251,6 +253,66 @@ struct MatchCache {
     }
 };
 
+// --- partition_by<K> -------------------------------------------------------
+// One contiguous row range whose key component all holds the same value: rows
+// [begin, end) of `archetype` belong to group `key`. The executor gathers every
+// run sharing a key -- across archetypes -- into one work item.
+struct PartitionRun {
+    ArchetypeId archetype;
+    std::uint32_t begin;
+    std::uint32_t end;
+    std::uint64_t key;
+};
+
+// Append one archetype's runs to `out`. Type-erased so SystemRecord need not
+// name the key type; make_partition<K> below is the only implementation.
+using PartitionFn =
+    move_only_function<void(World const&, ArchetypeId, std::vector<PartitionRun>&)>;
+
+// Keys are compared and ordered as u64. Signed types get their sign bit flipped
+// so the cast is order-PRESERVING: items are emitted in ascending key order, and
+// that order is the canonical one every barrier fold (Reduce, Collect, Bin,
+// Commands replay) folds in, so it has to be total and stable, not merely
+// injective.
+template <class T>
+constexpr std::uint64_t partition_key_bits(T const v) noexcept {
+    if constexpr (std::is_signed_v<T>)
+        return static_cast<std::uint64_t>(static_cast<std::int64_t>(v)) ^ (1ull << 63);
+    else
+        return static_cast<std::uint64_t>(v);
+}
+
+// The boundary scan behind partition_by<K>: walk K's column and cut a run
+// wherever the value changes. One linear pass over one contiguous field buffer
+// per archetype, so its cost is the memory it touches -- which is why the key
+// must be a single-field integral component rather than an arbitrary projection.
+template <class K>
+PartitionFn make_partition() {
+    static_assert(reflect::field_count_v<K> == 1,
+                  "partition_by<K>: the key component must have exactly ONE field -- "
+                  "the executor compares whole keys for equality and orders items by "
+                  "them, and a multi-field key has no single column to scan");
+    using Field = reflect::field_type_t<K, 0>;
+    static_assert(std::integral<Field>,
+                  "partition_by<K>: the key field must be an integral type (it is "
+                  "compared for equality and ordered as u64)");
+    return [](World const& w, ArchetypeId const ai, std::vector<PartitionRun>& out) {
+        auto const& arch = *w.archetypes()[ai];
+        auto const keys  = arch.template column<K>().store.template column<0>();
+        auto const n     = keys.size();
+        for (auto b = 0uz; b < n;) {
+            auto e = b + 1;
+            while (e < n && keys[e] == keys[b])
+                ++e;
+            out.push_back(PartitionRun {ai,
+                                        static_cast<std::uint32_t>(b),
+                                        static_cast<std::uint32_t>(e),
+                                        partition_key_bits(keys[b])});
+            b = e;
+        }
+    };
+}
+
 using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
@@ -293,7 +355,11 @@ struct SystemRecord {
     // Minimum rows per work item for a parallel system (the grain{n} option);
     // 0 = the executor's default floor. See WavePlan::build_parallel.
     std::size_t grain = 0;
-    bool is_parallel  = false;
+    // partition_by<K>: the key scan that replaces row slicing entirely. Null
+    // (the default) means the executor sizes items itself. See
+    // WavePlan::build_partitioned.
+    PartitionFn partition;
+    bool is_parallel = false;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {

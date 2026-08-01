@@ -6,24 +6,28 @@ simulation?
 **Verdict: yes.** `examples/fmm2d.cpp` is a working one — adaptive quadtree,
 dual-tree traversal, verified against a direct O(N²) sum — and every FMM pass in
 it is an ordinary system whose access the scheduler derives and orders by
-itself. Getting there took five library changes, because the first version of
+itself. Getting there took six library changes, because the first version of
 the spike could *only* be written by stepping outside the access model. Those
 changes are the real output of this exercise; §3 is the list, with the
 before/after each one bought.
 
 The tree build was the last serial stage, and four fifths of it is the
 interaction-list traversal. That turned out not to be inherently serial either:
-§6.1 measures it, shows why the obvious parallelization is *wrong*, and gets
-the correct one running on the pool through `Exec` — the fifth library change,
-and the only one that changes what is expressible rather than how well it
-runs.
+§6.1 measures it, shows why the obvious parallelization is *wrong*, and gets the
+correct one onto the lanes twice — first through `Exec` (§3.5), an escape hatch
+that fans an arbitrary index space from inside a serial system, and then through
+`partition_by<K>` (§3.6), which says the same thing declaratively: rows sharing a
+key are ONE work item. The second is the one that belongs in an ECS. It is
+faster, and more to the point it puts the traversal back inside the executor —
+leveled, overlapped and load-balanced like everything else — instead of beside
+it.
 
 ```
 $ ./build/examples/fmm2d                  # n leaf_cap ticks max_lanes
 fmm2d: n=50000 leaf_cap=32 p=12 buffer=2.00 max_level=8
-schedule: 23 systems, 22 waves
-lanes=1  236.45 ms/tick   nodes=4505 leaves=3379 depth=8 m2l=102782 p2p=35441
-lanes=4   63.94 ms/tick   ...
+schedule: 25 systems, 22 waves
+lanes=1  305.39 ms/tick   nodes=4505 leaves=3379 depth=8 m2l=102782 p2p=35441
+lanes=4   76.91 ms/tick   ...
 accuracy vs direct (200 samples): force L2 rel err = 1.198e-06, potential L2 rel err = 4.820e-08
 ```
 
@@ -77,15 +81,16 @@ With the changes in §3, the mapping is direct:
 | particle storage | SoA over N | components in one archetype |
 | Morton key | per-row map | `add_parallel`, `Query<Pos const, Key>` |
 | spatial sort | permute rows by key | `Commands::sort<Key>` (`World::sort_rows`) |
-| tree build + lists | recursive, irregular | `add_serial` writing a `Tree` resource |
+| tree build | recursive, sequential | `add_serial` writing a `Tree` resource |
+| interaction lists | one independent walk per subtree | `add_parallel` + `partition_by<Subtree>`, writing `M2LList`/`P2PList` |
 | P2M | leaf ← its contiguous particle rows | `Query<Mp, NodeRef const>` + `ColumnView<Pos, Charge>` |
 | M2M | level L ← level L+1 | `Query<Mp, …, Lvl<L> const>` + `ColumnView<Mp, NodeRef, Lvl<L+1>>` |
 | M2L | node ← many nodes, any level | ONE `Query<Lc, NodeRef const>` + `ColumnView<Mp, NodeRef>` |
 | L2L | level L ← its parents at L−1 | `Query<Lc, …, Lvl<L> const>` + `ColumnView<Lc, NodeRef, Lvl<L-1>>` |
 | L2P + P2P | per particle, gathers other particles | `Query<Field, …>` + `ColumnView<Pos, Charge>` + `ColumnView<Lc, NodeRef>` |
 
-One entity per tree node, in the archetype of its level, carrying `Mp` and `Lc`
-as components. Two details make it work:
+One entity per tree node, in the archetype of its level, carrying `Mp`, `Lc` and
+its interaction lists as components. Two details make it work:
 
 - **Writes stay own-row.** Every pass writes its own rows' expansions through
   its Query, so the disjointness that makes parallel items safe still holds.
@@ -201,6 +206,48 @@ its phase.
 Measured on the tree build in §6.1: −36% and −46% at 4 lanes, bit-identical
 output.
 
+### 3.6 `partition_by<K>{}` — when the unit of work is a GROUP of rows
+
+`Exec` works, and it is the wrong shape. It is an escape hatch: the body reaches
+around the executor to the pool, so it must know the lane count to size its own
+index space, it declares itself exclusive (overlapping with nothing else in its
+phase), and the work it fans out is invisible to the scheduler — not leveled,
+not load-balanced against other systems, not weighted in the wave's LPT sort.
+Every one of those is a property the executor already provides for row-shaped
+work. The traversal did not need a different executor; it needed a different
+description of what one work item *is*.
+
+The default sizing may cut a parallel system's matched rows anywhere, which is
+exactly right when rows are independent and exactly wrong when the unit of work
+is a *set* of them. `partition_by<K>{}` declares the equivalence classes: rows
+sharing a value of key component `K` become **one** work item.
+
+```cpp
+sched.add_parallel("traverse", fn, partition_by<Subtree> {});
+```
+
+The executor scans `K` down each matched archetype for runs of equal value,
+gathers the runs of one key — they may span archetypes — into one item, and
+emits items in ascending key order. Three consequences matter here:
+
+* **A group is never split across lanes**, which is what makes the body's writes
+  safe: the item's rows *are* the boxes its walk will write.
+* **The item lands in the same flat list as every other system's**, so it is
+  leveled, dynamically claimed, and overlapped. The FMM traversal now shares a
+  wave with the deepest M2M level instead of owning one.
+* **A group's row count is its cost**, which is a far better weight than uniform
+  slicing gives, so the LPT sort can actually order the wave.
+
+It also deletes a question the `Exec` version had to answer: how many pieces to
+split into. `Exec` sizes an index space, so it asks for `exec.lanes()`.
+`partition_by` declares groups and lets the executor match them to hardware, so
+the cut level became a property of the tree alone.
+
+The cost is a linear boundary scan of one contiguous field buffer per archetype
+at wave-build time, and a precondition: `K` must be a single integral field, and
+rows should be sorted by it or a group fragments into many small runs (still one
+item — grouping is by value — but a scattered one). §6.1 has the measurement.
+
 ## 4. What the library already gave for free
 
 1. **The spatial sort is first-class.** `World::sort_rows<C>(key)` counting-sorts
@@ -229,13 +276,19 @@ scheduler measured it, median of three runs.
 |---|---|---|---|---|---|
 | `morton` | 65 | 0.86 ms | 0.46 ms | 0.23 ms | 3.69× |
 | `sort` (command flush) | 1 | 0.27 ms | 0.24 ms | 0.27 ms | 1.00× |
-| `build` (`Exec` fan-out) | 1 | 2.31 ms | 1.63 ms | 1.29 ms | 1.79× |
+| `build` (serial head only) | 1 | 0.73 ms | — | 0.66 ms | 1.11× |
+| `traverse` (`partition_by`) | 65 | 3.43 ms | — | 0.68 ms* | — |
 | `p2m` + `assign-leaf` (one wave) | 70, 65 | 4.52 ms | 2.43 ms | 1.19 ms | 3.79× |
 | `m2m.*` (8 waves) | 12–20 | 1.23 ms | 0.75 ms | 0.44 ms | 2.77× |
 | `m2l` | 70 | 47.40 ms | 24.61 ms | 11.95 ms | 3.97× |
 | `l2l.*` (8 waves) | 16–45 | 1.78 ms | 0.94 ms | 0.55 ms | 3.21× |
 | `evaluate` | 65 | 576.2 ms | 290.0 ms | 148.5 ms | 3.88× |
 | **whole tick** | | **644 ms** | **326 ms** | **165 ms** | **3.89×** |
+
+\* `traverse` shares its wave with `m2m.7`, so its 4-lane figure is that wave's
+wall minus what `m2m.7` alone costs. Overlapping with the rest of the wave is the
+point of §3.6 — the number has no standalone meaning, which is exactly the
+difference from an exclusive `Exec` system.
 
 Against the pre-change version of the same spike (identical physics, verified by
 identical output): whole tick 173 → 165 ms at 4 lanes, and whole-tick scaling
@@ -289,6 +342,14 @@ capped below ~34 lanes, where before `m2m`/`l2l` were capped at 1–3 and
 
 What binds at 64 lanes is §6.1: the serial tree build.
 
+**This simulation predates the `partition_by` rewrite and has not been re-run** —
+it needs the instrumented per-item build, and the numbers above are the ones that
+motivated the change, so they are left as they were. What it would now see is the
+`build` row splitting in two: `build` keeps 1 item but only **0.73 ms** of work
+(the BFS subdivision and the serial head of the descent), and the traversal
+becomes `traverse` at **65 items / 3.43 ms**. The row that reads "most lanes it
+can use: **1**" is what `partition_by` was for, and it is the row that moved.
+
 ## 6. What remains
 
 ### 6.1 The tree build: was serial, now mostly isn't
@@ -320,34 +381,70 @@ nodes' lists, so there is no merge at all — and because the seeds are recorded
 in the order the serial walk would reach them, each node's list comes out in
 the same order. The demo's output is bit-identical either way (9.595e-07).
 
-That has parallelism but no rows to slice, which is what `Exec` is for
-(§3.5). The cut level is chosen at runtime: the shallowest level with at least
-four nodes per lane.
+That leaves one independent task per cut box, and there are two ways to say so.
+Both were built; the difference between them is the point of §3.6.
 
-| build, 4 lanes | serial traversal | with `Exec` | |
-|---|---|---|---|
-| leaf_cap=32 | 2.38 ms | **1.52 ms** | −36% |
-| leaf_cap=4 | 9.74 ms | **5.22 ms** | −46% |
+**Attempt 1 — fan out by hand (`Exec`, §3.5).** Keep the traversal inside the
+serial `build` system and dispatch the subtrees onto the schedule's lanes from
+inside it. It works, and it costs three things: the system is *exclusive*, so it
+overlaps with nothing else in its phase; the body sizes its own index space, so
+it asks the pool how many lanes exist — hardware in application code; and the
+lists stay in the `Tree` resource, so a serial pass afterwards has to flatten
+`vector<vector<uint32_t>>` into CSR.
 
-At 1 lane the cut is disabled and the code path is the old one (2.33 → 2.25 ms,
-within noise). What is left serial is the BFS subdivision and the flatten into
-CSR; a cadence (`every{n}`) remains the answer for shrinking those, and is
-standard for slowly-evolving distributions.
+**Attempt 2 — declare the partition (`partition_by<Subtree>`, §3.6).** Mark each
+box with the cut-level ancestor it descends from, move the interaction lists onto
+the box (`M2LList`/`P2PList` components), and register the traversal as an
+ordinary `add_parallel` system partitioned by that mark. One work item is now one
+subtree, and the rows of that item are exactly the boxes its walk will write — so
+the traversal writes its own rows, like every other system in the file. The
+addressing is O(1) and needs nothing unsafe: within a level, row == slot, and a
+subtree's boxes at a level are contiguous (level L is generated parent by parent,
+so it comes out ordered by cut ancestor), so `chunk::row_begin()` turns a box id
+into a chunk index.
+
+100k particles, 4 lanes, `ScheduleReport` wave wall times. "build span" is
+waves 2–4 end to end — everything from the tree build to the point where the
+interaction lists exist — so the two are compared on the same interval even
+though the work sits in different waves:
+
+| 4 lanes | `build` wave (serial, 1 item) | build span (waves 2–4) |
+|---|---|---|
+| leaf_cap=32, `Exec` | 1.68 ms | 3.55 ms |
+| leaf_cap=32, `partition_by` | **0.66 ms** (−61%) | **3.24 ms** (−9%) |
+| leaf_cap=4, `Exec` | 5.62 ms | 8.30 ms |
+| leaf_cap=4, `partition_by` | **1.81 ms** (−68%) | **7.30 ms** (−12%) |
+
+Output is bit-identical throughout (9.595e-07 at leaf_cap=32, 9.628e-07 at
+leaf_cap=4, and the same M2L/P2P pair counts).
+
+The span number understates it and the `build` number is the one to read. What
+shrank by ~3× is the part that is *structurally serial*: one system, alone in its
+wave, one work item. The traversal did not get faster — it moved. It is now 65
+items in a shared wave, overlapping the deepest M2M level, claimed out of the
+same list as everything else. And the serial CSR flatten is gone: the lists are
+written where they are read.
+
+Total work is a wash — at 1 lane, where nothing overlaps, `leaf_cap=4` measures
+13.05 ms of build against 12.88 ms (`build` + `mark-subtrees` + `traverse`),
+inside run-to-run variance. The flatten it removes is paid back by seeding each
+box's list from the serial head and by 65 item binds instead of one. That is the
+right trade and worth stating plainly: `partition_by` did not make the traversal
+cheaper, it made it *schedulable*.
+
+§5.1's simulation is the reason this matters more than 12%: at 16 lanes the
+`leaf_cap=4` tick was 49% serial build. Cutting the serial part from 5.6 ms to
+1.8 ms is what moves that ceiling; a cadence (`every{n}`) remains the answer for
+the BFS subdivision that is left, and is standard for slowly-evolving
+distributions.
 
 **A road not taken.** A traversal emits a variable-length list per target, which
 looks exactly like `Bin<V>` — bucket = target node, value = source node,
-counting-sorted at the barrier into the CSR the serial version builds by hand.
-Prototyped, and the barrier merge measured **3.20 ms** at ~4.6× the true pair
-count. Worse, FMM's lists are ~31 entries per bucket, which is too sparse for
-the tiled merge to help (see the `Bin` work). The cut-and-subtree split above
-avoids the merge entirely, which is why it wins.
-
-At 4 lanes this is nearly free; it is the **scaling** limit, and the §5.1
-simulation puts a number on it. In the tree-heavy configuration (`leaf_cap=4`,
-where `build` is 10.5 ms) the predicted tick is 50.9 ms at 16 lanes (12.7× of
-1-lane, 1.25× off ideal) and 21.2 ms at 64 (30.7×, 2.08× off) — at which point
-**the serial build is 49% of the tick**, and every other system still has lane
-headroom of 30× or more. Past roughly 16 lanes you are timing the tree build.
+counting-sorted at the barrier into a CSR. Prototyped, and the barrier merge
+measured **3.20 ms** at ~4.6× the true pair count. Worse, FMM's lists are ~31
+entries per bucket, which is too sparse for the tiled merge to help (see the
+`Bin` work). The partition avoids the merge entirely — a group's rows are its
+own, so there is nothing to reconcile — which is why it wins.
 
 ### 6.2 Structural effects are outside the access model — **minor**
 
@@ -381,16 +478,21 @@ The spike's architecture, which is what the library now supports directly:
    `Commands::sort` every tick.
 2. **Tree nodes are entities**, one per node, in their level's archetype
    (`Lvl<L>` tag), carrying `Mp`/`Lc` as components. Pools grow, never shrink.
-3. **The tree topology and interaction lists are a resource**, read via
-   `Res<Tree>` — variable-length CSR data has no component shape.
-4. **Every gather is a `ColumnView`**, narrowed with a tag wherever the source
+3. **The tree's geometry and topology are a resource**, read via `Res<Tree>` —
+   flat parallel arrays have no component shape. The **interaction lists are
+   not**: there is one per box, so they are box components, which is what lets
+   the traversal write them.
+4. **The traversal is `add_parallel` + `partition_by<Subtree>`**, after a serial
+   head that descends to a cut level. One item per subtree, and the item's rows
+   are the boxes it writes.
+5. **Every gather is a `ColumnView`**, narrowed with a tag wherever the source
    level is statically known.
-5. **Give every node pass `grain{n}`** — their row counts are far below the
+6. **Give every node pass `grain{n}`** — their row counts are far below the
    default floor.
-6. **Register in dependency order** (deepest-first upward, shallowest-first
+7. **Register in dependency order** (deepest-first upward, shallowest-first
    downward) and let conflicts place the barriers; use `phase{}` only where the
    dependency is structural.
-7. **Rebuild the tree on a cadence** (`every{n}`), re-sorting rows every tick.
+8. **Rebuild the tree on a cadence** (`every{n}`), re-sorting rows every tick.
 
 ## 8. What this does not answer
 
