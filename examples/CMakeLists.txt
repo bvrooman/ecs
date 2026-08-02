@@ -3,10 +3,15 @@
 # baseline the Barnes-Hut demo is measured against. No renderer, so it builds
 # and runs everywhere the library does.
 # ---------------------------------------------------------------------------
-add_executable(nbody nbody.cpp)
-# benchmarks/ for bench.hpp (env knobs + the ECS_BENCH_OUT results sink), so a
-# run is comparable with the microbenchmark suites and mist-headless.
-target_include_directories(nbody PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks)
+add_executable(nbody
+  nbody/main.cpp
+  nbody/simulation.cpp)
+# nbody/ for its own headers; benchmarks/ for bench.hpp (env knobs + the
+# ECS_BENCH_OUT results sink), so a run is comparable with the microbenchmark
+# suites and mist-headless.
+target_include_directories(nbody PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/nbody
+  ${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks)
 target_link_libraries(nbody PRIVATE ecs::ecs)
 # -O3 (not the -O2 the other demos use): the tick is one compute-bound pairwise
 # kernel, and this is the number Barnes-Hut gets compared against, so the
