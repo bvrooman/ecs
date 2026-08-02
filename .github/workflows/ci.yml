@@ -26,13 +26,10 @@ jobs:
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.
   #
-  # cmake_flags is deliberately EMPTY on one leg -- it is not about that
-  # compiler's reflection support, it is the only leg that exercises the
-  # option DEFAULTS. Every other leg here, and every preset, pins
-  # ECS_USE_P2996 explicitly; that is why ECS_USE_P2996=ON could default to a
-  # value no stock toolchain could configure and still keep CI green, while
-  # breaking anyone following the README quickstart. This leg is the guard
-  # against that recurring, so keep one entry passing no flags.
+  # No leg pins ECS_USE_P2996: they all take its default, so the default is
+  # what CI exercises. Pinning it -- which every leg here used to do, and every
+  # preset still does -- is how ECS_USE_P2996=ON stayed green in CI while
+  # failing for anyone running the README quickstart.
   native:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
@@ -44,23 +41,18 @@ jobs:
             cxx: clang++-18
             build_type: Debug
             packages: clang-18
-            cmake_flags: -DECS_USE_P2996=OFF
-          # No flags: asserts the option defaults configure and build.
-          - name: clang-18 Release (option defaults)
+          - name: clang-18 Release
             cxx: clang++-18
             build_type: Release
             packages: clang-18
-            cmake_flags: ""
           - name: gcc-14 Debug
             cxx: g++-14
             build_type: Debug
             packages: g++-14
-            cmake_flags: -DECS_USE_P2996=OFF
           - name: gcc-14 Release
             cxx: g++-14
             build_type: Release
             packages: g++-14
-            cmake_flags: -DECS_USE_P2996=OFF
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -72,7 +64,6 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          ${{ matrix.cmake_flags }}
       - name: Build
         run: cmake --build build
       - name: Test
