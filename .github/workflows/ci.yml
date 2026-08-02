@@ -25,10 +25,6 @@ jobs:
   # Portable-reflection builds on stock compilers, Debug (assert paths) and
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.
-  #
-  # No leg pins ECS_USE_P2996, so CI exercises its default. Pinning it on every
-  # leg is how ECS_USE_P2996=ON stayed green here while failing the README
-  # quickstart.
   native:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
@@ -63,6 +59,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DECS_USE_P2996=OFF
       - name: Build
         run: cmake --build build
       - name: Test
