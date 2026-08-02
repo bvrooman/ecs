@@ -4,23 +4,16 @@ project(ecs VERSION 0.1.0 LANGUAGES CXX)
 # ---------------------------------------------------------------------------
 # Toolchain requirements
 # ---------------------------------------------------------------------------
-# The library uses C++23 deducing this (P0847) throughout -- soa.hpp,
-# archetype.hpp, schedule.hpp -- so an older compiler configures cleanly and
-# only then dies inside a template instantiation whose diagnostics name neither
-# the feature nor the fix (Ubuntu 24.04's default g++ 13 is the common way to
-# land here). Fail up front with the requirement instead. Only the two
-# compilers CI covers are checked; anything else is left alone rather than
-# guessed at.
+# The library uses C++23 deducing this (P0847), so it needs the versions CI
+# builds: GCC >= 14, Clang >= 18. cxx_std_23 does not cover this -- GCC 13
+# claims C++23 and then fails deep in a template in soa.hpp, which is where
+# Ubuntu 24.04's default g++ lands. Compilers CI does not cover are left alone.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
-    message(FATAL_ERROR
-            "ecs requires GCC >= 14 (found ${CMAKE_CXX_COMPILER_VERSION}): the "
-            "library uses C++23 deducing this (P0847), which GCC gained in 14. "
-            "Build with g++-14 or newer, or with Clang >= 18.")
+    message(FATAL_ERROR "ecs requires GCC >= 14, found ${CMAKE_CXX_COMPILER_VERSION} "
+                        "(C++23 deducing this, P0847)")
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
-    message(FATAL_ERROR
-            "ecs requires Clang >= 18 (found ${CMAKE_CXX_COMPILER_VERSION}): the "
-            "library uses C++23 deducing this (P0847), which Clang gained in 18. "
-            "Build with clang++-18 or newer, or with GCC >= 14.")
+    message(FATAL_ERROR "ecs requires Clang >= 18, found ${CMAKE_CXX_COMPILER_VERSION} "
+                        "(C++23 deducing this, P0847)")
 endif ()
 
 # ---------------------------------------------------------------------------
@@ -60,41 +53,17 @@ if (EMSCRIPTEN AND ECS_USE_P2996)
     set(ECS_USE_P2996 OFF CACHE BOOL "Use C++26 P2996 static reflection" FORCE)
 endif ()
 
-# ECS_USE_P2996=ON is only meaningful if the toolchain can actually compile the
-# backend. Check it HERE, while CMAKE_CXX_STANDARD is still unset -- otherwise
-# the first find_package() that runs a compile check (Threads, below) fails
-# with "the current compiler does not support CXX26", which names neither this
-# option nor the flag that would fix it. The probe mirrors what
-# reflection/reflect_p2996.hpp actually uses, so a toolchain carrying an older
-# or partial reflection implementation is rejected too -- not just one with no
-# <meta> at all.
 if (ECS_USE_P2996)
-    include(CheckCXXSourceCompiles)
-    set(CMAKE_REQUIRED_FLAGS "-std=c++26 -freflection")
-    check_cxx_source_compiles("
-        #include <cstddef>
-        #include <meta>
-        struct Probe { int a; };
-        consteval std::size_t fields() {
-            return std::meta::nonstatic_data_members_of(
-                       ^^Probe, std::meta::access_context::current()).size();
-        }
-        static_assert(fields() == 1);
-        int main() { return 0; }
-    " ECS_HAVE_P2996)
-    unset(CMAKE_REQUIRED_FLAGS)
-    if (NOT ECS_HAVE_P2996)
-        message(FATAL_ERROR
-                "ECS_USE_P2996=ON, but ${CMAKE_CXX_COMPILER_ID} "
-                "${CMAKE_CXX_COMPILER_VERSION} cannot compile the P2996 "
-                "reflection backend (-std=c++26 -freflection with <meta>). "
-                "Build with a toolchain that supports it (e.g. GCC 16 / "
-                "g++-16), or configure with -DECS_USE_P2996=OFF to use the "
-                "portable reflection backend.")
+    # std::meta + -freflection means GCC >= 16 today; the flag added below is
+    # GCC-specific, so this path is GCC-only by construction. Say so here --
+    # otherwise CMAKE_CXX_STANDARD 26 fails later as "the current compiler does
+    # not support CXX26", raised by find_package(Threads), naming neither this
+    # option nor the flag that fixes it.
+    if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+        message(FATAL_ERROR "ECS_USE_P2996=ON requires GCC >= 16, found "
+                            "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}. "
+                            "Use -DECS_USE_P2996=OFF for the portable backend.")
     endif ()
-endif ()
-
-if (ECS_USE_P2996)
     set(CMAKE_CXX_STANDARD 26)
 else ()
     set(CMAKE_CXX_STANDARD 23)
