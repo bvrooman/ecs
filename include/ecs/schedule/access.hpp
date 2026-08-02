@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -46,6 +47,30 @@ struct times {
     std::uint64_t n = 0;
 };
 
+// Slice size: cut this parallel system's matched rows into work items of at
+// most n rows each, instead of the executor's default. 0 (the default) keeps
+// the default. PARALLEL-ONLY -- a serial system is one opaque item and has
+// nothing to slice, so add_serial rejects it at compile time.
+//
+// Reach for it when per-row work is far from typical. The default grain is
+// derived from the ROW COUNT alone, which assumes rows cost roughly the same:
+// right for an elementwise map, wrong by orders of magnitude for a kernel whose
+// per-row work is itself O(n) -- a pairwise force sum, say -- where the default
+// floor can hand out fewer items than there are lanes and leave lanes idle.
+//
+//   sched.add_parallel("forces", fn, grain {64}); // O(n) per row: slice finer
+//
+// A declared value, so it is part of the schedule's identity: the same
+// registration always yields the same items, hence the same number of Reduce
+// partials and the same barrier fold order. That is deliberate, and it is why
+// grain is not auto-tuned from the measured per-item cost the executor already
+// records -- a timing-derived grain would vary run to run and forfeit the
+// bitwise reproducibility the parallel primitives exist to provide. Grain never
+// depends on the lane count either way, so lane-invariance is unaffected.
+struct grain {
+    std::size_t n = 0;
+};
+
 namespace detail {
 
     // The resolved option set an add_* hands to its emplace.
@@ -53,11 +78,12 @@ namespace detail {
         int phase           = 0;
         std::uint64_t every = 1;
         std::uint64_t times = 0;
+        std::size_t grain   = 0;
     };
 
     template <class T>
-    concept AddOption =
-        std::same_as<T, phase> || std::same_as<T, every> || std::same_as<T, times>;
+    concept AddOption = std::same_as<T, phase> || std::same_as<T, every> ||
+                        std::same_as<T, times> || std::same_as<T, grain>;
 
     template <class Want, class... Opts>
     consteval bool at_most_one() {
@@ -76,6 +102,8 @@ namespace detail {
             out.every = opt.n;
         else if constexpr (std::same_as<Opt, ecs::times>)
             out.times = opt.n;
+        else if constexpr (std::same_as<Opt, ecs::grain>)
+            out.grain = opt.n;
         // anything else already failed resolve_options' static_assert; do nothing
         // here so that assert is the only diagnostic the caller sees.
     }
@@ -88,9 +116,9 @@ namespace detail {
         static_assert(
             (AddOption<Opts> && ...),
             "unsupported registration option -- a system may be registered with "
-            "phase{n}, every{n} and times{n}");
+            "phase{n}, every{n}, times{n} and (parallel only) grain{n}");
         static_assert(at_most_one<phase, Opts...>() && at_most_one<every, Opts...>() &&
-                          at_most_one<times, Opts...>(),
+                          at_most_one<times, Opts...>() && at_most_one<grain, Opts...>(),
                       "each registration option may be given at most once");
         AddOptions out;
         (pick(out, opts), ...);

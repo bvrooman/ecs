@@ -300,7 +300,19 @@ private:
         auto total          = 0uz;
         for (auto const ai : matches)
             total += world.archetypes()[ai]->size();
-        auto const grain      = std::max(kMinItemRows, total / kTargetItemsPerSystem);
+        // grain{n} at registration wins outright; otherwise aim for
+        // kTargetItemsPerSystem items but never slice below kMinItemRows, so a
+        // small system does not pay more dispatch overhead than it does work.
+        // That default reads the ROW COUNT only -- it cannot know what a row
+        // costs, so a kernel whose per-row work is far from typical (O(n) per
+        // row, say) should say so with grain{n} rather than have the floor hand
+        // it fewer items than there are lanes. Either way the value depends
+        // only on declared inputs and the row count, never on the lane count:
+        // items are identical at 1 lane and N, which is what keeps barrier
+        // folds bitwise reproducible.
+        auto const grain = system.grain != 0
+                               ? system.grain
+                               : std::max(kMinItemRows, total / kTargetItemsPerSystem);
         std::uint32_t ordinal = 0;
         for (auto const ai : matches) {
             auto const n = world.archetypes()[ai]->size();

@@ -4,6 +4,8 @@
 #include "check.hpp"
 #include "setup.hpp"
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string_view>
@@ -345,6 +347,167 @@ static void multiple_observers_notified_in_order() {
     CHECK((order == std::vector<char> {'B', 'B'}));
 }
 
+// --- grain{n}: the parallel slice-size hint ---------------------------------
+// The executor's default grain is derived from the row count alone, which
+// assumes rows cost about the same. grain{n} is how a kernel whose per-row work
+// is far from typical says otherwise. Item counts are observable directly on
+// the SystemWork event, so these assert the slicing rather than infer it from
+// timing.
+
+// Run one trivial parallel system over `rows` entities at `grain_rows` (0 =
+// executor default) and report how many work items it was cut into.
+static std::uint32_t items_for(std::size_t const rows,
+                               std::size_t const grain_rows,
+                               unsigned const lanes) {
+    World w;
+    setup(w, [rows](Commands& cmd) {
+        for (std::size_t i = 0; i < rows; ++i)
+            cmd.spawn(Position {float(i), 0.0f});
+    });
+    Schedule sched;
+    // Passing grain{0} here is deliberate: it exercises that the neutral value
+    // takes exactly the same path as omitting the option.
+    sched.add_parallel(
+        "k",
+        [](Query<Position> q) { q.for_each([](auto&) {}); },
+        grain {grain_rows});
+    std::uint32_t items = 0;
+    sched.events().add([&](ScheduleEvent const& e) {
+        if (auto const* sw = std::get_if<sched_event::SystemWork>(&e))
+            items = sw->items;
+    });
+    WorkerPool pool {lanes};
+    sched.run(w, pool);
+    return items;
+}
+
+static void grain_sets_the_slice_size() {
+    // Default: max(kMinItemRows = 1024, rows / 64) -> 1024 rows per item.
+    CHECK(items_for(4096, 0, 1) == 4);
+    // grain{n} overrides it outright, in both directions.
+    CHECK(items_for(4096, 64, 1) == 64);
+    CHECK(items_for(4096, 128, 1) == 32);
+    CHECK(items_for(4096, 4096, 1) == 1);
+    // A grain that does not divide the row count leaves a short final item.
+    CHECK(items_for(4096, 1000, 1) == 5); // 4x1000 + one of 96
+    // The case the option exists for: at or below the default floor every lane
+    // but one would otherwise have nothing to claim.
+    CHECK(items_for(1024, 0, 1) == 1);   // floor -> a single item, whatever the lanes
+    CHECK(items_for(1024, 16, 1) == 64); // grain{16} -> 64 items
+    // Items are a property of the schedule, not the pool: the same counts at
+    // any lane count, which is what keeps barrier folds reproducible.
+    CHECK(items_for(4096, 64, 4) == 64);
+    CHECK(items_for(4096, 0, 4) == 4);
+}
+
+// A fine grain must still cover every row exactly once -- the slicing is what
+// guarantees disjointness, so an off-by-one here would double-apply or skip.
+static void grain_slices_cover_every_row_once() {
+    constexpr std::size_t kRows = 5000;
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (std::size_t i = 0; i < kRows; ++i)
+            cmd.spawn(Position {0.0f, 0.0f}, Velocity {1.0f, 2.0f});
+    });
+    Schedule sched;
+    // grain{7}: not a divisor of 5000, and far below the default floor.
+    sched.add_parallel(
+        "bump",
+        [](Query<Position, Velocity const> q) {
+            q.for_each([](auto& p, auto& v) {
+                p.x += v.dx;
+                p.y += v.dy;
+            });
+        },
+        grain {7});
+    WorkerPool pool {4};
+    sched.run(w, pool);
+    sched.run(w, pool);
+
+    std::size_t seen = 0;
+    bool all_twice   = true;
+    w.for_each<Position const>([&](auto& p) {
+        ++seen;
+        all_twice = all_twice && p.x == 2.0f && p.y == 4.0f; // exactly two ticks
+    });
+    CHECK(seen == kRows);
+    CHECK(all_twice);
+}
+
+// Reduce partials are per work item, so grain determines how many there are and
+// therefore the barrier fold's grouping. What must not vary is the result
+// across LANE counts at a fixed grain -- that is the reproducibility guarantee,
+// and it holds because grain never reads the lane count.
+struct GrainSum {
+    double v = 0;
+};
+struct AddGrainSum {
+    void operator()(GrainSum& a, GrainSum& b) const { a.v += b.v; }
+};
+
+static double sum_with(std::size_t const grain_rows, unsigned const lanes) {
+    World w;
+    w.emplace_resource<GrainSum>();
+    setup(w, [](Commands& cmd) {
+        for (std::size_t i = 0; i < 5000; ++i)
+            cmd.spawn(Position {float(i) * 0.1f, 0.0f});
+    });
+    Schedule sched;
+    sched.add_parallel(
+        "sum",
+        [](Query<Position const> q, Reduce<GrainSum, AddGrainSum> s) {
+            q.for_each([&](auto& p) { s->v += double(p.x); });
+        },
+        grain {grain_rows});
+    WorkerPool pool {lanes};
+    sched.run(w, pool);
+    return w.resource<GrainSum>().v;
+}
+
+// add_dynamic_parallel is a template with no native caller -- only the wasm
+// bindings instantiate it -- so a signature error in it compiles clean through
+// a full native build and the whole test suite, and surfaces only in the
+// Emscripten CI leg. That is not a safety net worth relying on: instantiate it
+// here, and check grain reaches the dynamic path while we are at it.
+static void dynamic_parallel_is_instantiated_and_honours_grain() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 4096; ++i)
+            cmd.spawn(Position {float(i), 0.0f});
+    });
+
+    SystemAccess access;
+    access.writes.push_back(component_id<Position>);
+
+    // Written from several lanes, so they are atomics and the CHECKs come
+    // after the run (check.hpp's counters are not thread-safe).
+    std::atomic<int> calls {0};
+    std::atomic<std::uint32_t> rows {0};
+
+    Schedule sched;
+    sched.add_dynamic_parallel(
+        "dyn",
+        access,
+        Signature {component_id<Position>},
+        [&](World&, Commands&, detail::WorkItem const& item) {
+            ++calls;
+            for (auto const& u : item.units)
+                rows += u.end - u.begin;
+        },
+        grain {64});
+
+    WorkerPool pool {4};
+    sched.run(w, pool);
+    CHECK(calls.load() == 64);  // 4096 rows / grain 64
+    CHECK(rows.load() == 4096); // every row covered exactly once
+}
+
+static void grain_folds_are_lane_invariant() {
+    CHECK(sum_with(0, 1) == sum_with(0, 4));   // executor default
+    CHECK(sum_with(64, 1) == sum_with(64, 4)); // finer than the default floor
+    CHECK(sum_with(7, 1) == sum_with(7, 4));   // finer still, uneven
+}
+
 int main() {
     RUN_SUITE(leveling_respects_conflicts);
     RUN_SUITE(parallel_systems_are_independent_levels);
@@ -356,5 +519,9 @@ int main() {
     RUN_SUITE(registration_options_are_order_independent);
     RUN_SUITE(wave_ordinals_are_plan_positions);
     RUN_SUITE(multiple_observers_notified_in_order);
+    RUN_SUITE(grain_sets_the_slice_size);
+    RUN_SUITE(grain_slices_cover_every_row_once);
+    RUN_SUITE(dynamic_parallel_is_instantiated_and_honours_grain);
+    RUN_SUITE(grain_folds_are_lane_invariant);
     return REPORT();
 }
