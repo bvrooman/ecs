@@ -2,13 +2,26 @@ cmake_minimum_required(VERSION 3.24)
 project(ecs VERSION 0.1.0 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
+# Toolchain requirements
+# ---------------------------------------------------------------------------
+# Minimum versions for the C++23 subset the library uses, and what CI builds.
+# cxx_std_23 alone does not cover it: a compiler can claim C++23 and still be
+# missing pieces, failing deep in a template instead of here. Compilers CI does
+# not cover are left alone.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
+    message(FATAL_ERROR "ecs requires GCC >= 14, found ${CMAKE_CXX_COMPILER_VERSION}")
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
+    message(FATAL_ERROR "ecs requires Clang >= 18, found ${CMAKE_CXX_COMPILER_VERSION}")
+endif ()
+
+# ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
 # ECS_USE_P2996: build the reflection facade against C++26 static reflection
-# (P2996 std::meta). Requires a toolchain with P2996 support such as GCC 16
-# (g++-16, which ships libstdc++). When OFF the portable structured-bindings
-# backend is used so the project builds on stock Clang/GCC.
-option(ECS_USE_P2996 "Use C++26 P2996 static reflection" ON)
+# (P2996 std::meta). Requires GCC >= 16 (g++-16, which ships libstdc++); the
+# dev-config/release-config presets pin both. OFF by default -- the portable
+# structured-bindings backend builds on stock Clang/GCC.
+option(ECS_USE_P2996 "Use C++26 P2996 static reflection" OFF)
 option(ECS_BUILD_TESTS "Build the test suite" ON)
 option(ECS_BUILD_EXAMPLES "Build examples" ON)
 option(ECS_BUILD_BENCHMARKS "Build the microbenchmarks" ON)
@@ -36,6 +49,15 @@ if (EMSCRIPTEN AND ECS_USE_P2996)
 endif ()
 
 if (ECS_USE_P2996)
+    # GCC-only by construction: -freflection below is a GCC flag, and GCC 16 is
+    # the only release shipping std::meta. Checked here so the failure names
+    # this option, rather than the "does not support CXX26" that
+    # find_package(Threads) would raise later.
+    if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+        message(FATAL_ERROR "ECS_USE_P2996=ON requires GCC >= 16, found "
+                            "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}. "
+                            "Use -DECS_USE_P2996=OFF for the portable backend.")
+    endif ()
     set(CMAKE_CXX_STANDARD 26)
 else ()
     set(CMAKE_CXX_STANDARD 23)

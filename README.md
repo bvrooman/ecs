@@ -64,9 +64,9 @@ int main() {
 
 ## Build
 
-Requires CMake ≥ 3.24 and a C++23 compiler with libstdc++ (the library uses
-`std::move_only_function`). No external dependencies — header-only, linking only
-the system threads library.
+Requires CMake ≥ 3.24 and **GCC ≥ 14 or Clang ≥ 18** with libstdc++ (the
+library uses `std::move_only_function`) — the versions CI builds. No external
+dependencies — header-only, linking only the system threads library.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -91,8 +91,8 @@ absolute values track the host's memory subsystem.
 
 By default the library uses a **portable** reflection backend (aggregate arity +
 structured bindings) that compiles on stock compilers. To use **real C++26
-P2996 static reflection** (`std::meta`) with a toolchain that supports it
-(e.g. GCC 16 / `g++-16`, which ships libstdc++):
+P2996 static reflection** (`std::meta`) instead, which needs **GCC ≥ 16**
+(`g++-16`, which ships libstdc++):
 
 ```sh
 cmake -S . -B build -DECS_USE_P2996=ON   # adds -std=c++26 -freflection
