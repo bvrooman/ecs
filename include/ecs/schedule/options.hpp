@@ -20,6 +20,7 @@ namespace ecs {
 //   sched.add_serial("setup",     fn, times {1});
 //   sched.add_serial("resort",    fn, phase {-1}, every {64});
 //   sched.add_serial("from_cfg",  fn, every {cfg.rate});
+//   sched.add_parallel("forces",  fn, grain {64});
 
 // Coarse ordering: systems run in ascending phase order with a barrier between
 // phases; within a phase they are leveled by conflicts. Default 0, so
@@ -39,26 +40,9 @@ struct times {
     std::uint64_t n = 0;
 };
 
-// Slice size: cut this parallel system's matched rows into work items of at
-// most n rows each, instead of the executor's default. 0 (the default) keeps
-// the default. PARALLEL-ONLY -- a serial system is one opaque item and has
-// nothing to slice, so add_serial rejects it at compile time.
-//
-// Reach for it when per-row work is far from typical. The default grain is
-// derived from the ROW COUNT alone, which assumes rows cost roughly the same:
-// right for an elementwise map, wrong by orders of magnitude for a kernel whose
-// per-row work is itself O(n) -- a pairwise force sum, say -- where the default
-// floor can hand out fewer items than there are lanes and leave lanes idle.
-//
-//   sched.add_parallel("forces", fn, grain {64}); // O(n) per row: slice finer
-//
-// A declared value, so it is part of the schedule's identity: the same
-// registration always yields the same items, hence the same number of Reduce
-// partials and the same barrier fold order. That is deliberate, and it is why
-// grain is not auto-tuned from the measured per-item cost the executor already
-// records -- a timing-derived grain would vary run to run and forfeit the
-// bitwise reproducibility the parallel primitives exist to provide. Grain never
-// depends on the lane count either way, so lane-invariance is unaffected.
+// Slice size: rows per work item, overriding the executor's default sizing.
+// 0 keeps the default. Parallel-only -- add_serial rejects it, since a serial
+// system is one opaque item with nothing to slice.
 struct grain {
     std::size_t n = 0;
 };
