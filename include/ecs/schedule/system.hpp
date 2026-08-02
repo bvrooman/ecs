@@ -273,6 +273,11 @@ struct SystemRecord {
     // a wave left empty by skips runs no barrier. Always >= 1.
     std::uint64_t every = 1;
     bool is_parallel    = false;
+    // Slice size for a parallel system: rows per work item, from grain{n} at
+    // registration. 0 means the executor picks (WavePlan::build_parallel).
+    // Ignored for serial systems, which are one opaque item; add_serial rejects
+    // the option outright.
+    std::size_t grain = 0;
 
     [[nodiscard]]
     WaveKey wave_key() const noexcept {
