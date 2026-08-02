@@ -348,8 +348,8 @@ private:
         sys.phase       = phase;
         sys.every       = every;
         sys.times       = times;
-        sys.is_parallel = is_parallel;
         sys.grain       = grain;
+        sys.is_parallel = is_parallel;
         sys.run         = std::forward<Run>(run);
         return register_system(std::move(sys));
     }
@@ -401,8 +401,8 @@ private:
         sys.phase       = phase;
         sys.times       = times;
         sys.every       = std::max<std::uint64_t>(1, every);
-        sys.is_parallel = is_parallel;
         sys.grain       = grain;
+        sys.is_parallel = is_parallel;
         detail::declare<Param, Args>(sys.access, Seq {});
         if constexpr (detail::query_info<Args>::has_query) {
             constexpr auto QI = detail::query_info<Args>::index;
