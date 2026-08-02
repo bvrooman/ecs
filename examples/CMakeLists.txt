@@ -1,7 +1,17 @@
+# ---------------------------------------------------------------------------
+# nbody: the naive O(n^2) reference simulation -- the accuracy and speed
+# baseline the Barnes-Hut demo is measured against. No renderer, so it builds
+# and runs everywhere the library does.
+# ---------------------------------------------------------------------------
 add_executable(nbody nbody.cpp)
+# benchmarks/ for bench.hpp (env knobs + the ECS_BENCH_OUT results sink), so a
+# run is comparable with the microbenchmark suites and mist-headless.
+target_include_directories(nbody PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks)
 target_link_libraries(nbody PRIVATE ecs::ecs)
-# A light optimization level so the SoA timing is meaningful.
-target_compile_options(nbody PRIVATE $<$<CONFIG:Release>:-O2>)
+# -O3 (not the -O2 the other demos use): the tick is one compute-bound pairwise
+# kernel, and this is the number Barnes-Hut gets compared against, so the
+# baseline should not be handicapped.
+target_compile_options(nbody PRIVATE $<$<CONFIG:Release>:-O3>)
 
 # ---------------------------------------------------------------------------
 # mist-headless: the murmuration simulation without the renderer. Runs the
