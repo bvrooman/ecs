@@ -190,6 +190,7 @@ public:
                                std::forward<Run>(run),
                                o.phase,
                                o.every,
+                               o.times,
                                o.grain,
                                /*is_parallel=*/true);
     }

@@ -464,6 +464,44 @@ static double sum_with(std::size_t const grain_rows, unsigned const lanes) {
     return w.resource<GrainSum>().v;
 }
 
+// add_dynamic_parallel is a template with no native caller -- only the wasm
+// bindings instantiate it -- so a signature error in it compiles clean through
+// a full native build and the whole test suite, and surfaces only in the
+// Emscripten CI leg. That is not a safety net worth relying on: instantiate it
+// here, and check grain reaches the dynamic path while we are at it.
+static void dynamic_parallel_is_instantiated_and_honours_grain() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 4096; ++i)
+            cmd.spawn(Position {float(i), 0.0f});
+    });
+
+    SystemAccess access;
+    access.writes.push_back(component_id<Position>);
+
+    // Written from several lanes, so they are atomics and the CHECKs come
+    // after the run (check.hpp's counters are not thread-safe).
+    std::atomic<int> calls {0};
+    std::atomic<std::uint32_t> rows {0};
+
+    Schedule sched;
+    sched.add_dynamic_parallel(
+        "dyn",
+        access,
+        Signature {component_id<Position>},
+        [&](World&, Commands&, detail::WorkItem const& item) {
+            ++calls;
+            for (auto const& u : item.units)
+                rows += u.end - u.begin;
+        },
+        grain {64});
+
+    WorkerPool pool {4};
+    sched.run(w, pool);
+    CHECK(calls.load() == 64);  // 4096 rows / grain 64
+    CHECK(rows.load() == 4096); // every row covered exactly once
+}
+
 static void grain_folds_are_lane_invariant() {
     CHECK(sum_with(0, 1) == sum_with(0, 4));   // executor default
     CHECK(sum_with(64, 1) == sum_with(64, 4)); // finer than the default floor
@@ -483,6 +521,7 @@ int main() {
     RUN_SUITE(multiple_observers_notified_in_order);
     RUN_SUITE(grain_sets_the_slice_size);
     RUN_SUITE(grain_slices_cover_every_row_once);
+    RUN_SUITE(dynamic_parallel_is_instantiated_and_honours_grain);
     RUN_SUITE(grain_folds_are_lane_invariant);
     return REPORT();
 }
