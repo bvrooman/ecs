@@ -3,13 +3,12 @@
 // What ORDERS systems: the derived access sets (SystemAccess) and the conflict
 // predicate over them. Nothing here executes anything.
 //
-// This is a PUBLIC vocabulary, not an internal one, and that is the reason it
-// stands alone. Wavefront leveling pairs it with a system's phase --
+// Wavefront leveling pairs the predicate with a system's phase --
 //
 //     same phase && conflicts(a.access, b.access)      graph.hpp, assign_levels
 //
-// -- and the visualizer in tools/ rebuilds the identical predicate out of tree
-// (viz/graph.hpp), so the dependency graph has exactly one definition. The
+// -- and the visualizer rebuilds the same pairing (tools/, viz/graph.hpp), so
+// the dependency graph has one definition rather than two that can drift. The
 // registration options that configure how a system RUNS once ordered
 // (every/times/grain) live in options.hpp; they never reach this analysis.
 
@@ -88,9 +87,8 @@ namespace detail {
 // Do two access sets conflict? One writes what the other reads or writes
 // (read/read never conflicts); an `exclusive` set conflicts with everything,
 // a `reads_all` set only with writers. Components and resources are checked
-// independently. Public so out-of-tree tooling (e.g. the schedule visualizer
-// in tools/) can rebuild the same dependency graph without re-deriving it;
-// Schedule::conflicts forwards here.
+// independently. Reachable outside detail so the schedule visualizer in tools/
+// can rebuild the same dependency graph without re-deriving it.
 inline bool conflicts(SystemAccess const& a, SystemAccess const& b) {
     if (a.exclusive || b.exclusive)
         return true;
