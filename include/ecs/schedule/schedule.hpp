@@ -65,6 +65,7 @@ public:
     //   phase{n}  coarse ordering across barriers (default 0)
     //   every{n}  run only on ticks where tick % n == 0 (default 1)
     //   times{n}  retire after being due n times (default 0 = never)
+    //   grain{n}  rows per work item (add_parallel only; default 0 = executor picks)
     //
     //   sched.add_serial("integrate", [](Query<Position, Velocity const> q){ ... });
     //   sched.add_serial("startup",   setup_fn, phase{-1}, times{1});
@@ -74,6 +75,10 @@ public:
     // Returns a handle remove() can unschedule.
     template <class Fn, class... Opts>
     SystemId add_serial(std::string name, Fn&& fn, Opts... opts) {
+        static_assert(!(std::same_as<Opts, grain> || ... || false),
+                      "grain{n} is a parallel-only option -- a serial system is one "
+                      "opaque work item, so there is nothing to slice. Register with "
+                      "add_parallel() to have its rows sliced");
         auto const o = detail::resolve_options(opts...);
         return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.phase, o.every);
     }
@@ -114,6 +119,13 @@ public:
     // Ordered iteration and effects still belong in add_serial() systems. The sliced
     // Query is bound to the shared 1-lane pool, so nothing a parallel body does
     // can reach a nested dispatch.
+    //
+    // How finely the rows are sliced is the executor's choice by default, made
+    // from the row count alone -- which assumes rows cost roughly the same. When
+    // they do not (per-row work that is itself O(n), so a default-sized item is
+    // enormous and there may be fewer items than lanes), say so with grain{n}:
+    //
+    //   sched.add_parallel("forces", fn, grain {64}); // 64 rows per work item
     template <class Fn, class... Opts>
     SystemId add_parallel(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
@@ -121,7 +133,8 @@ public:
                                 std::forward<Fn>(fn),
                                 o.phase,
                                 o.every,
-                                o.times);
+                                o.times,
+                                o.grain);
     }
 
     // Register a system whose access is *declared* (a runtime SystemAccess)
@@ -140,6 +153,10 @@ public:
                                 SystemAccess access,
                                 Run&& run,
                                 Opts... opts) {
+        static_assert(!(std::same_as<Opts, grain> || ... || false),
+                      "grain{n} is a parallel-only option -- a serial system is one "
+                      "opaque work item, so there is nothing to slice. Register with "
+                      "add_dynamic_parallel() to have its rows sliced");
         auto const o = detail::resolve_options(opts...);
         return emplace_dynamic(std::move(name),
                                std::move(access),
@@ -148,6 +165,7 @@ public:
                                o.phase,
                                o.every,
                                o.times,
+                               /*grain=*/0,
                                /*is_parallel=*/false);
     }
 
@@ -173,6 +191,7 @@ public:
                                o.phase,
                                o.every,
                                o.times,
+                               o.grain,
                                /*is_parallel=*/true);
     }
 
@@ -320,6 +339,7 @@ private:
                              int phase,
                              std::uint64_t every,
                              std::uint64_t times,
+                             std::size_t grain,
                              bool is_parallel) {
         System sys;
         sys.name        = std::move(name);
@@ -328,6 +348,7 @@ private:
         sys.phase       = phase;
         sys.every       = every;
         sys.times       = times;
+        sys.grain       = grain;
         sys.is_parallel = is_parallel;
         sys.run         = std::forward<Run>(run);
         return register_system(std::move(sys));
@@ -369,6 +390,7 @@ private:
                           std::uint64_t const times,
                           int const phase,
                           std::uint64_t const every,
+                          std::size_t const grain,
                           bool const is_parallel) {
         using Args       = detail::system_args_t<Fn>;
         constexpr auto N = std::tuple_size_v<Args>;
@@ -379,6 +401,7 @@ private:
         sys.phase       = phase;
         sys.times       = times;
         sys.every       = std::max<std::uint64_t>(1, every);
+        sys.grain       = grain;
         sys.is_parallel = is_parallel;
         detail::declare<Param, Args>(sys.access, Seq {});
         if constexpr (detail::query_info<Args>::has_query) {
@@ -440,6 +463,7 @@ private:
                                         times,
                                         phase,
                                         every,
+                                        /*grain=*/0, // serial: one opaque item
                                         /*is_parallel=*/false);
         return SystemId::none(); // reached only when a static_assert above fired
     }
@@ -449,7 +473,8 @@ private:
                               Fn&& fn,
                               int const phase,
                               std::uint64_t const every,
-                              std::uint64_t const times) {
+                              std::uint64_t const times,
+                              std::size_t const grain) {
         static_assert(detail::IntrospectableSystem<Fn>,
                       "a system must be a plain function or a functor with exactly "
                       "one non-template call operator -- a generic (auto-parameter) "
@@ -495,6 +520,7 @@ private:
                                         times,
                                         phase,
                                         every,
+                                        grain,
                                         /*is_parallel=*/true);
         return SystemId::none(); // reached only when a static_assert above fired
     }
