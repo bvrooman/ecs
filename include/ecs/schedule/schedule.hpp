@@ -165,8 +165,8 @@ public:
                                o.phase,
                                o.every,
                                o.times,
-                               /*is_parallel=*/false,
-                               /*grain=*/0);
+                               /*grain=*/0,
+                               /*is_parallel=*/false);
     }
 
     // Parallel counterpart of add_dynamic_serial -- the dynamic mirror of add_parallel.
@@ -190,9 +190,8 @@ public:
                                std::forward<Run>(run),
                                o.phase,
                                o.every,
-                               o.times,
-                               /*is_parallel=*/true,
-                               o.grain);
+                               o.grain,
+                               /*is_parallel=*/true);
     }
 
     // Unschedule a system by handle. Returns true if it was present (and live).
@@ -339,8 +338,8 @@ private:
                              int phase,
                              std::uint64_t every,
                              std::uint64_t times,
-                             bool is_parallel,
-                             std::size_t grain) {
+                             std::size_t grain,
+                             bool is_parallel) {
         System sys;
         sys.name        = std::move(name);
         sys.access      = std::move(access); // caller-supplied ids: normalized below
@@ -390,8 +389,8 @@ private:
                           std::uint64_t const times,
                           int const phase,
                           std::uint64_t const every,
-                          bool const is_parallel,
-                          std::size_t const grain = 0) {
+                          std::size_t const grain,
+                          bool const is_parallel) {
         using Args       = detail::system_args_t<Fn>;
         constexpr auto N = std::tuple_size_v<Args>;
         using Info       = detail::params_info<Param, Args>;
@@ -463,6 +462,7 @@ private:
                                         times,
                                         phase,
                                         every,
+                                        /*grain=*/0, // serial: one opaque item
                                         /*is_parallel=*/false);
         return SystemId::none(); // reached only when a static_assert above fired
     }
@@ -519,8 +519,8 @@ private:
                                         times,
                                         phase,
                                         every,
-                                        /*is_parallel=*/true,
-                                        grain);
+                                        grain,
+                                        /*is_parallel=*/true);
         return SystemId::none(); // reached only when a static_assert above fired
     }
 
