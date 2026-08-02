@@ -26,10 +26,9 @@ jobs:
   # Release. The P2996 path needs GCC 16, which no runner image ships yet --
   # revisit when it lands in ubuntu images.
   #
-  # No leg pins ECS_USE_P2996: they all take its default, so the default is
-  # what CI exercises. Pinning it -- which every leg here used to do, and every
-  # preset still does -- is how ECS_USE_P2996=ON stayed green in CI while
-  # failing for anyone running the README quickstart.
+  # No leg pins ECS_USE_P2996, so CI exercises its default. Pinning it on every
+  # leg is how ECS_USE_P2996=ON stayed green here while failing the README
+  # quickstart.
   native:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
