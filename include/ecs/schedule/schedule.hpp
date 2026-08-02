@@ -33,6 +33,7 @@
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/events.hpp>
 #include <ecs/schedule/graph.hpp>
+#include <ecs/schedule/options.hpp>
 #include <ecs/schedule/params.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/validate.hpp>
@@ -60,7 +61,7 @@ public:
 
     // Register a serial system. Its access is derived from its parameter
     // types. Registration options follow the body as an optional pack -- each may
-    // be given at most once, in any order (see schedule/access.hpp):
+    // be given at most once, in any order (see schedule/options.hpp):
     //
     //   phase{n}  coarse ordering across barriers (default 0)
     //   every{n}  run only on ticks where tick % n == 0 (default 1)
