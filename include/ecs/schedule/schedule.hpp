@@ -33,6 +33,7 @@
 #include <ecs/schedule/access.hpp>
 #include <ecs/schedule/events.hpp>
 #include <ecs/schedule/graph.hpp>
+#include <ecs/schedule/options.hpp>
 #include <ecs/schedule/params.hpp>
 #include <ecs/schedule/system.hpp>
 #include <ecs/schedule/validate.hpp>
@@ -60,7 +61,7 @@ public:
 
     // Register a serial system. Its access is derived from its parameter
     // types. Registration options follow the body as an optional pack -- each may
-    // be given at most once, in any order (see schedule/access.hpp):
+    // be given at most once, in any order (see schedule/options.hpp):
     //
     //   phase{n}  coarse ordering across barriers (default 0)
     //   every{n}  run only on ticks where tick % n == 0 (default 1)
@@ -83,49 +84,21 @@ public:
         return emplace(std::move(name), std::forward<Fn>(fn), o.times, o.phase, o.every);
     }
 
-    // Register a PARALLEL system. Same signature rules as add_serial() -- the system's
-    // parameter types declare its access -- with one structural requirement:
-    // exactly ONE Query<Cs...> parameter. That query is the iteration the
-    // executor slices: the system body is invoked once per work item with the
-    // Query restricted to that item's rows, so `q.for_each_chunk(...)` /
-    // `q.for_each(...)` inside iterate just the slice, inline on the
-    // claiming lane. A serial add_serial() system with independent per-row work
-    // becomes a parallel system by changing one word:
+    // Register a PARALLEL system. Same signature rules as add_serial(), plus one
+    // structural requirement: exactly ONE Query<Cs...>. That query is the iteration
+    // the executor slices -- the body runs once per work item with the Query
+    // restricted to that item's rows, concurrently with the system's own other
+    // items, so it must be independent per-row work.
     //
     //   sched.add_parallel("steer",
-    //       [](Query<const Position, Velocity> q, Res<Clock> clk) {
+    //       [](Query<Position const, Velocity> q, Res<Clock> clk) {
     //           q.for_each([&](auto& p, auto& v) { ... });
     //       });
     //
-    // Unlike a serial system (an opaque callable the executor must run
-    // whole), a parallel system's iteration is VISIBLE to the scheduler: its
-    // matched rows are sliced into work items and overlapped with the rest of
-    // the wave's items across the pool's lanes (see run()). Items of one
-    // system cover disjoint rows and cross-system conflicts are leveled, so
-    // the same race-freedom argument as for_each_chunk applies -- but the
-    // body must be independent per-row work: it runs CONCURRENTLY with the
-    // system's own other items. For that reason ResMut<T> is rejected here
-    // (writes through it would race between the system's own items -- the
-    // conflict analysis only serializes OTHER systems). The allowed parameters
-    // besides the Query: Res<T> (shared read), Commands& (per-item recording,
-    // replayed in canonical order), WorldView (read-only), and the per-item
-    // primitives from
-    // schedule/params/ -- Reduce<T, Op> (private partials folded at the
-    // barrier), Extract<T> (disjoint spans over a pre-sized buffer),
-    // Collect<T> (filtered gather, concatenated at the barrier),
-    // EventWriter<T>/EventReader<T> (double-buffered Events<T> channel),
-    // Bin<V> (group-by into contiguous per-bucket spans),
-    // Scratch<T> (private workspace), Random (deterministic per-item stream).
-    // Ordered iteration and effects still belong in add_serial() systems. The sliced
-    // Query is bound to the shared 1-lane pool, so nothing a parallel body does
-    // can reach a nested dispatch.
-    //
-    // How finely the rows are sliced is the executor's choice by default, made
-    // from the row count alone -- which assumes rows cost roughly the same. When
-    // they do not (per-row work that is itself O(n), so a default-sized item is
-    // enormous and there may be fewer items than lanes), say so with grain{n}:
-    //
-    //   sched.add_parallel("forces", fn, grain {64}); // 64 rows per work item
+    // ResMut<T> is therefore rejected -- writes through it would race between this
+    // system's own items. Besides the Query: Res<T>, Commands&, WorldView, and the
+    // per-item primitives in schedule/params/ (Reduce, Extract, Collect, Bin,
+    // Scratch, EventWriter/EventReader, Random). grain{n} sets the slice size.
     template <class Fn, class... Opts>
     SystemId add_parallel(std::string name, Fn&& fn, Opts... opts) {
         auto const o = detail::resolve_options(opts...);
