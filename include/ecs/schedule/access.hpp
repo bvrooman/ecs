@@ -1,16 +1,8 @@
 // ecs/schedule/access.hpp
 //
 // What ORDERS systems: the derived access sets (SystemAccess) and the conflict
-// predicate over them. Nothing here executes anything.
-//
-// Wavefront leveling pairs the predicate with a system's phase --
-//
-//     same phase && conflicts(a.access, b.access)      graph.hpp, assign_levels
-//
-// -- and the visualizer rebuilds the same pairing (tools/, viz/graph.hpp), so
-// the dependency graph has one definition rather than two that can drift. The
-// registration options that configure how a system RUNS once ordered
-// (every/times/grain) live in options.hpp; they never reach this analysis.
+// predicate the wavefront leveling and the visualizer both apply to them. The
+// registration options live in options.hpp.
 
 #pragma once
 

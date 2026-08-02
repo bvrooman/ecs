@@ -1,21 +1,7 @@
 // ecs/schedule/options.hpp
 //
-// The registration vocabulary: the options an add_* form accepts as a trailing
-// pack, and the fold that resolves them.
-//
-// Split from access.hpp because the two answer different questions and have
-// different audiences. access.hpp holds what ORDERS systems -- SystemAccess and
-// conflicts() -- which out-of-tree tooling depends on: the visualizer rebuilds
-// the dependency graph from `same phase && conflicts(a, b)`, the identical
-// predicate assign_levels uses. What is here instead configures how a system
-// RUNS once ordered: `every` and `times` drive dueness and retirement, `grain`
-// drives slicing. Those never reach the conflict analysis.
-//
-// `phase` straddles the two -- it is declared here with its siblings because it
-// is a registration option, but it is read by the leveling and by the
-// visualizer alongside access. Note both read the plain int off SystemRecord,
-// not the option struct: nothing outside schedule.hpp names these types or
-// touches resolve_options.
+// The registration options an add_* form accepts as a trailing pack, and the
+// fold that resolves them.
 
 #pragma once
 
