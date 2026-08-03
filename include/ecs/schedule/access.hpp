@@ -21,7 +21,7 @@ namespace ecs {
 // conflicts only with writers, so read-only systems still run in parallel.
 struct SystemAccess {
     std::vector<ComponentId> reads, writes;
-    std::vector<ResourceId> res_reads, res_writes;
+    std::vector<ResourceId> res_reads, res_writes, res_folds;
     bool exclusive = false;
     bool reads_all = false;
     // Purely informational (does not affect conflict analysis): the system took
@@ -45,6 +45,7 @@ namespace detail {
         norm(a.writes);
         norm(a.res_reads);
         norm(a.res_writes);
+        norm(a.res_folds);
     }
 
     template <class Id>
@@ -62,16 +63,25 @@ namespace detail {
         return false;
     }
 
-    template <class Id>
-    inline bool conflicts_on(std::vector<Id> const& aw,
-                             std::vector<Id> const& ar,
-                             std::vector<Id> const& bw,
-                             std::vector<Id> const& br) {
-        return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
+    inline bool component_conflicts(SystemAccess const& a, SystemAccess const& b) {
+        return intersects(a.writes, b.reads) || intersects(a.writes, b.writes) ||
+               intersects(a.reads, b.writes);
+    }
+
+    // A fold behaves as a write against reads and plain writes; fold-vs-fold is
+    // the one pair that does not conflict (read-vs-read is the other).
+    inline bool res_conflicts(SystemAccess const& a, SystemAccess const& b) {
+        return intersects(a.res_writes, b.res_reads) ||
+               intersects(a.res_writes, b.res_writes) ||
+               intersects(a.res_writes, b.res_folds) ||
+               intersects(a.res_folds, b.res_reads) ||
+               intersects(a.res_folds, b.res_writes) ||
+               intersects(a.res_reads, b.res_writes) ||
+               intersects(a.res_reads, b.res_folds);
     }
 
     inline bool writes_any(SystemAccess const& a) {
-        return !a.writes.empty() || !a.res_writes.empty();
+        return !a.writes.empty() || !a.res_writes.empty() || !a.res_folds.empty();
     }
 
 } // namespace detail
@@ -86,8 +96,7 @@ inline bool conflicts(SystemAccess const& a, SystemAccess const& b) {
         return true;
     if ((a.reads_all && detail::writes_any(b)) || (b.reads_all && detail::writes_any(a)))
         return true;
-    return detail::conflicts_on(a.writes, a.reads, b.writes, b.reads) ||
-           detail::conflicts_on(a.res_writes, a.res_reads, b.res_writes, b.res_reads);
+    return detail::component_conflicts(a, b) || detail::res_conflicts(a, b);
 }
 
 } // namespace ecs

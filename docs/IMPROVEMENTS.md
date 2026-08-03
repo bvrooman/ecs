@@ -79,6 +79,14 @@ that introduced this document; the rest are recorded as a roadmap.
   Now atomic.
 - **[done]** `CommandBuffer::apply` drained shards without taking shard
   mutexes (safe only by invariant); it now locks each (uncontended) mutex.
+- **[done]** Two systems folding into one resource silently lost a fold.
+  `Reduce`/`Collect` declared a resource WRITE, so conflict analysis put them
+  in separate waves — and the later wave's prepare reset the target, erasing
+  what the earlier wave's finish had folded in. Which one survived depended on
+  registration order, with no diagnostic anywhere. They now declare a FOLD
+  (`SystemAccess::res_folds`), the one same-resource pair that does not
+  conflict: both share a wave, both contributions land. Surfaced by
+  `examples/nbody/` (§9).
 
 ### Type-system / API integrity
 - **[done]** `Query<Position, const Position>` compiled and handed a kernel two

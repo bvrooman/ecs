@@ -5,7 +5,9 @@
 // Each item appends into a private T partial; at the barrier the partials are
 // concatenated into the T RESOURCE in ordinal order, so the result is exactly
 // what a serial filtered walk would have produced. The target is rebuilt
-// every run, like Reduce.
+// every run, like Reduce, and declares a FOLD for the same reason: two
+// systems collecting into one target may share a wave, concatenating in
+// finish-hook order.
 
 #pragma once
 
@@ -61,7 +63,7 @@ namespace detail {
             slot_array<T> parts;
         };
 
-        static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
+        static void declare(SystemAccess& a) { a.res_folds.push_back(resource_id<T>); }
 
         static void prepare(state& s,
                             World& w,
