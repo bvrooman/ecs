@@ -5,6 +5,8 @@
 // No systems and no harness -- see simulation.cpp and main.cpp.
 #pragma once
 
+#include <ecs/schedule/params/fold.hpp> // Fold, fold::tick
+
 #include <cstdint>
 #include <vector>
 
@@ -42,17 +44,20 @@ struct Body {
 };
 using BodyArray = std::vector<Body>;
 
-// --- reduction targets ------------------------------------------------------
-// Separate resources because they are separate quantities, produced by
-// different systems. Both accumulate in double -- summing n^2 float terms
-// loses the drift signal being measured.
-struct Potential {
-    double u = 0;
+// --- reduction target -------------------------------------------------------
+// One record, folded by two systems: `forces` contributes the potential,
+// `integrate` the kinetic energy and momentum. Accumulates in double --
+// summing n^2 float terms loses the drift signal being measured.
+struct Energy {
+    double u  = 0;                 // potential, from `forces`
+    double ke = 0;                 // kinetic, from `integrate`
+    double px = 0, py = 0, pz = 0; // momentum, from `integrate`
 };
 
-struct Motion {
-    double ke = 0, px = 0, py = 0, pz = 0;
-};
+// Tick scope, not the default wave scope: `integrate` reads Accel, so it can
+// never share a wave with `forces`, and a per-wave target would be rebuilt
+// between the two folds.
+using EnergyFold = ecs::Fold<Energy, ecs::fold::tick>;
 
 // Running conservation record, updated once per tick by `diagnostics`.
 // Energy drift is relative (|dE/E0|); momentum drift is absolute, since the

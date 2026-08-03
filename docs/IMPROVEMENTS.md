@@ -276,6 +276,27 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | `Local<T>` | per-SYSTEM state across ticks (item 6 above; imperative systems only — rejected in `add_parallel`, where per-item state is `Scratch` and merging state is `Reduce`/`Collect`) | — | none | **done** |
    | `Bin<V>` / group-by | (bucket, value) emission into contiguous per-bucket spans of a `Bins<V>` resource (spatial hashing) | buckets | barrier counting sort: count → prefix-sum → ordinal-order scatter | **done** |
 
+   **[done] The second axis — SCOPE.** The table above is one axis (fold
+   *shape*: sum, concat, bucket). When a target's accumulator RESETS is
+   another, and it used to be hardcoded per primitive: `Reduce`/`Collect`
+   rebuilt per wave, `Events` per tick via `advance_to`. So you chose a reset
+   boundary by choosing a primitive, and a quantity wanting Reduce's shape
+   with Events' scope had no spelling — `examples/nbody/` hit exactly that,
+   since `forces` and `integrate` are split by an `Accel` dependency and a
+   per-wave target is rebuilt between their folds.
+
+   Scope is now declared on the TARGET, so every folder into it agrees by
+   construction: `Fold<T, Scope>` (`params/fold.hpp`), with `fold::wave` (the
+   default, and what a bare target keeps), `fold::tick`, `fold::ticks(n)` for
+   a rolling window, and `fold::lifetime` for a monotonic counter. A bare `T`
+   is `fold::wave`, so every existing fold is unchanged.
+
+   Still one axis short: **visibility** — immediate (readable later the same
+   tick) vs deferred (readable next tick). `Events` is concat × tick ×
+   deferred, and its double buffer is the only implementation of the deferred
+   half. Re-expressing it as `Collect` + scope + a buffer-swap policy would
+   retire the duplicated concat loop; the reader side stays Events-specific.
+
    **The unifying prize — lane-count invariance.** Every primitive merges in
    canonical world order, so a schedule's observable results are bitwise
    identical at 1 lane and N lanes (including float reductions) — the property
