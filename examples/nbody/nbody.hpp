@@ -43,10 +43,9 @@ struct Body {
 using BodyArray = std::vector<Body>;
 
 // --- reduction targets ------------------------------------------------------
-// Potential and kinetic energy land in SEPARATE resources because a Reduce
-// resets its target at wave prepare: two systems folding into one resource
-// would have the later reset wipe the earlier fold. Both accumulate in double
-// -- summing n^2 float terms loses the drift signal being measured.
+// Separate resources because they are separate quantities, produced by
+// different systems. Both accumulate in double -- summing n^2 float terms
+// loses the drift signal being measured.
 struct Potential {
     double u = 0;
 };

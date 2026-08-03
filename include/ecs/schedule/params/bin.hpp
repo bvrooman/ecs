@@ -84,6 +84,8 @@ namespace detail {
             std::vector<std::size_t> cursors; // scatter scratch, reused
         };
 
+        // A plain write, not a fold: finish rebuilds the bucket structure from
+        // its own partials rather than accumulating into the target.
         static void declare(SystemAccess& a) {
             a.res_writes.push_back(resource_id<Bins<V>>);
         }

@@ -472,6 +472,139 @@ static void collect_matches_serial_filter_order() {
     CHECK(repeated == serial1); // target rebuilt each run, not accumulated
 }
 
+// Two systems folding into ONE resource compose. A fold declares res_folds
+// rather than res_writes, and fold-vs-fold is the one same-resource pair that
+// does not conflict -- so both share a wave, both resets hit the same identity
+// before the dispatch, and both finishes accumulate. Declared as writes they
+// were forced into separate waves, where the later prepare's reset wiped the
+// earlier fold and one system's contribution vanished silently.
+static void two_folds_into_one_resource_compose() {
+    constexpr int kRows = 12'000;
+    // Exact in float, so the total does not depend on fold order.
+    constexpr float kA = 1.0f;
+    constexpr float kB = 2.0f;
+
+    auto run_pair = [](unsigned lanes, bool a_first, std::size_t& waves) {
+        World w;
+        w.emplace_resource<FSum>();
+        populate_mixed(w, kRows);
+        auto add_a = [](Query<Position const> q, Reduce<FSum, FAdd> s) {
+            q.for_each([&](auto&) { s->v += kA; });
+        };
+        auto add_b = [](Query<Position const> q, Reduce<FSum, FAdd> s) {
+            q.for_each([&](auto&) { s->v += kB; });
+        };
+        Schedule s;
+        if (a_first) {
+            s.add_parallel("a", add_a);
+            s.add_parallel("b", add_b);
+        } else {
+            s.add_parallel("b", add_b);
+            s.add_parallel("a", add_a);
+        }
+        waves = s.level_count();
+        WorkerPool pool {lanes};
+        s.run(w, pool);
+        return w.resource<FSum>().v;
+    };
+
+    // Row count: populate_mixed spawns one Position per i, plus one more every
+    // third i, and both systems match Position.
+    float rows = 0;
+    {
+        World w;
+        populate_mixed(w, kRows);
+        w.for_each<Position const>([&](auto&) { rows += 1.0f; });
+    }
+
+    std::size_t wa = 0, wb = 0, w4 = 0;
+    float const a_first = run_pair(1, true, wa);
+    float const b_first = run_pair(1, false, wb);
+    float const lanes4  = run_pair(4, true, w4);
+
+    CHECK(wa == 1); // fold-vs-fold does not conflict: one wave
+    CHECK(wb == 1);
+    CHECK(w4 == 1);
+    CHECK(a_first == rows * (kA + kB)); // BOTH contributions survive
+    CHECK(b_first == a_first);          // and not just the last-registered one
+    CHECK(lanes4 == a_first);           // still bitwise lane-invariant
+}
+
+// A fold is still a write against everything except another fold: readers and
+// plain ResMut writers of the same resource level after it, and an unrelated
+// resource does not level at all.
+struct OtherRes {
+    int v = 0;
+};
+static void fold_levels_against_readers_and_plain_writers() {
+    auto levels = [](auto&& add_second) {
+        World w;
+        w.emplace_resource<FSum>();
+        w.emplace_resource<OtherRes>();
+        populate_mixed(w, 512);
+        Schedule s;
+        s.add_parallel("fold", [](Query<Position const> q, Reduce<FSum, FAdd> f) {
+            q.for_each([&](auto& p) { f->v += p.x; });
+        });
+        add_second(s);
+        return s.level_count();
+    };
+
+    CHECK(levels([](Schedule& s) {
+              s.add_parallel("fold2", [](Query<Position const> q, Reduce<FSum, FAdd> f) {
+                  q.for_each([&](auto&) { f->v += 1.0f; });
+              });
+          }) == 1); // fold vs fold, same resource
+    CHECK(levels([](Schedule& s) { s.add_serial("read", [](Res<FSum>) {}); }) ==
+          2); // fold vs reader
+    CHECK(levels([](Schedule& s) { s.add_serial("write", [](ResMut<FSum>) {}); }) ==
+          2); // fold vs plain write
+    CHECK(levels([](Schedule& s) { s.add_serial("other", [](Res<OtherRes>) {}); }) ==
+          1); // unrelated resource
+}
+
+// Collect folds too: two systems collecting into one target concatenate in
+// finish-hook order (registration order within the wave) instead of one
+// silently replacing the other.
+static void two_collects_into_one_resource_concatenate() {
+    World w;
+    w.emplace_resource<std::vector<int>>();
+    populate_mixed(w, 4'000);
+
+    Schedule s;
+    s.add_parallel("evens", [](Query<Health const> q, Collect<std::vector<int>> out) {
+        q.for_each([&](auto& h) {
+            if (h.hp % 2 == 0)
+                out->push_back(h.hp);
+        });
+    });
+    s.add_parallel("odds", [](Query<Health const> q, Collect<std::vector<int>> out) {
+        q.for_each([&](auto& h) {
+            if (h.hp % 2 != 0)
+                out->push_back(-h.hp);
+        });
+    });
+    CHECK(s.level_count() == 1);
+    WorkerPool pool {4};
+    s.run(w, pool);
+
+    std::vector<int> evens, odds;
+    {
+        World ref;
+        populate_mixed(ref, 4'000);
+        ref.for_each<Health const>([&](auto& h) {
+            if (h.hp % 2 == 0)
+                evens.push_back(h.hp);
+            else
+                odds.push_back(-h.hp);
+        });
+    }
+    CHECK(!evens.empty() && !odds.empty());
+    auto expect = evens;
+    expect.insert(expect.end(), odds.begin(), odds.end());
+    CHECK(w.resource<std::vector<int>>() == expect);
+}
+
 // Events: a double-buffered channel. Events emitted during tick N are
 // readable during tick N+1 -- never the same tick -- by both a kernel
 // EventReader and a serial Res<Events<T>> system, in an order deterministic
@@ -785,6 +918,9 @@ int main() {
     RUN_SUITE(reduce_sparse_partial_matches_dense_histogram);
     RUN_SUITE(extract_matches_serial_gather_order);
     RUN_SUITE(collect_matches_serial_filter_order);
+    RUN_SUITE(two_folds_into_one_resource_compose);
+    RUN_SUITE(fold_levels_against_readers_and_plain_writers);
+    RUN_SUITE(two_collects_into_one_resource_concatenate);
     RUN_SUITE(events_are_double_buffered_and_deterministic);
     RUN_SUITE(local_state_persists_across_ticks);
     RUN_SUITE(kernel_commands_replay_in_canonical_order);

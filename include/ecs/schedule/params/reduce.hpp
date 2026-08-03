@@ -12,10 +12,10 @@
 // touched cells, folded into the dense grid resource at the barrier, instead
 // of one full grid copy per item.
 //
-// Declares a resource WRITE on T, so same-wave readers of T level after the
-// system exactly as with ResMut -- but the physical writes are per-item-
-// private during the dispatch, and the shared-target writes happen only in
-// the single-threaded barrier hooks.
+// Declares a FOLD on T (SystemAccess::res_folds): readers and plain writers
+// of T level after the system exactly as with ResMut, but two systems folding
+// into the same T may share a wave -- the resets are idempotent and the
+// finishes accumulate, so both contributions survive.
 
 #pragma once
 
@@ -61,7 +61,7 @@ namespace detail {
             slot_array<Partial> parts;
         };
 
-        static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
+        static void declare(SystemAccess& a) { a.res_folds.push_back(resource_id<T>); }
 
         static void prepare(state& s,
                             World& w,

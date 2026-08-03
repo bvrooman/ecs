@@ -6,9 +6,9 @@
 // DISJOINT slice at an executor-computed offset -- one write per element, no
 // fold at all.
 //
-// Declares a resource WRITE on T (same leveling story as Reduce: physical
-// writes are disjoint; the pre-sizing happens in the single-threaded prepare
-// hook).
+// Declares a resource WRITE on T -- a plain write, not a fold: prepare sizes
+// the buffer to THIS system's row count, so two Extracts cannot share one
+// target the way two Reduces can.
 
 #pragma once
 

@@ -41,7 +41,7 @@ inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
     v.name         = s.name;
     v.times        = s.times;
     bool const has = !a.reads.empty() || !a.writes.empty() || !a.res_reads.empty() ||
-                     !a.res_writes.empty();
+                     !a.res_writes.empty() || !a.res_folds.empty();
     v.kind         = a.exclusive   ? Kind::Exclusive
                      : a.reads_all ? Kind::ReadsAll
                      : has         ? Kind::Normal
@@ -51,6 +51,10 @@ inline NodeView node_view(ecs::Schedule::System const& s, NameTable const& nt) {
     for (auto id : a.reads)
         v.lines.push_back({Line::Access, nt.comp_name(id), 'R', false});
     for (auto id : a.res_writes)
+        v.lines.push_back({Line::Access, nt.res_name(id), 'W', true});
+    // Folds render as writes: that is their relation to everything the graph
+    // draws an edge for. Fold-vs-fold shows up as the absent edge.
+    for (auto id : a.res_folds)
         v.lines.push_back({Line::Access, nt.res_name(id), 'W', true});
     for (auto id : a.res_reads)
         v.lines.push_back({Line::Access, nt.res_name(id), 'R', true});
