@@ -5,8 +5,10 @@
 //
 //   * the system-parameter protocol (detail::system_param<P>): how a system's
 //     parameter types declare access and are bound when it runs, and
-//   * the parallel plumbing (system_param<Query<Cs...>>): how a parallel system's
-//     single Query parameter binds restricted to one work item's row range.
+//   * the pack-level rules built on it -- what counts as a parameter, and the
+//     at-most-one-Query constraint a parallel system's slicing depends on.
+//
+// The protocol's per-type specializations all live in params/.
 //
 // The Schedule (schedule.hpp) consumes these; the Wave executor (wave.hpp)
 // consumes SystemRecord.
@@ -15,7 +17,7 @@
 
 #include <ecs/detail/compat/move_only_function.hpp>
 #include <ecs/detail/work_item.hpp>
-#include <ecs/query.hpp> // Query -- system_param<Query<Cs...>>
+#include <ecs/query.hpp> // Query -- is_query_param_v
 #include <ecs/schedule/access.hpp>
 #include <ecs/world.hpp> // World, Commands, WorldView
 
@@ -100,56 +102,12 @@ concept IntrospectableSystem =
     requires { typename callable_args<std::decay_t<F>>::type; };
 
 // --- system parameter protocol: declare(access) + bind(world, commands) ----
+// Specializations live beside their type where the scheduler owns it
+// (reduce.hpp, extract.hpp, ...) and in params/ where it does not: Query,
+// Res/ResMut, Commands& and WorldView are core types, so a specialization in
+// their own header would make the core depend on the scheduler.
 template <class P>
 struct system_param; // unspecialized => using an unsupported parameter type
-
-template <class C>
-void declare_component(SystemAccess& a) {
-    if constexpr (std::is_const_v<C>)
-        a.reads.push_back(component_id<std::remove_const_t<C>>);
-    else
-        a.writes.push_back(component_id<C>);
-}
-
-template <class... Cs>
-struct system_param<Query<Cs...>> {
-    static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-    static Query<Cs...> bind(World& w, Commands&, WorkItem const& item) {
-        return Query<Cs...>(w, item);
-    }
-    static Signature const& signature() { return Query<Cs...>::required(); }
-};
-template <class T>
-struct system_param<Res<T>> {
-    static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-    static Res<T> bind(World& w, Commands&, WorkItem const&) { return Res<T>(w); }
-};
-template <class T>
-struct system_param<ResMut<T>> {
-    static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-    static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
-};
-template <>
-struct system_param<Commands&> {
-    // A side channel: no tracked component/resource access. We still flag it
-    // so tooling can surface that the system records commands.
-    static void declare(SystemAccess& a) { a.commands = true; }
-    static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
-};
-// Read-only ad-hoc access: WorldView reads everything but writes nothing,
-// so it runs in parallel with other readers and is serialized only against
-// writers.
-template <>
-struct system_param<WorldView> {
-    static void declare(SystemAccess& a) { a.reads_all = true; }
-    static WorldView bind(World& w, Commands&, WorkItem const&) { return WorldView(w); }
-};
-// Note there is deliberately NO system_param<World&>: raw world access cannot
-// be analyzed and is dangerous under any concurrent executor, so it is not a
-// system parameter. Setup happens on the World directly (outside a run),
-// mutation goes through Commands, ad-hoc reads through WorldView; a system
-// registered via add_dynamic_serial may still declare itself `exclusive` when its
-// access is genuinely unanalyzable.
 
 // A supported system parameter: anything the protocol above can declare and
 // bind. The primary system_param template is intentionally undefined, so an

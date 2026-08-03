@@ -34,6 +34,12 @@
 //
 // The serial side is smaller: Local<T> (params/local.hpp) is per-system
 // state for add_serial(), and is the only parameter exclusive to it.
+//
+// The parameters whose TYPES are core rather than scheduler-owned -- Query,
+// Res/ResMut, Commands&, WorldView -- keep their specializations here too
+// (params/query.hpp, params/resource.hpp, params/commands.hpp,
+// params/world_view.hpp), since declaring them beside the type would make
+// the core depend on the scheduler.
 
 #pragma once
 
@@ -45,8 +51,11 @@
 #include <ecs/schedule/params/local.hpp>
 #include <ecs/schedule/params/parallel.hpp>
 #include <ecs/schedule/params/protocol.hpp>
+#include <ecs/schedule/params/query.hpp>
 #include <ecs/schedule/params/random.hpp>
 #include <ecs/schedule/params/reduce.hpp>
+#include <ecs/schedule/params/resource.hpp>
 #include <ecs/schedule/params/scratch.hpp>
 #include <ecs/schedule/params/serial.hpp>
 #include <ecs/schedule/params/state.hpp>
+#include <ecs/schedule/params/world_view.hpp>
