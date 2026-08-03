@@ -21,12 +21,7 @@ namespace ecs {
 // conflicts only with writers, so read-only systems still run in parallel.
 struct SystemAccess {
     std::vector<ComponentId> reads, writes;
-    std::vector<ResourceId> res_reads, res_writes;
-    // Accumulating writes (Reduce/Collect): the shared target is touched only
-    // in the single-threaded finish hook, and the folds compose, so two
-    // folders of one resource may share a wave. Against everything else --
-    // readers, plain writers -- a fold conflicts exactly as a write does.
-    std::vector<ResourceId> res_folds;
+    std::vector<ResourceId> res_reads, res_writes, res_folds;
     bool exclusive = false;
     bool reads_all = false;
     // Purely informational (does not affect conflict analysis): the system took
@@ -68,16 +63,13 @@ namespace detail {
         return false;
     }
 
-    template <class Id>
-    inline bool conflicts_on(std::vector<Id> const& aw,
-                             std::vector<Id> const& ar,
-                             std::vector<Id> const& bw,
-                             std::vector<Id> const& br) {
-        return intersects(aw, br) || intersects(aw, bw) || intersects(bw, ar);
+    inline bool component_conflicts(SystemAccess const& a, SystemAccess const& b) {
+        return intersects(a.writes, b.reads) || intersects(a.writes, b.writes) ||
+               intersects(b.writes, a.reads);
     }
 
-    // Resource conflicts. A fold behaves as a write against reads and plain
-    // writes; fold-vs-fold is the one pair that does not conflict.
+    // A fold behaves as a write against reads and plain writes; fold-vs-fold is
+    // the one pair that does not conflict.
     inline bool res_conflicts(SystemAccess const& a, SystemAccess const& b) {
         return intersects(a.res_writes, b.res_reads) ||
                intersects(a.res_folds, b.res_reads) ||
@@ -104,8 +96,7 @@ inline bool conflicts(SystemAccess const& a, SystemAccess const& b) {
         return true;
     if ((a.reads_all && detail::writes_any(b)) || (b.reads_all && detail::writes_any(a)))
         return true;
-    return detail::conflicts_on(a.writes, a.reads, b.writes, b.reads) ||
-           detail::res_conflicts(a, b);
+    return detail::component_conflicts(a, b) || detail::res_conflicts(a, b);
 }
 
 } // namespace ecs
