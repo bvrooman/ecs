@@ -34,12 +34,6 @@
 //
 // The serial side is smaller: Local<T> (params/local.hpp) is per-system
 // state for add_serial(), and is the only parameter exclusive to it.
-//
-// The parameters whose TYPES are core rather than scheduler-owned -- Query,
-// Res/ResMut, Commands&, WorldView -- keep their specializations here too
-// (params/query.hpp, params/resource.hpp, params/commands.hpp,
-// params/world_view.hpp), since declaring them beside the type would make
-// the core depend on the scheduler.
 
 #pragma once
 

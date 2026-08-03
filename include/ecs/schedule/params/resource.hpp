@@ -3,9 +3,6 @@
 // Res<T> / ResMut<T> as system parameters: a plain resource read and a plain
 // resource write. The accumulating resource writes are Reduce and Collect,
 // which declare a fold instead (reduce.hpp, collect.hpp).
-//
-// Res/ResMut live in ecs/world/res.hpp, a CORE header that must not depend on
-// the scheduler, so their system_param specializations live here.
 
 #pragma once
 

@@ -3,10 +3,6 @@
 // Query<Cs...> as a system parameter: component access derived from the type
 // list (const => read, non-const => write), bound restricted to one work
 // item's row range.
-//
-// Query itself lives in ecs/query.hpp, a CORE header that must not depend on
-// the scheduler, so its system_param specialization lives here instead of
-// beside the type.
 
 #pragma once
 

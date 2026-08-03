@@ -102,10 +102,6 @@ concept IntrospectableSystem =
     requires { typename callable_args<std::decay_t<F>>::type; };
 
 // --- system parameter protocol: declare(access) + bind(world, commands) ----
-// Specializations live beside their type where the scheduler owns it
-// (reduce.hpp, extract.hpp, ...) and in params/ where it does not: Query,
-// Res/ResMut, Commands& and WorldView are core types, so a specialization in
-// their own header would make the core depend on the scheduler.
 template <class P>
 struct system_param; // unspecialized => using an unsupported parameter type
 
