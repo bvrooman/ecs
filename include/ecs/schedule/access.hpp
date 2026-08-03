@@ -65,19 +65,19 @@ namespace detail {
 
     inline bool component_conflicts(SystemAccess const& a, SystemAccess const& b) {
         return intersects(a.writes, b.reads) || intersects(a.writes, b.writes) ||
-               intersects(b.writes, a.reads);
+               intersects(a.reads, b.writes);
     }
 
     // A fold behaves as a write against reads and plain writes; fold-vs-fold is
-    // the one pair that does not conflict.
+    // the one pair that does not conflict (read-vs-read is the other).
     inline bool res_conflicts(SystemAccess const& a, SystemAccess const& b) {
         return intersects(a.res_writes, b.res_reads) ||
-               intersects(a.res_folds, b.res_reads) ||
-               intersects(b.res_writes, a.res_reads) ||
-               intersects(b.res_folds, a.res_reads) ||
                intersects(a.res_writes, b.res_writes) ||
                intersects(a.res_writes, b.res_folds) ||
-               intersects(b.res_writes, a.res_folds);
+               intersects(a.res_folds, b.res_reads) ||
+               intersects(a.res_folds, b.res_writes) ||
+               intersects(a.res_reads, b.res_writes) ||
+               intersects(a.res_reads, b.res_folds);
     }
 
     inline bool writes_any(SystemAccess const& a) {
