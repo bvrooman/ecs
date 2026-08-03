@@ -34,6 +34,14 @@
 namespace ecs {
 namespace detail {
 
+    // A side channel: no tracked component/resource access. Still flagged so
+    // tooling can surface that the system records commands.
+    template <>
+    struct system_param<Commands&> {
+        static void declare(SystemAccess& a) { a.commands = true; }
+        static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
+    };
+
     template <>
     struct parallel_param<Commands&> {
         static constexpr bool allowed = true;
