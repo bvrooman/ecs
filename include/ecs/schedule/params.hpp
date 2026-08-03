@@ -45,8 +45,11 @@
 #include <ecs/schedule/params/local.hpp>
 #include <ecs/schedule/params/parallel.hpp>
 #include <ecs/schedule/params/protocol.hpp>
+#include <ecs/schedule/params/query.hpp>
 #include <ecs/schedule/params/random.hpp>
 #include <ecs/schedule/params/reduce.hpp>
+#include <ecs/schedule/params/resource.hpp>
 #include <ecs/schedule/params/scratch.hpp>
 #include <ecs/schedule/params/serial.hpp>
 #include <ecs/schedule/params/state.hpp>
+#include <ecs/schedule/params/world_view.hpp>

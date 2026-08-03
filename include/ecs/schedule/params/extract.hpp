@@ -6,9 +6,8 @@
 // DISJOINT slice at an executor-computed offset -- one write per element, no
 // fold at all.
 //
-// Declares a resource WRITE on T (same leveling story as Reduce: physical
-// writes are disjoint; the pre-sizing happens in the single-threaded prepare
-// hook).
+// Declares a resource WRITE on T: physical writes are disjoint; the pre-sizing
+// happens in the single-threaded prepare hook.
 
 #pragma once
 
