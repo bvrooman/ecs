@@ -6,15 +6,20 @@
 // state at every lane count. Exits non-zero if any of those fail; a reference
 // that is silently wrong is worse than no reference.
 //
-// One caveat this surfaces rather than hides: the executor slices a parallel
-// system into items of grain = max(kMinItemRows, rows / 64), with
-// kMinItemRows = 1024 (wave.hpp). That floor is sized for cheap per-row work,
-// but here per-row work is O(n) -- so below 1024 * lanes bodies there are fewer
-// items than lanes and the spare lanes idle. Measured on 4 cores: 1024 bodies
-// -> 1 item -> 1.00x at any lane count; 2048 -> 2 items -> 1.88x; 8192 -> 8
-// items -> 3.77x. The item count is printed, and called out when it binds, so a
-// flat speedup reads as grain-limited rather than as the executor failing to
-// scale. A per-dispatch grain hint is roadmap (docs/IMPROVEMENTS.md, item 6).
+// One library limit this surfaces rather than hides -- which is half of why the
+// demo exists (see simulation.cpp). The executor slices a parallel system into
+// items of grain = max(kMinItemRows, rows / 64), with kMinItemRows = 1024
+// (wave.hpp). That floor is sized for cheap per-row work, but here per-row work
+// is O(n) -- so below 1024 * lanes bodies there are fewer items than lanes and
+// the spare lanes idle. Measured on 4 cores: 1024 bodies -> 1 item -> 1.00x at
+// any lane count; 2048 -> 2 items -> 1.88x; 8192 -> 8 items -> 3.77x.
+//
+// That finding is what produced grain{n}, the per-system slice-size hint, so
+// the opt-out now exists. This demo deliberately does not take it: the numbers
+// above are the DEFAULT executor's behavior on a compute-heavy kernel, and
+// tuning them away here would delete the measurement. The item count is
+// printed, and called out when it binds, so a flat speedup reads as
+// grain-limited rather than as the executor failing to scale.
 //
 //   ./build/examples/nbody                       # 4096 bodies, 50 ticks
 //   ECS_BODIES=8192 ECS_TICKS=200 ./build/examples/nbody

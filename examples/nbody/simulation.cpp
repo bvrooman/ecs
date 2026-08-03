@@ -1,9 +1,22 @@
 // examples/nbody/simulation.cpp
 //
 // A real O(n^2) gravitational n-body simulation -- every body pulled by every
-// other, no approximation. It exists to be the REFERENCE the Barnes-Hut demo is
-// measured against, for accuracy and for speed, so it stays deliberately simple
-// and obviously correct rather than clever.
+// other, no approximation. It stays deliberately simple and obviously correct
+// rather than clever, because it is not here to be fast. It has two jobs, and
+// both of them point at the LIBRARY rather than at the physics:
+//
+//   1. Find gaps and drive improvements. A workload the library cannot express
+//      well, or executes badly, is the output. grain{n} came from exactly this:
+//      the force kernel's per-row work is O(n), the executor's slice floor is
+//      sized for cheap rows, and the mismatch showed up here first as a 1.00x
+//      speedup at 1024 bodies.
+//   2. Be the REFERENCE that better n-body implementations are measured
+//      against, for accuracy and for speed -- starting with Barnes-Hut, which
+//      is itself another instrument pointed at the library.
+//
+// Both jobs want the same thing from this file: an honest baseline. So it is
+// not hand-optimized, and where it runs into a library limit it says so rather
+// than tuning around it -- see the grain note in main.cpp.
 //
 // The interesting part for the library is how PAIRWISE work is expressed. A
 // system takes at most one Query, and a parallel system's Query is sliced into

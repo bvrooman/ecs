@@ -245,8 +245,10 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    is the roadmap replacement for genuinely exclusive work.)
 6. Batch spawning (`spawn_batch(n, factory)` — fixes the closure-per-spawn
    spike), ~~`Local<T>` per-system state~~ (**done** — see item 7),
-   per-dispatch grain hints, a thin `App`/fixed-timestep layer; larger:
-   structural-change hooks, entity relationships.
+   ~~per-dispatch grain hints~~ (**done** — `grain{n}`, a per-system
+   slice-size hint; surfaced by `examples/nbody/`, see §9), a thin
+   `App`/fixed-timestep layer; larger: structural-change hooks, entity
+   relationships.
 7. **The parallel-primitives suite.** Nearly every safe cross-item pattern a
    kernel system needs is ONE mechanism — per-item private slots plus an
    optional deterministic barrier-time merge — wearing different typed faces.
@@ -499,6 +501,20 @@ diagonal so the turnover past the physical-core count is a picture.
 
 ## 9. Examples & tooling (roadmap)
 
+Some examples are demos; some are instruments. The n-body family is the second
+kind, and it has two jobs, both pointed at the library rather than at the
+physics: **find gaps and drive improvements**, and **be the reference that
+better implementations are measured against** — where those better
+implementations (Barnes-Hut next) are themselves instruments with the same two
+jobs. `grain{n}` is what this looks like when it works: the naive kernel's
+per-row work is O(n), the executor's slice floor assumed cheap rows, and the
+mismatch surfaced as a 1.00x speedup at 1024 bodies before it became a feature.
+
+The practical consequence is that an instrument stays honestly configured. It
+is not hand-optimized, and when it hits a library limit it reports it instead of
+tuning around it — a demo that tunes away its own finding has deleted the
+finding. `examples/nbody/` does not use `grain{n}` for that reason.
+
 - `examples/hello.cpp` minimal example built in CI (the README snippet is
   untested documentation); lead the quickstart with an `add_parallel` system
   (parallelism lives on the executor, not the query).
@@ -515,4 +531,4 @@ diagonal so the turnover past the physical-core count is a picture.
   advertise the mist metrics/filmstrip harness in the top README.
 - Backport the web port's overrun resync into the native sim loops;
   deduplicate the render-thread body and the three `gl_util` copies into
-  `examples/common/`; drop the hardcoded `Entity{0,0}` in `nbody.cpp`.
+  `examples/common/`.
