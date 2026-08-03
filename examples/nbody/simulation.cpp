@@ -32,9 +32,9 @@
 // Nothing declares an order. Access alone levels the four systems:
 //
 //   gather      reads Position, Mass          writes BodyArray
-//   forces      reads Position, Mass, Body..  writes Accel, Potential
-//   integrate   reads Accel, Mass             writes Position, Velocity, Motion
-//   diagnostics reads Potential, Motion       writes Diag
+//   forces      reads Position, Mass, Body..  writes Accel, Energy
+//   integrate   reads Accel, Mass             writes Position, Velocity, Energy
+//   diagnostics reads Energy                  writes Diag
 //
 // Physics: Plummer-softened gravity, a_i = sum_j G m_j d_ij / (|d|^2+eps^2)^1.5,
 // advanced by semi-implicit (symplectic) Euler -- v += a dt, then x += v dt.
@@ -60,12 +60,9 @@ namespace {
 
 // Fold operators for the two reductions. Implementation detail of how the
 // schedule accumulates, so they live here rather than beside the data.
-struct AddPotential {
-    void operator()(Potential& a, Potential& b) const { a.u += b.u; }
-};
-
-struct AddMotion {
-    void operator()(Motion& a, Motion& b) const {
+struct AddEnergy {
+    void operator()(Energy& a, Energy& b) const {
+        a.u += b.u;
         a.ke += b.ke;
         a.px += b.px;
         a.py += b.py;
@@ -95,8 +92,7 @@ struct AddMotion {
 // that merely stays constant.
 void seed_bodies(World& world, int const n) {
     world.emplace_resource<BodyArray>();
-    world.emplace_resource<Potential>();
-    world.emplace_resource<Motion>();
+    world.emplace_resource<EnergyFold>();
     world.emplace_resource<Diag>();
 
     float const m     = 1.0f / float(n);
@@ -187,7 +183,7 @@ void build_nbody_schedule(Schedule& schedule) {
     schedule.add_parallel("forces",
                           [](Query<Position const, Mass const, Accel> q,
                              Res<BodyArray> bodies,
-                             Reduce<Potential, AddPotential> pot) {
+                             Reduce<EnergyFold, AddEnergy> e) {
                               auto const& b       = *bodies;
                               std::size_t const n = b.size();
                               double u_local      = 0;
@@ -221,7 +217,7 @@ void build_nbody_schedule(Schedule& schedule) {
                                   a.z = az;
                                   u_local += 0.5 * double(pe); // pairs seen twice
                               });
-                              pot->u += u_local;
+                              e->u += u_local;
                           });
 
     // integrate: semi-implicit Euler -- kick then drift, using the acceleration
@@ -229,8 +225,8 @@ void build_nbody_schedule(Schedule& schedule) {
     // Kinetic energy and momentum ride along for free while the velocity is hot.
     schedule.add_parallel("integrate",
                           [](Query<Position, Velocity, Mass const, Accel const> q,
-                             Reduce<Motion, AddMotion> mot) {
-                              Motion local;
+                             Reduce<EnergyFold, AddEnergy> e) {
+                              Energy local;
                               q.for_each([&](auto& p, auto& v, auto& mass, auto& a) {
                                   v.x += a.x * cfg::kDt;
                                   v.y += a.y * cfg::kDt;
@@ -246,10 +242,10 @@ void build_nbody_schedule(Schedule& schedule) {
                                   local.py += m * v.y;
                                   local.pz += m * v.z;
                               });
-                              mot->ke += local.ke;
-                              mot->px += local.px;
-                              mot->py += local.py;
-                              mot->pz += local.pz;
+                              e->ke += local.ke;
+                              e->px += local.px;
+                              e->py += local.py;
+                              e->pz += local.pz;
                           });
 
     // diagnostics: fold the two reductions into a conservation record. Ordered
@@ -261,19 +257,18 @@ void build_nbody_schedule(Schedule& schedule) {
     // For symplectic Euler that is a constant offset, not a growing error, so
     // the DRIFT below is still the signal -- it just should not be read as the
     // exact total energy.
-    schedule.add_serial(
-        "diagnostics",
-        [](Res<Potential> pot, Res<Motion> mot, ResMut<Diag> d) {
-            d->e = mot->ke + pot->u;
-            d->p = std::sqrt(mot->px * mot->px + mot->py * mot->py + mot->pz * mot->pz);
-            if (!d->primed) {
-                d->e0     = d->e;
-                d->p0     = d->p;
-                d->primed = true;
-            }
-            if (d->e0 != 0.0)
-                d->max_drift = std::max(d->max_drift, std::abs((d->e - d->e0) / d->e0));
-            d->max_p_drift = std::max(d->max_p_drift, std::abs(d->p - d->p0));
-            ++d->ticks;
-        });
+    schedule.add_serial("diagnostics", [](Res<EnergyFold> ef, ResMut<Diag> d) {
+        auto const& e = ef->value();
+        d->e          = e.ke + e.u;
+        d->p          = std::sqrt(e.px * e.px + e.py * e.py + e.pz * e.pz);
+        if (!d->primed) {
+            d->e0     = d->e;
+            d->p0     = d->p;
+            d->primed = true;
+        }
+        if (d->e0 != 0.0)
+            d->max_drift = std::max(d->max_drift, std::abs((d->e - d->e0) / d->e0));
+        d->max_p_drift = std::max(d->max_p_drift, std::abs(d->p - d->p0));
+        ++d->ticks;
+    });
 }

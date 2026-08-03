@@ -605,6 +605,121 @@ static void two_collects_into_one_resource_concatenate() {
     CHECK(w.resource<std::vector<int>>() == expect);
 }
 
+// A fold target's SCOPE is when its accumulator resets, declared on the target
+// so every folder agrees. res_folds lets two folders share a wave; scope is
+// what lets them contribute from DIFFERENT waves, which a component
+// dependency between them makes unavoidable.
+struct Pair {
+    double a = 0, b = 0;
+};
+struct AddPair {
+    void operator()(Pair& x, Pair& y) const {
+        x.a += y.a;
+        x.b += y.b;
+    }
+};
+// `first` writes Mark, `second` reads it: they can never share a wave.
+struct Mark {
+    float v = 0;
+};
+template <class Target>
+static std::vector<Pair> run_two_wave_folds(int const rows, int const ticks) {
+    World w;
+    w.emplace_resource<Target>();
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < rows; ++i)
+            cmd.spawn(Position {1, 0}, Mark {});
+    });
+    Schedule s;
+    s.add_parallel("first", [](Query<Position const, Mark> q, Reduce<Target, AddPair> f) {
+        q.for_each([&](auto& p, auto& m) {
+            m.v = p.x;
+            f->a += 1.0;
+        });
+    });
+    s.add_parallel("second", [](Query<Mark const> q, Reduce<Target, AddPair> f) {
+        q.for_each([&](auto&) { f->b += 1.0; });
+    });
+    CHECK(s.level_count() == 2); // the component dependency splits them
+
+    WorkerPool pool {4};
+    std::vector<Pair> seen;
+    for (int t = 0; t < ticks; ++t) {
+        s.run(w, pool);
+        seen.push_back(detail::fold_target<Target>::value(w.resource<Target>()));
+    }
+    return seen;
+}
+
+static void fold_scope_sets_the_reset_boundary() {
+    constexpr int kRows = 100;
+    constexpr double kN = double(kRows);
+
+    // wave (the default, and what a bare target keeps): `second`'s prepare
+    // rebuilds the target, so `first`'s contribution is gone by the time
+    // anything reads it. Unchanged behaviour -- every existing fold relies on
+    // this window.
+    auto const bare = run_two_wave_folds<Pair>(kRows, 2);
+    CHECK(bare[0].a == 0.0);
+    CHECK(bare[0].b == kN);
+
+    // tick: one reset per tick, so both waves land in the same accumulator.
+    auto const per_tick = run_two_wave_folds<Fold<Pair, fold::tick>>(kRows, 3);
+    for (auto const& p : per_tick) {
+        CHECK(p.a == kN);
+        CHECK(p.b == kN);
+    }
+
+    // ticks(2): a rolling two-tick window -- the second tick of a window adds
+    // to the first, and the next window starts over.
+    auto const windowed = run_two_wave_folds<Fold<Pair, fold::ticks(2)>>(kRows, 4);
+    CHECK(windowed[1].a == kN);       // window opens
+    CHECK(windowed[2].a == 2.0 * kN); // same window, accumulated
+    CHECK(windowed[3].a == kN);       // next window, reset
+    CHECK(windowed[3].b == kN);
+
+    // lifetime: never reset; a monotonic counter.
+    auto const forever = run_two_wave_folds<Fold<Pair, fold::lifetime>>(kRows, 3);
+    CHECK(forever[0].a == kN);
+    CHECK(forever[1].a == 2.0 * kN);
+    CHECK(forever[2].a == 3.0 * kN);
+    CHECK(forever[2].b == 3.0 * kN);
+}
+
+// Scope is a property of the target, not of the fold shape: Collect takes it
+// through the same wrapper, concatenating across waves at tick scope.
+static void collect_honours_the_target_scope() {
+    using Log = Fold<std::vector<int>, fold::tick>;
+    World w;
+    w.emplace_resource<Log>();
+    setup(w, [&](Commands& cmd) {
+        for (int i = 0; i < 64; ++i)
+            cmd.spawn(Position {1, 0}, Mark {});
+    });
+
+    Schedule s;
+    s.add_parallel("ones", [](Query<Position const, Mark> q, Collect<Log> out) {
+        q.for_each([&](auto& p, auto& m) {
+            m.v = p.x;
+            out->push_back(1);
+        });
+    });
+    s.add_parallel("twos", [](Query<Mark const> q, Collect<Log> out) {
+        q.for_each([&](auto&) { out->push_back(2); });
+    });
+    CHECK(s.level_count() == 2);
+
+    WorkerPool pool {4};
+    s.run(w, pool);
+    auto const& log = w.resource<Log>().value();
+    CHECK(log.size() == 128); // both waves, not just the last
+    CHECK(log.front() == 1);
+    CHECK(log.back() == 2);
+
+    s.run(w, pool);
+    CHECK(w.resource<Log>().value().size() == 128); // rebuilt each tick
+}
+
 // Events: a double-buffered channel. Events emitted during tick N are
 // readable during tick N+1 -- never the same tick -- by both a kernel
 // EventReader and a serial Res<Events<T>> system, in an order deterministic
@@ -921,6 +1036,8 @@ int main() {
     RUN_SUITE(two_folds_into_one_resource_compose);
     RUN_SUITE(fold_levels_against_readers_and_plain_writers);
     RUN_SUITE(two_collects_into_one_resource_concatenate);
+    RUN_SUITE(fold_scope_sets_the_reset_boundary);
+    RUN_SUITE(collect_honours_the_target_scope);
     RUN_SUITE(events_are_double_buffered_and_deterministic);
     RUN_SUITE(local_state_persists_across_ticks);
     RUN_SUITE(kernel_commands_replay_in_canonical_order);

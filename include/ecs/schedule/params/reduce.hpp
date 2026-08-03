@@ -1,10 +1,9 @@
 // ecs/schedule/params/reduce.hpp
 //
-// Reduce<T, Op, Partial = T>: fold-shaped state (sums, bounds, grids) for
-// parallel systems. Each item gets a private Partial; at the barrier the
-// partials fold into the T RESOURCE with Op in ordinal order. The target is
-// rebuilt every run (reset at prepare), like the serial rebuild-every-tick
-// reductions it replaces.
+// Reduce<T, Op, Partial>: fold-shaped state (sums, bounds, grids) for parallel
+// systems. Each item gets a private Partial; at the barrier the partials fold
+// into the T RESOURCE with Op in ordinal order. T is rebuilt at its declared
+// scope -- every wave by default, wider with Fold<T, Scope> (fold.hpp).
 //
 // Partial defaults to T (a float sum folds float partials). Give it a
 // different type when the target is large and dense but each item touches
@@ -12,13 +11,14 @@
 // touched cells, folded into the dense grid resource at the barrier, instead
 // of one full grid copy per item.
 //
-// Declares a FOLD on T (SystemAccess::res_folds): readers and plain writers
-// of T level after the system exactly as with ResMut, but two systems folding
-// into the same T may share a wave -- the resets are idempotent and the
-// finishes accumulate, so both contributions survive.
+// Declares a FOLD on T (SystemAccess::res_folds): readers and plain writers of
+// T level after the system exactly as with ResMut, but two systems folding
+// into the same T may share a wave. Contributing from DIFFERENT waves needs a
+// target scope wider than a wave.
 
 #pragma once
 
+#include <ecs/schedule/params/fold.hpp>     // Fold, detail::fold_target
 #include <ecs/schedule/params/parallel.hpp> // detail::slot_array
 #include <ecs/schedule/params/protocol.hpp>
 
@@ -35,7 +35,7 @@ namespace ecs {
 //   void operator()(T& into, Partial& partial) const
 // (partial is mutable so Op may move out of it). Precondition, checked at
 // bind: the world owns a T resource.
-template <class T, class Op, class Partial = T>
+template <class T, class Op, class Partial = detail::fold_value_t<T>>
 class Reduce {
 public:
     [[nodiscard]]
@@ -66,15 +66,15 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            WaveContext const&) {
+                            WaveContext const& ctx) {
             s.parts.prepare(rows.size());
-            // The target holds THIS run's reduction: rebuilt every run, like
-            // the serial rebuild-every-tick systems Reduce replaces.
-            reset_value(w.resource<T>());
+            // Rebuilt at the target's declared scope -- every wave for a bare
+            // T, wider for a Fold<T, Scope>. Idempotent within a window.
+            fold_target<T>::begin_window(w.resource<T>(), ctx.tick);
         }
 
         static void finish(state& s, World& w) {
-            auto& target = w.resource<T>();
+            auto& target = fold_target<T>::value(w.resource<T>());
             Op op {};
             for (std::size_t i = 0; i < s.parts.active; ++i)
                 op(target, s.parts[i]);
