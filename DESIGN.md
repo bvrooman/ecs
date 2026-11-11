@@ -30,7 +30,9 @@ include/ecs/
     res.hpp              Res<T> / ResMut<T> resource parameters
     view.hpp             WorldView -- the read-only ad-hoc read parameter
   schedule/            conflict analysis + the WorkerPool executor
-    access.hpp           phase/every/times options, SystemAccess, conflicts()
+    options.hpp          phase/every/times/grain -- the registration options
+    access.hpp           SystemAccess, conflicts()
+    wave_id.hpp          WaveId -- a wave's position in the tick's plan order
     system.hpp           SystemRecord + system_param, the per-parameter
                          binding protocol both system kinds route through
     validate.hpp         the consteval checks registration is gated on
@@ -137,7 +139,7 @@ entity between archetype tables (dynamic archetypes, like flecs/EnTT):
 ```cpp
 // inside a system, given Commands& cmd (see §7):
 Entity e = cmd.spawn(Position{0,0,0}, Velocity{1,0,0});     // archetype {P,V}
-cmd.add<Frozen>(e);                                         // -> {P,V,Frozen}
+cmd.add<Frozen>(e, Frozen{});                               // -> {P,V,Frozen}
 cmd.remove<Velocity>(e);                                    // -> {P,Frozen}
 ```
 
@@ -215,14 +217,16 @@ a read-only component is passed by `const&` and skipped by the write-back (and
 *undeclared write* of touching a component you only read:
 
 ```cpp
+// inside a system, given Query<Position, const Velocity> q (see §5):
+
 // per-element (ROW-shaped) -- each component by reference, accessed as p.x
-query<Position, const Velocity>(w).for_each([](auto& p, auto& v){
+q.for_each([](auto& p, auto& v){
   p.x += v.x;   // Velocity is read-only: not written back
 });
 
 // per-chunk (COLUMN-shaped, SoA) -- a `chunk` per component (raw column spans)
-query<Position, const Velocity>(w).for_each_chunk(
-  [](std::span<Entity>, chunk<Position> pos, chunk<const Velocity> vel){
+q.for_each_chunk(
+  [](std::span<Entity const>, chunk<Position> pos, chunk<const Velocity> vel){
     auto px = pos.column<0>(); auto vx = vel.column<0>(); // vx is span<const>
     for (size_t i = 0; i < px.size(); ++i) px[i] += vx[i];
   });
@@ -245,6 +249,13 @@ another's rows: the split is data-parallel and race-free). The same `for_each` /
 `for_each_chunk` body then runs over that slice. A serial `add_serial` system is one
 opaque work item, so its query iterates every matched row serially.
 
+A `Query` exists only as a system parameter -- its type is what declares the
+system's reads and writes. Outside a system (setup, tests, diagnostics) `World`
+offers the same two shapes ad hoc and **read-only**:
+`world.for_each<Cs...>(fn)` and `world.for_each_chunk<Cs...>(fn)` walk every
+matching archetype on the calling thread with every component forced `const`,
+and `world.count<Cs...>()` counts the matching entities.
+
 The set of archetypes a query matches is **cached** per required-component
 signature, so a repeated query costs an O(1) lookup plus iteration of just the
 matching archetypes rather than a re-scan of every archetype each call. The
@@ -264,9 +275,9 @@ actual access:
 ```cpp
 Schedule s;
 // reads Mass + the Gravity resource, writes Velocity -- all from the params
-s.add("gravity",   [](Query<Velocity, const Mass> q, Res<Gravity> g){ ... });
+s.add_parallel("gravity",   [](Query<Velocity, const Mass> q, Res<Gravity> g){ ... });
 // reads Velocity, writes Position
-s.add("integrate", [](Query<Position, const Velocity> q){ ... });
+s.add_parallel("integrate", [](Query<Position, const Velocity> q){ ... });
 WorkerPool pool{8};        // 8 lanes; 1 = plain serial
 s.run(world, pool);        // each system's rows split across the lanes
 ```
@@ -280,8 +291,8 @@ The system parameters are:
 | `Commands&` | none (deferred side channel) | record structural edits |
 | `WorldView` | *reads everything* — runs with readers, after writers | ad-hoc **read-only** access |
 
-Trailing `phase{n}`/`every{n}`/`times{n}` options are the only non-parameter
-arguments. A raw
+Trailing `phase{n}`/`every{n}`/`times{n}` options -- plus `grain{n}` on a
+parallel system -- are the only non-parameter arguments. A raw
 `World&` is deliberately **not** a system parameter: it cannot be analyzed and
 is unsafe under any concurrent executor. Setup happens on the `World` directly
 (outside a run), mutation goes through `Commands`, ad-hoc reads through
@@ -300,7 +311,7 @@ level order, and same-level systems are conflict-free (any order).
 Execution (`Schedule::run(world, pool)`) is a **work-item executor**: each wave
 is flattened into one list of items and executed with a single fork-join
 dispatch on the `WorkerPool`. A **parallel system** — `add_parallel(name, fn)`,
-same signature rules as `add()` but with exactly ONE `Query<Cs...>` parameter —
+same signature rules as `add_serial()` but with exactly ONE `Query<Cs...>` parameter —
 contributes one item per row-range slice of each archetype that query matches
 (a fixed target of ~64 slices, floored at 1024 rows — deliberately independent
 of the lane count, so the slicing and therefore every barrier-time fold is
@@ -332,7 +343,7 @@ system's own items run concurrently, so writes through `ResMut` would race
 between them); a system that writes a resource is a *reduction* — spelled
 `Reduce<T, Op>` (or `Collect`/`Extract` for gather shapes) in a parallel system, with
 the shared-target writes confined to the single-threaded barrier hooks.
-Genuinely ordered iteration still belongs in `add()` systems. An
+Genuinely ordered iteration still belongs in `add_serial()` systems. A
 **serial system** (`add_serial`/`add_dynamic_serial` — an opaque callable that
 may take `Commands&`, resources, `WorldView`, `Local<T>` per-system state
 persisting across ticks, do reductions or ordered work)
@@ -342,7 +353,7 @@ single-system wave runs inline on the caller). Parallelism within a wave comes
 only from parallel items -- a serial system never fans its own rows across
 lanes. Items are
 sorted longest-first (greedy LPT — the biggest work cannot become the join's
-straggler) and claimed by the lanes from an atomic cursor, so a heavy parallel system
+straggler) and claimed by the lanes from an atomic cursor, so a heavy parallel
 system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
@@ -385,28 +396,35 @@ cross-system overlap without the task-queue overhead.)
 
 Because access is *derived from parameter types*, a parallel system cannot read
 or write a component/resource it did not declare -- `Query`/`Res`/`ResMut` are
-the only way to reach that state, and each contributes its access. The two
+the only way to reach that state, and each contributes its access. The
 remaining caveats:
 
 * **`WorldView` is the read-only escape hatch.** When a system needs ad-hoc
-  reads (`size`, `alive`, `has`, `get`, or a `view.query<Cs...>()` that forces
-  every component to const) beyond what a single `Query`/`Res` expresses, take a
-  `WorldView`. It exposes nothing that can mutate, so it declares "reads
-  everything": it still runs concurrently with other readers and is serialized
-  only against writers.
+  reads (`size`, `alive`, `has`, `get`, or `count`/`for_each`/`for_each_chunk`,
+  which force every component to const) beyond what a single `Query`/`Res`
+  expresses, take a `WorldView`. It exposes nothing that can mutate, so it
+  declares "reads everything": it still runs concurrently with other readers
+  and is serialized only against writers.
 * **There is no raw-`World&` parameter.** Unanalyzable read-write access has no
   safe meaning under a concurrent executor, so the type system simply does not
   offer it; `add_dynamic_serial` can declare a system `exclusive` when a runtime-typed
   system is genuinely unanalyzable, and it then runs alone. (Resource reads from
   outside any system, e.g. a consumer thread calling `world.resource<T>()`,
   remain the caller's responsibility.)
-* **Commands recorded from a parallel kernel are unordered.** Structural edits
-  recorded *inside* a `for_each_chunk` kernel land in per-lane shards whose
-  cross-lane order is unspecified, and `reserve()`'s id handout then depends on
-  timing. Record structural edits from a system's serial part instead (the common
-  case — an emitter that loops and `cmd.spawn()`s, a reaper using
-  `for_each`), or use
-  a 1-lane pool, when you need reproducibility, e.g. lockstep sims.
+* **Commands from parallel systems replay in canonical order; two things stay
+  timing-dependent.** Each work item of a parallel system records into its own
+  private store, and the barrier enqueues the stores in item-ordinal order, so
+  the structural edits a parallel system records apply in serial-walk order --
+  the same order, and the same resulting row layout -- at any lane count. What
+  still varies from run to run on a multi-lane pool is (a) the entity ids
+  `spawn()` hands out, which are reserved at record time, so which spawn
+  receives which id follows how the lanes' reservations interleave; and (b) the
+  cross-shard order of commands recorded by serial systems sharing a wave:
+  those go through the thread-sharded buffer, so each system's own commands
+  replay in record order, but where they fall relative to the wave's other
+  recorders follows which lane ran the system. A 1-lane pool claims items in
+  list order and is fully deterministic -- use one when you need
+  reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
 
@@ -448,7 +466,7 @@ pointer/reference can escape, which is a pointer-to-local bug C++ cannot prevent
 
 ```cpp
 // a system: a Query param (here read-only Emitter) + Commands for mutation
-sched.add("spawn_particles", [](Query<const Emitter> q, Commands& cmd) {
+sched.add_serial("spawn_particles", [](Query<const Emitter> q, Commands& cmd) {
   q.for_each([&](auto& em) {
     if (em.fire) {
       Entity p = cmd.spawn(Position{...}, Velocity{...}); // recorded
@@ -465,7 +483,7 @@ one-shot system and run the schedule (inline, no thread pool needed):
 Schedule init;
 init.add_serial("populate", [&](Commands& cmd) {
   for (...) cmd.spawn(Position{...}, Velocity{...});
-});
+}, times{1});      // one-shot: runs once, then drops out
 init.run(world);   // inline run on the calling thread
 ```
 
@@ -476,9 +494,9 @@ the pool's lanes; `run(world)` is the same on a 1-lane (serial) pool.
 The immediate primitives (`*_now`, `spawn_now`) stay private and are what the
 command closures call at flush time. `spawn(...)` reserves an entity handle
 immediately and returns it, so a system can record follow-up edits on a
-not-yet-created entity in the same frame; reservation is thread-safe via a tiny
-locked critical section (new ids come from a monotonic counter so concurrent
-reservers never grow `records_` mid-run; reused ids carry the freed slot's
+not-yet-created entity in the same frame; reservation is thread-safe and
+lock-free (new ids come from a monotonic counter so concurrent
+reservers never grow `entities_` mid-run; reused ids carry the freed slot's
 already-bumped generation). At flush, `spawn_now` places the entity **directly**
 into its final archetype -- pushing all of its components in one pass rather
 than walking it through one archetype transition per component (which would also
@@ -493,22 +511,23 @@ inconsequential for per-frame spawning and for setups up to ~1M entities; for a
 multi-million-entity *single* batch it can be a meaningful transient spike,
 mitigable by splitting setup across several one-shot runs (each flushes).
 
-Value mutation *through a query* (`each`/`for_each_chunk` writing the component
+Value mutation *through a query* (`for_each`/`for_each_chunk` writing the component
 references it was handed) is not a structural change and is not routed through
 the buffer: it is a system writing its own data, which the scheduler has already
-proven conflict-free. Only the explicit `world.*` mutators defer.
+proven conflict-free. Only the explicit `Commands` mutators defer.
 
 ### One-shot and removable systems
 
-`Schedule::add` returns a `SystemId`; `Schedule::remove(id)` unschedules a
-system. A `times=1` system (`add_serial(..., /*every=*/1, /*times=*/1)`) runs on the next
+`Schedule::add_serial` and `Schedule::add_parallel` return a `SystemId`;
+`Schedule::remove(id)` unschedules a system. A `times{1}` system
+(`add_serial(..., times{1})`) runs on the next
 `run()` and is then removed -- the idiomatic way to express startup work that
 should populate the world once and then stop:
 
 ```cpp
 Schedule sched;
 sched.add_serial("startup", setup_fn, phase{-1}, times{1});
-sched.add("gameplay", gameplay_fn, ...);           // default phase 0
+sched.add_serial("gameplay", gameplay_fn);         // default phase 0
 sched.run(world, pool);   // startup runs (and flushes) first, then gameplay
 sched.run(world, pool);   // only gameplay from here on
 ```
@@ -542,9 +561,9 @@ level *N+1*; an inline `run(world)` flushes after each wave too. `destroy`/`add`
 if their target was already destroyed earlier in the same flush, so
 order-independent teardown is safe.
 
-`spawn()` itself is contention-light: `World::reserve()` is lock-free on the
-growth path (a brand-new index is a single atomic `fetch_add`) and only takes a
-short lock to recycle from the free list.
+`spawn()` itself is contention-light: `World::reserve()` is lock-free on both
+paths -- a brand-new index is a single atomic `fetch_add`, and recycling one
+from the free list is a compare-and-swap on a cursor.
 
 ## 8. Snapshot handoff to external threads (triple buffer)
 
@@ -562,8 +581,8 @@ calls `consume()`/`front()`.
 
 ```cpp
 world.emplace_resource<TripleBuffer<Snapshot>>();          // T is user-defined
-sched.add("extract", [](Query<const Position, const Mesh> q,
-                        ResMut<TripleBuffer<Snapshot>> tb){
+sched.add_serial("extract", [](Query<const Position, const Mesh> q,
+                               ResMut<TripleBuffer<Snapshot>> tb){
   fill(tb->back(), q);   // copy out of the columns
   tb->publish();
 });
@@ -590,8 +609,8 @@ advances only on new data) and hold their own reference while they read.
 
 ```cpp
 world.emplace_resource<SnapshotChannel<Snapshot>>();
-sched.add("extract", [](Query<const Position, const Mesh> q,
-                        ResMut<SnapshotChannel<Snapshot>> ch){
+sched.add_serial("extract", [](Query<const Position, const Mesh> q,
+                               ResMut<SnapshotChannel<Snapshot>> ch){
   fill(ch->back(), q);
   ch->publish();
 });
@@ -632,4 +651,3 @@ tracer positions that a mock "renderer" and "audio" thread both consume.
 * `SnapshotChannel` allocates a buffer per publish; a buffer pool that recycles
   snapshots whose last reader has dropped them would remove the steady-state
   allocations.
-```
