@@ -37,7 +37,7 @@ concept ExtractTarget = requires(T& t, std::size_t n) {
 // item's row i (the sliced Query walks the same rows in the same order), so
 // the idiomatic body pairs them by index:
 //
-//   q.for_each_chunk([&](std::span<Entity>, chunk<const Position> p) {
+//   q.for_each_chunk([&](std::span<Entity const>, chunk<const Position> p) {
 //       auto x = p.column<0>();
 //       for (std::size_t i = 0; i < x.size(); ++i)
 //           out[i] = x[i];

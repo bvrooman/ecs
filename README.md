@@ -7,8 +7,11 @@ cache-friendly, vectorizable iteration and run **data-parallel on a persistent
 worker pool**, split across cores *within* each system, with safe ordering
 derived from the components each system touches.
 
+<!-- This block is examples/hello.cpp, character for character, so the normal
+     build compiles it. Change the two together. -->
+
 ```cpp
-#include "ecs/ecs.hpp"
+#include <ecs/ecs.hpp>
 using namespace ecs;
 
 struct Position { float x, y, z; };   // components are just structs
@@ -33,7 +36,7 @@ int main() {
     // for_each_chunk is the SoA access shape (not the source of parallelism): a
     // `chunk` per component whose column<I>() is that field's contiguous span
     // over this work item's slice -- no per-row gather/scatter.
-    q.for_each_chunk([](std::span<Entity>,
+    q.for_each_chunk([](std::span<Entity const>,
                         chunk<Position> pos, chunk<const Velocity> vel) {
       auto px = pos.column<0>(); // this slice's x column (SoA)
       auto vx = vel.column<0>();
