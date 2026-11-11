@@ -113,9 +113,11 @@ and tells you which way it is wrong.
 Note the formatter and the compiler are deliberately different versions: the
 tree builds with clang-18 and formats with the pinned clang-format.
 
-Two spots opt out with `// clang-format off`: the structured-bindings ladder in
-`reflection/reflect_portable.hpp`, and the `EM_ASM` bodies in `web/`, which are
-JavaScript — clang-format rewrites `!==` into `!= =` there. The marker must be
+Three spots opt out with `// clang-format off`: the structured-bindings ladder
+in `reflection/reflect_portable.hpp`; the `EM_ASM` bodies in `web/`, which are
+JavaScript — clang-format rewrites `!==` into `!= =` there; and
+`examples/hello.cpp`, which is the README's opening example and keeps the
+README's layout so the two can be compared line for line. The marker must be
 **exactly** `// clang-format off`; clang-format ignores it if any prose trails
 on the same line, which silently unprotects the region.
 

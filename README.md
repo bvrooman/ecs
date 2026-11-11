@@ -7,6 +7,9 @@ cache-friendly, vectorizable iteration and run **data-parallel on a persistent
 worker pool**, split across cores *within* each system, with safe ordering
 derived from the components each system touches.
 
+<!-- This block is examples/hello.cpp, character for character, so the normal
+     build compiles it. Change the two together. -->
+
 ```cpp
 #include <ecs/ecs.hpp>
 using namespace ecs;
