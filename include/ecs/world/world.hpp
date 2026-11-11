@@ -113,11 +113,11 @@ public:
     // and the sort runs only when disorder > min_disorder. The default 0
     // sorts whenever any pair is out of order.
     //
-    // Integral keys with a compact range (a grid-cell index; range up to a
-    // few times the row count) take a counting sort -- measured ~60x cheaper
-    // than the comparison sort on 40k rows -- and fall back to stable_sort
-    // otherwise; both are stable, so both produce the same canonical
-    // permutation.
+    // Integral keys of up to 64 bits with a compact range (a grid-cell index;
+    // range up to a few times the row count) take a counting sort -- measured
+    // ~60x cheaper than the comparison sort on 40k rows -- and fall back to
+    // stable_sort otherwise; both are stable, so both produce the same
+    // canonical permutation.
     template <class C, class KeyFn>
     void sort_rows(KeyFn key, double const min_disorder = 0.0) {
         std::vector<std::uint32_t> perm;
@@ -148,7 +148,12 @@ public:
 
             perm.resize(n);
             bool counted = false;
-            if constexpr (std::integral<Key>) {
+            // Keys of at most 64 bits only: the bucket arithmetic below is
+            // 64-bit, and a wider key (__int128, where the standard library
+            // counts it as integral) truncates in it -- {2^64, 5, 0} read as
+            // lo = hi = 0, one bucket, and 5 then indexes past it. Wider keys
+            // take the comparison sort.
+            if constexpr (std::integral<Key> && sizeof(Key) <= sizeof(std::uint64_t)) {
                 // Counting sort when the bucket table stays proportionate to
                 // the work (covers the grid-cell case with lots of headroom).
                 auto const range = std::uint64_t(hi) - std::uint64_t(lo) + 1;

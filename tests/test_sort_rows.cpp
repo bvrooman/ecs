@@ -384,6 +384,79 @@ static void sort_command_applies_at_barrier() {
     CHECK(descents() == 0); // sorted after the flush
 }
 
+#ifdef __SIZEOF_INT128__
+// Keys wider than 64 bits: __int128, as a wide hash or a three-axis Morton
+// code past 21 bits an axis would use. The counting sort does its bucket
+// arithmetic in 64 bits, where such a key truncates -- so it used to take
+// ranges that only looked compact, then index the bucket table by the
+// truncated keys. Wide keys now always take the comparison sort.
+//
+// The counting sort was only ever open to them where the standard library
+// counts __int128 as std::integral. libc++ does, and so does libstdc++ from
+// GCC 16; up to GCC 15 it does only with compiler extensions on
+// (-std=gnu++23), and this tree builds without them. So on the compilers CI
+// runs, this case passes in test_sort_rows with or without the guard. It is
+// test_sort_rows_gnu (tests/CMakeLists.txt) -- this file again, extensions
+// on -- that fails without it there, and the assert below keeps it that way.
+struct UKey128 {
+    unsigned __int128 k = 0;
+};
+struct IKey128 {
+    __int128 k = 0;
+};
+#ifdef ECS_TEST_EXPECT_INTEGRAL_INT128
+static_assert(std::integral<unsigned __int128> && std::integral<__int128>,
+              "test_sort_rows_gnu: __int128 is not std::integral in this build, so "
+              "its 128-bit key case tests nothing");
+#endif
+
+template <class C>
+static void check_wide_keys(std::vector<decltype(C::k)> const& values) {
+    // Out of order to begin with: an archetype already in key order returns
+    // before its key range is ever looked at.
+    CHECK(!std::ranges::is_sorted(values));
+
+    World w;
+    std::vector<Entity> es;
+    setup(w, [&](Commands& cmd) {
+        for (std::size_t i = 0; i < values.size(); ++i)
+            es.push_back(cmd.spawn(C {values[i]}, Health {int(i)}));
+    });
+
+    w.sort_rows<C>([](C const& c) { return c.k; });
+
+    // Rows walk in ascending key order...
+    std::vector<decltype(C::k)> walked;
+    w.for_each<C const>([&](auto const& c) { walked.push_back(c.k); });
+    auto ascending = values;
+    std::ranges::sort(ascending);
+    CHECK(walked == ascending);
+
+    // ...and every handle still reads its own values.
+    bool handles_ok = true;
+    for (std::size_t i = 0; i < es.size(); ++i)
+        if (w.get<C>(es[i]).k != values[i] || w.get<Health>(es[i]).hp != int(i))
+            handles_ok = false;
+    CHECK(handles_ok);
+}
+
+static void keys_wider_than_64_bits_sort_correctly() {
+    constexpr auto two64     = static_cast<unsigned __int128>(1) << 64;
+    constexpr auto neg_two64 = -(static_cast<__int128>(1) << 64);
+    // The reported case. 2^64 truncates to 0, so these read as lo = hi = 0 --
+    // one bucket -- and key 5 indexed far past it: a heap overflow, which ASan
+    // reports.
+    check_wide_keys<UKey128>({two64, 5, 0});
+    // No bad index here, so nothing for a sanitizer: the low 64 bits are 7, 2,
+    // 5, 0 -- eight buckets, all in range -- and the rows came out sorted by
+    // those, as 0, 2^64 + 2, 5, 2^64 + 7. Only the order check catches it.
+    check_wide_keys<UKey128>({two64 + 7, two64 + 2, 5, 0});
+    // Signed. -2^64 truncates to 0 too, so lo = -2^64, hi = 5 read as six
+    // buckets; -1 truncates to 2^64 - 1, an index far outside them.
+    check_wide_keys<IKey128>({5, -1, neg_two64});
+}
+#endif
+
 int main() {
     RUN_SUITE(sort_orders_rows_and_preserves_handles);
     RUN_SUITE(sort_command_applies_at_barrier);
@@ -394,5 +467,8 @@ int main() {
     RUN_SUITE(every_cadence_fires_and_sort_command_stays_invariant);
     RUN_SUITE(sorted_layout_stays_lane_count_invariant);
     RUN_SUITE(dynamic_column_applies_permutation);
+#ifdef __SIZEOF_INT128__
+    RUN_SUITE(keys_wider_than_64_bits_sort_correctly);
+#endif
     return REPORT();
 }
