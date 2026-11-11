@@ -151,8 +151,13 @@ public:
             if constexpr (std::integral<Key>) {
                 // Counting sort when the bucket table stays proportionate to
                 // the work (covers the grid-cell case with lots of headroom).
-                auto const range = std::uint64_t(hi) - std::uint64_t(lo) + 1;
-                if (range <= std::max<std::uint64_t>(4 * n, 1024)) {
+                // The test is on the span, hi - lo, which cannot wrap. The
+                // bucket count span + 1 can -- to 0, when the keys cover a whole
+                // 64-bit range (a hash key; a ~0 sentinel beside a real 0) --
+                // so it is formed only once the span is known to be small.
+                auto const span = std::uint64_t(hi) - std::uint64_t(lo);
+                if (span < std::max<std::uint64_t>(4 * n, 1024)) {
+                    auto const range = span + 1;
                     std::vector<std::uint32_t> starts(range + 1, 0);
                     for (auto const k : keys)
                         ++starts[std::uint64_t(k) - std::uint64_t(lo) + 1];
