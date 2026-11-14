@@ -8,8 +8,10 @@
 
 #include "check.hpp"
 #include "setup.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +24,14 @@ struct Health {
     int hp = 0;
 };
 struct Frozen {}; // tag: exercises the zero-field column through permutation
+// 64-bit keys of each signedness (a hash or Morton code; a timestamp with
+// sentinels). Unlike a grid-cell index, these can span their type's whole range.
+struct UKey {
+    std::uint64_t k = 0;
+};
+struct IKey {
+    std::int64_t k = 0;
+};
 
 // Deterministic value scramble (an LCG step) so spawn order is uncorrelated
 // with key order.
@@ -180,6 +190,54 @@ static void integral_keys_sort_correctly_on_both_paths() {
     check_sorted_stable([](auto const& p) { return int(p.x) % 21 - 10; });
     // Spread range (steps of 1e6 >> 4n): stable_sort fallback.
     check_sorted_stable([](auto const& p) { return int(p.x) * 1'000'000; });
+}
+
+// Keys spanning their type's whole range, as a hash or Morton-code key does --
+// or a ~0 "invalid" sentinel beside a real 0. hi - lo is then 2^64 - 1, so the
+// bucket count hi - lo + 1 wraps to 0: that used to pass the compact-range test
+// and index a one-element bucket table far out of bounds (a heap overflow, which
+// ASan reports). No range is less compact, so these take the comparison sort.
+template <class C>
+static void check_full_range_keys(std::vector<decltype(C::k)> const& values) {
+    // Out of order to begin with: an archetype already in key order returns
+    // before its range is ever looked at.
+    CHECK(!std::ranges::is_sorted(values));
+
+    World w;
+    std::vector<Entity> es;
+    setup(w, [&](Commands& cmd) {
+        for (std::size_t i = 0; i < values.size(); ++i)
+            es.push_back(cmd.spawn(C {values[i]}, Health {int(i)}));
+    });
+
+    w.sort_rows<C>([](C const& c) { return c.k; });
+
+    // Rows walk in ascending key order...
+    std::vector<decltype(C::k)> walked;
+    w.for_each<C const>([&](auto const& c) { walked.push_back(c.k); });
+    auto ascending = values;
+    std::ranges::sort(ascending);
+    CHECK(walked == ascending);
+
+    // ...and every handle still reads its own values.
+    bool handles_ok = true;
+    for (std::size_t i = 0; i < es.size(); ++i)
+        if (w.get<C>(es[i]).k != values[i] || w.get<Health>(es[i]).hp != int(i))
+            handles_ok = false;
+    CHECK(handles_ok);
+}
+
+static void full_range_unsigned_keys_sort_correctly() {
+    constexpr auto max = std::numeric_limits<std::uint64_t>::max(); // ~0ull
+    // max / 2 + 1 is 2^63: it sorts below 0 if a key is ever compared as signed.
+    check_full_range_keys<UKey>({max, 0, 7, max / 2 + 1, 1, max - 1});
+}
+
+static void full_range_signed_keys_sort_correctly() {
+    constexpr auto min = std::numeric_limits<std::int64_t>::min();
+    constexpr auto max = std::numeric_limits<std::int64_t>::max();
+    // -1 is all ones: it sorts above max if a key is ever compared as unsigned.
+    check_full_range_keys<IKey>({max, -1, min, 12});
 }
 
 // min_disorder: small drift is left alone (a re-sort would not pay for
@@ -390,6 +448,8 @@ int main() {
     RUN_SUITE(sort_is_stable);
     RUN_SUITE(sort_after_churn);
     RUN_SUITE(integral_keys_sort_correctly_on_both_paths);
+    RUN_SUITE(full_range_unsigned_keys_sort_correctly);
+    RUN_SUITE(full_range_signed_keys_sort_correctly);
     RUN_SUITE(min_disorder_skips_small_drift);
     RUN_SUITE(every_cadence_fires_and_sort_command_stays_invariant);
     RUN_SUITE(sorted_layout_stays_lane_count_invariant);
