@@ -61,12 +61,22 @@ private:
 namespace detail {
 
     // SplitMix64 finalizer: decorrelates the (seed, tick, system, ordinal)
-    // coordinates into stream seeds.
+    // coordinates into stream seeds. A bijection on 64-bit values.
     inline constexpr std::uint64_t mix64(std::uint64_t x) noexcept {
         x += 0x9E37'79B9'7F4A'7C15ull;
         x = (x ^ (x >> 30)) * 0xBF58'476D'1CE4'E5B9ull;
         x = (x ^ (x >> 27)) * 0x94D0'49BB'1331'11EBull;
         return x ^ (x >> 31);
+    }
+
+    // Fold the next stream coordinate into a running hash. Every step goes
+    // through mix64, so the result depends on the ORDER the coordinates are
+    // folded in, and two tuples that differ in one coordinate always differ.
+    // (XOR-ing separately mixed coordinates is symmetric: system a at tick b
+    // drew exactly what system b drew at tick a.)
+    inline constexpr std::uint64_t mix_in(std::uint64_t const h,
+                                          std::uint64_t const x) noexcept {
+        return mix64(h ^ x);
     }
 
     template <>
@@ -89,14 +99,14 @@ namespace detail {
                             WaveContext const& ctx) {
             auto const* seed = w.try_resource<RandomSeed>();
             auto const base  = seed ? seed->value : RandomSeed {}.value;
-            s.stream_base    = mix64(base) ^ mix64(ctx.tick) ^ mix64(ctx.system.value);
+            s.stream_base    = mix_in(mix_in(mix64(base), ctx.tick), ctx.system.value);
         }
 
         static void finish(state&, World&) {}
 
         static Random bind(state& s, World&, Commands&, WorkItem const& item) {
             auto ordinal = item.ordinal;
-            return Random(mix64(s.stream_base ^ ordinal), ordinal);
+            return Random(mix_in(s.stream_base, ordinal), ordinal);
         }
     };
 
