@@ -1,3 +1,9 @@
+# hello: the README's opening example, verbatim (see the note atop hello.cpp).
+# Built with everything else so that snippet cannot drift from the library
+# without breaking the build.
+add_executable(hello hello.cpp)
+target_link_libraries(hello PRIVATE ecs::ecs)
+
 add_executable(nbody nbody.cpp)
 target_link_libraries(nbody PRIVATE ecs::ecs)
 # A light optimization level so the SoA timing is meaningful.
