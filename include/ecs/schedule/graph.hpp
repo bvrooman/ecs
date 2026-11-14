@@ -15,8 +15,10 @@
 #include <ecs/system_id.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <iterator>
 #include <ranges>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -25,37 +27,49 @@ namespace ecs::detail {
 // The schedule's registered systems, keyed by the SystemId it handed out.
 using SystemVector = IdVector<SystemId, SystemRecord>;
 
-// Charge one run against every system that was due this tick and retire the
-// ones whose budget is spent (see remove()): they keep their slot so no other
-// system's position -- and so no SystemId -- shifts.
+// Drop a dead system's callables -- and with them everything they own: the
+// body's captures, Local<T> state, per-item partials and command stores. The
+// record itself stays (name, access, phase) so its SystemId keeps its slot and
+// tooling can still read it. Call only when the system cannot be executing.
+inline void release(SystemRecord& s) noexcept {
+    s.run           = nullptr;
+    s.prepare_items = nullptr;
+    s.finish_items  = nullptr;
+    s.abort_items   = nullptr;
+}
+
+// Charge one run to each system of a wave that just completed -- its edits are
+// in the world -- appending to `spent` the ones whose budget is now used up.
+// Charged per wave, not per tick: if a later wave aborts the tick, a one-shot
+// whose wave already flushed has still run, and must not run again.
 //
-// Dueness is recomputed here rather than counted in WavePlan::prepare, because
-// prewarm() calls prepare() too and must not spend anyone's budget.
-inline void prune_expired(SystemVector& systems, std::uint64_t const tick, bool& dirty) {
-    for (auto& s : systems) {
-        if (s.dead || s.times == 0 || tick % s.every != 0)
+// Only Schedule::run charges (prewarm() prepares waves too, and must not spend
+// anyone's budget). `due` is the wave's due list from WavePlan::prepare.
+inline void charge_runs(SystemVector& systems,
+                        std::span<SystemId const> const due,
+                        std::vector<SystemId>& spent) {
+    for (auto const id : due) {
+        auto& s = systems[id];
+        if (s.dead || s.times == 0)
             continue;
-        if (++s.runs >= s.times) {
-            s.dead = true;
-            dirty  = true;
-        }
+        if (++s.runs >= s.times)
+            spent.push_back(id);
     }
 }
 
 // Assign wavefront levels intra-phase level = 1 + max(level) over earlier
 // conflicting systems in the same phase (cross-phase ordering is handled by
-// the phase barrier). Tombstoned systems are skipped -- they take no slot in
-// any wave -- but their positions still count, so a live system keeps the
-// same level whether or not an earlier system was removed.
-inline void assign_levels(SystemVector& systems) {
-    for (auto& system : systems)
-        system.level = 0;
-    for (auto&& [id, s1] : systems.enumerate()) {
-        if (s1.dead)
-            continue;
+// the phase barrier). `live` lists the live systems in ascending id order --
+// "earlier" is registration order -- so removed and retired systems cost
+// nothing here, and a live system keeps the same level whether or not an
+// earlier system was removed.
+inline void assign_levels(SystemVector& systems, std::span<SystemId const> const live) {
+    for (std::size_t i = 0; i < live.size(); ++i) {
+        auto& s1   = systems[live[i]];
         auto level = SystemRecord::Level {0};
-        for (auto const& s2 : systems | std::views::take(id.value)) {
-            if (!s2.dead && s1.phase == s2.phase && conflicts(s1.access, s2.access))
+        for (auto const earlier : live.first(i)) {
+            auto const& s2 = systems[earlier];
+            if (s1.phase == s2.phase && conflicts(s1.access, s2.access))
                 level = std::max(level, s2.level + 1);
         }
         s1.level = level;
@@ -63,15 +77,15 @@ inline void assign_levels(SystemVector& systems) {
 }
 
 inline void build_wave_plans(SystemVector const& systems,
+                             std::span<SystemId const> const live,
                              std::vector<WavePlan>& wave_plans) {
     using WaveGroup  = std::pair<SystemRecord::WaveKey, WavePlan>;
     auto search      = [](auto const& g) { return g.first; };
     auto wave_groups = std::vector<WaveGroup> {};
-    for (auto&& [system_id, system] : systems.enumerate()) {
-        if (system.dead)
-            continue;
-        auto key = system.wave_key();
-        auto it  = std::ranges::find(wave_groups, key, search);
+    for (auto const system_id : live) {
+        auto const& system = systems[system_id];
+        auto key           = system.wave_key();
+        auto it            = std::ranges::find(wave_groups, key, search);
         if (it == wave_groups.end()) {
             wave_groups.emplace_back(key, WavePlan {});
             it = std::prev(wave_groups.end());
