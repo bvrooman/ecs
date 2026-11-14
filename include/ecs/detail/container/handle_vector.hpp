@@ -22,7 +22,8 @@
 //                  dense arrays. The handle is not alive until commit(), so
 //                  get()/is_alive() report false in between.
 //   commit()    -- SINGLE-THREADED (barrier). Materializes a reserved handle by
-//   destroy()      constructing/removing its record in the dense arrays. Call
+//   destroy()      constructing/removing its record in the dense arrays, or
+//   release()      (release) returns a reservation that will never commit. Call
 //                  only when no reserve() can run concurrently.
 //   get()       -- read-only; safe concurrently with reserve() during a wave.
 //   is_alive()     (every mutation of the dense arrays happens at the barrier).
@@ -158,6 +159,26 @@ public:
         auto const handle = reserve();
         commit(handle, std::forward<Args>(args)...);
         return handle;
+    }
+
+    // Give back the slot of a handle that was reserved but never committed (its
+    // spawn was dropped before it materialized), bumping the generation so the
+    // handle -- and any copy of it -- can never be alive. Barrier only. Returns
+    // false, changing nothing, for a handle that is committed or was already
+    // released.
+    bool release(handle_type handle) {
+        auto const slot_index = handle.index();
+        if (slot_index >= slots_.size()) { // a minted index that never committed
+            slots_.resize(slot_index + 1);
+        }
+        auto& slot = slots_[slot_index];
+        if (slot.alive || slot.generation != handle.generation()) {
+            return false;
+        }
+        ++slot.generation;
+        slots_alloc_.compact();
+        slots_alloc_.free(slot_index);
+        return true;
     }
 
     // Remove a live handle, swap-and-popping its record out of the dense arrays.

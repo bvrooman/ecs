@@ -8,11 +8,13 @@
 #include <ecs/strong_id.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <ranges>
 #include <tuple>
 #include <utility>
@@ -72,7 +74,7 @@ public:
     bool finish(World& world) const {
         if (!*fn_)
             return false;
-        detail::recording_source() = system;
+        detail::RecordingAs const recording {system};
         (*fn_)(world);
         return true;
     }
@@ -127,25 +129,49 @@ public:
             auto items    = items_ | std::views::filter([&](auto const& item) {
                              return item.system == ctx.system;
                             });
-            if (ctx.prepare(world, items, rows_scratch_))
-                result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
+            try {
+                if (ctx.prepare(world, items, rows_scratch_))
+                    result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
+            } catch (...) {
+                failed_ = ctx.system;
+                throw;
+            }
         }
         state_ = State::Prepared;
     }
 
     // Execute the item list: each item is claimed by whichever lane is free.
     // Each item's busy time is rolled up per system into result_.
+    //
+    // The first item to throw ends the wave: items not yet started are skipped
+    // (the tick is aborting) and that exception is rethrown after the join, so
+    // failed_system() names the system whose exception escapes. One lane runs
+    // items in list order, so it stops at exactly the same item every time.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
-        using clock  = std::chrono::steady_clock;
+        using clock = std::chrono::steady_clock;
+        std::atomic<bool> failed {false};
+        std::exception_ptr error;
         auto run_one = [&](WorkItem& item) {
-            auto& system               = systems[item.system];
-            detail::recording_source() = system.id;
-            auto const t0              = clock::now();
-            system.run(world, cmds, item);
+            if (failed.load(std::memory_order_relaxed))
+                return;
+            auto& system = systems[item.system];
+            detail::RecordingAs const recording {system.id};
+            auto const t0 = clock::now();
+            try {
+                system.run(world, cmds, item);
+            } catch (...) {
+                if (!failed.exchange(true, std::memory_order_acq_rel)) {
+                    error   = std::current_exception();
+                    failed_ = item.system;
+                }
+                return;
+            }
             item.busy_us = detail::elapsed_us(t0);
         };
         pool.for_each(items_, run_one);
+        if (error)
+            std::rethrow_exception(error);
         for (auto const& item : items_) {
             result_.busy_us[item.system] += item.busy_us;
             result_.item_counts[item.system]++;
@@ -159,8 +185,13 @@ public:
         assert(state_ == State::Ran);
         for (auto const& ctx : finish_) {
             auto const t0 = detail::sched_clock::now();
-            if (ctx.finish(world))
-                result_.finish_us[ctx.system] = detail::elapsed_us(t0);
+            try {
+                if (ctx.finish(world))
+                    result_.finish_us[ctx.system] = detail::elapsed_us(t0);
+            } catch (...) {
+                failed_ = ctx.system;
+                throw;
+            }
         }
         state_ = State::Finished;
     }
@@ -169,6 +200,13 @@ public:
     auto const& result() const {
         assert(state_ == State::Finished);
         return result_;
+    }
+
+    // The system whose prepare hook, work item, or finish hook threw this
+    // tick; none() if none did.
+    [[nodiscard]]
+    SystemId failed_system() const noexcept {
+        return failed_;
     }
 
 private:
@@ -182,7 +220,8 @@ private:
         prepare_.clear();
         finish_.clear();
         result_.reset(n);
-        state_ = State::New;
+        failed_ = SystemId::none();
+        state_  = State::New;
     }
 
     std::vector<WorkItem> items_;
@@ -190,6 +229,7 @@ private:
     std::vector<FinishContext> finish_;
     std::vector<std::uint32_t> rows_scratch_; // shared prepare-hook scratch
     WaveResult result_;
+    SystemId failed_ = SystemId::none(); // see failed_system()
 
     enum class State { New, Prepared, Ran, Finished };
     State state_ = State::New;

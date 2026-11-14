@@ -65,12 +65,21 @@ namespace detail {
             }
             while (s.slots.size() < rows.size())
                 s.slots.push_back(std::make_unique<Slot>(w));
-            // Normally all stores are empty here (enqueued and drained at the
-            // previous barrier); after an aborted run they may still hold the
-            // aborted wave's recordings, which must not leak into this run.
+            // All stores are empty here: drained at the previous barrier, or
+            // dropped by abort() if that wave threw. Discarding is a cheap
+            // guarantee that nothing recorded earlier leaks into this run.
             for (auto const& slot : s.slots)
-                slot->store.discard();
+                slot->store.discard(&w);
             s.active = rows.size();
+        }
+
+        // The wave threw before (or while) these stores reached the flush: drop
+        // the items' edits now, handing their reserved entities back to `w`, so
+        // nothing waits on this system running again.
+        static void abort(state& s, World& w) noexcept {
+            World* const owner = s.world == &w ? &w : nullptr;
+            for (auto const& slot : s.slots)
+                slot->store.discard(owner);
         }
 
         // Single-threaded, before the wave's flush: enqueue each item's store

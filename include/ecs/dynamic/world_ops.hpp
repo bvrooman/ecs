@@ -161,9 +161,11 @@ struct WorldOps {
     // Commands::spawn). The returned handle is alive after that flush.
     static Entity spawn_deferred(World& w, Bundle bundle) {
         Entity const e = w.reserve();
-        w.commands_.record([e, bundle = std::move(bundle)](World& world) {
-            build_now(world, e, bundle);
-        });
+        auto build     = [bundle = std::move(bundle)](World& world, Entity self) {
+            build_now(world, self, bundle);
+        };
+        w.commands_.record(
+            ecs::detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
         return e;
     }
 

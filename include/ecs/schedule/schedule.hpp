@@ -231,10 +231,11 @@ public:
     //
     // Recorded edits flush at each wave barrier; one-shot systems are removed
     // afterwards. A system that throws (in its body or a parallel item)
-    // propagates out of run(); the aborted run's recorded edits are DISCARDED
+    // propagates out of run(); the aborted wave's recorded edits are DISCARDED
     // (they must not leak into a later run's first flush, possibly of a
-    // different schedule sharing this world) and a TickAbort event is emitted
-    // in place of the remaining End events.
+    // different schedule sharing this world), entities its spawns reserved are
+    // handed back (their handles stay dead), and a TickAbort event naming the
+    // failing system is emitted in place of the remaining End events.
     void run(World& world, WorkerPool& pool) {
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
@@ -247,7 +248,9 @@ public:
                 try {
                     run_wave(plan, world, cmds, pool);
                 } catch (...) {
-                    events_.emit(TickAbort {plan.id, SystemId::none()});
+                    events_.emit(TickAbort {plan.id,
+                                            std::exchange(failed_system_,
+                                                          SystemId::none())});
                     throw;
                 }
             }
@@ -398,6 +401,11 @@ private:
                 detail::finish_all<Param, Args>(*states, w, Seq {});
             };
         }
+        if constexpr (Info::any_abortable) {
+            sys.abort_items = [states](World& w) {
+                detail::abort_all<Param, Args>(*states, w, Seq {});
+            };
+        }
         return register_system(std::move(sys));
     }
 
@@ -498,22 +506,34 @@ private:
         return SystemId::none(); // reached only when a static_assert above fired
     }
 
-    // Build and execute one wave's item list; on a throw, discard the aborted
-    // run's recorded edits and emit TickAbort (see run()).
+    // Build and execute one wave's item list; on a throw, drop the aborted
+    // wave's recorded edits and note the failing system for run()'s TickAbort.
     void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
         using namespace sched_event;
         events_.emit(WaveBegin {plan.id, plan.size()});
         flush_attrib_.clear();
-        auto& wave    = plan.build(systems_, world, tick_);
-        auto flush_us = 0.0;
+        auto& wave            = plan.build(systems_, world, tick_);
+        auto flush_us         = 0.0;
+        SystemId failed_flush = SystemId::none();
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
             auto const tf = detail::sched_clock::now();
-            world.apply_commands(&flush_attrib_);
+            world.apply_commands(&flush_attrib_, &failed_flush);
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
+            // A hook or work item names itself; otherwise it was a command,
+            // charged to the system that recorded it.
+            failed_system_ = wave.failed_system() != SystemId::none()
+                                 ? wave.failed_system()
+                                 : failed_flush;
+            // Drop every edit the wave recorded -- including any still in
+            // parallel systems' per-item stores -- handing reserved entities
+            // back to the world.
+            for (auto const id : plan)
+                if (auto& abort = systems_[id].abort_items)
+                    abort(world);
             world.discard_commands();
             throw;
         }
@@ -548,7 +568,10 @@ private:
     std::vector<WavePlan> wave_plans_;
     FlushAttrib flush_attrib_; // per-system flush time, per wave
     std::uint64_t tick_ = 0;   // run() count; part of Random's stream identity
-    bool dirty_         = true;
+    // The system a throwing wave failed in, set by run_wave for run() to put in
+    // TickAbort; none() when the failure was not a system's (an observer, say).
+    SystemId failed_system_ = SystemId::none();
+    bool dirty_             = true;
 };
 
 } // namespace ecs
