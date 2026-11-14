@@ -241,6 +241,7 @@ using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
+using AbortItemsFn  = move_only_function<void(World&)>;
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
@@ -254,6 +255,9 @@ struct SystemRecord {
     RunFn run;
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
+    // Drops per-item state when the system's wave throws (see
+    // params/protocol.hpp: has_abort_hook). Null for most systems.
+    AbortItemsFn abort_items;
     Signature query_sig = Signature::null();
     MatchCache match; // parallel systems: memoized query_sig match list
     Phase phase = 0;

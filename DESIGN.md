@@ -386,9 +386,12 @@ kernel is referenced via a static trampoline, not stored) and **not
 re-entrant**: there is one job slot, so a nested dispatch on the same pool
 throws rather than corrupting the in-flight dispatch (parallel systems cannot
 reach this by construction; a serial system that iterates one pool-bound
-query inside another's kernel can). The first exception from any lane is
-rethrown on the caller, so a throwing system escapes `run()` as it would
-serially. Commands flush at each level barrier. (An earlier
+query inside another's kernel can). The first work item to throw ends the
+wave: items not yet started are skipped and its exception is rethrown on the
+caller after the join, so a throwing system escapes `run()` as it would
+serially. The aborted wave's recorded edits are discarded, the entities its
+spawns reserved are handed back (their handles stay dead), and `TickAbort`
+names the system that failed. Commands flush at each level barrier. (An earlier
 `std::execution`/P2300 backend — a general async framework that parallelized
 only *across* systems and woke workers per wave — cost more than it saved for a
 tight fixed-timestep loop and was removed; the work-item executor gets the

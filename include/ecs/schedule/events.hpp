@@ -63,7 +63,11 @@ namespace sched_event {
     };
     // Emitted instead of the remaining WaveEnd/TickEnd when a system throws and
     // the run unwinds, so observers tracking an open tick/wave can reset instead
-    // of carrying stale state into the next tick.
+    // of carrying stale state into the next tick. `system` is where the failure
+    // came from: the system whose prepare hook, work item, or finish hook threw,
+    // or the system that recorded the command whose flush threw. none() when no
+    // system is to blame (an observer threw, or a command recorded outside any
+    // system).
     struct TickAbort {
         WaveId ordinal;
         SystemId system;
