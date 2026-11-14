@@ -10,8 +10,11 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <stdexcept>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 using namespace ecs;
@@ -744,6 +747,207 @@ static void bin_groups_match_serial_walk() {
     CHECK(total > 0);
 }
 
+// A Bins<int>'s contents, one vector per bucket.
+static std::vector<std::vector<int>> buckets_of(Bins<int> const& bins) {
+    std::vector<std::vector<int>> out(bins.bucket_count());
+    for (std::size_t b = 0; b < bins.bucket_count(); ++b) {
+        auto const sp = bins.bucket(b);
+        out[b].assign(sp.begin(), sp.end());
+    }
+    return out;
+}
+
+// Bin: the bucket count is the largest emitted bucket + 1, floored at the
+// reservation -- at the edges of that rule too. A bucket past the reservation
+// grows the table, bucket 0 alone is one bucket, and no entries at all leaves
+// the bare reservation (no buckets without one). The last case emits a single
+// entry, from the last work item, into a bucket far up: the count comes from
+// the largest bucket whichever partial holds it, and every bucket below it
+// exists, empty.
+static void bin_bucket_count_follows_largest_bucket() {
+    // hp -> bucket, or -1 to emit nothing for the row.
+    using KeyFn = long long (*)(int);
+    struct Case {
+        std::size_t reserve; // 0 = no reserve_buckets() call
+        KeyFn key;
+        std::size_t buckets; // the bucket count the rule above gives
+    };
+    Case const cases[] = {
+        {0, [](int hp) -> long long { return hp % 8; }, 8},
+        {4, [](int hp) -> long long { return hp % 8; }, 8},
+        {0, [](int) -> long long { return 0; }, 1},
+        {0, [](int) -> long long { return -1; }, 0},
+        {16, [](int) -> long long { return -1; }, 16},
+        {0, [](int hp) -> long long { return hp == 11'997 ? 100'000 : -1; }, 100'001},
+    };
+
+    for (auto const& c : cases) {
+        std::vector<std::vector<int>> expect(c.buckets);
+        {
+            World w;
+            populate_mixed(w, 12'000);
+            w.for_each<Health const>([&](auto& h) {
+                if (auto const k = c.key(h.hp); k >= 0)
+                    expect[std::size_t(k)].push_back(h.hp);
+            });
+        }
+        for (unsigned lanes : {1u, 4u}) {
+            World w;
+            auto& bins = w.emplace_resource<Bins<int>>();
+            if (c.reserve != 0)
+                bins.reserve_buckets(c.reserve);
+            populate_mixed(w, 12'000);
+            Schedule s;
+            s.add_parallel("bucketize",
+                           [key = c.key](Query<Health const> q, Bin<int> bin) {
+                               q.for_each([&](auto& h) {
+                                   if (auto const k = key(h.hp); k >= 0)
+                                       bin.emit(std::uint32_t(k), h.hp);
+                               });
+                           });
+            WorkerPool pool {lanes};
+            s.run(w, pool);
+
+            CHECK(bins.bucket_count() == c.buckets);
+            auto const got    = buckets_of(bins);
+            std::size_t total = 0;
+            for (auto const& b : got)
+                total += b.size();
+            CHECK(got == expect);
+            CHECK(bins.all().size() == total); // the buckets tile all() exactly
+        }
+    }
+}
+
+// Run one tick and say how it ended, so that the wrong exception type is a
+// failed CHECK rather than an exception escaping the suite.
+enum class Ended { Normally, LengthError, OtherException };
+static Ended run_tick(Schedule& s, World& w, WorkerPool& pool) {
+    try {
+        s.run(w, pool);
+    } catch (std::length_error const&) {
+        return Ended::LengthError;
+    } catch (std::exception const&) {
+        return Ended::OtherException;
+    }
+    return Ended::Normally;
+}
+
+// Bin: UINT32_MAX is not a bucket -- its bucket count, index + 1, is the one
+// that does not fit 32 bits -- and emitting it (a "no cell" sentinel that
+// should have been skipped) has to fail the same way on every target. It used
+// to depend on the width of std::size_t: where that is 32 bits the + 1 wrapped
+// to 0, the tables stayed at the reserved size and the scatter wrote far out
+// of bounds; where it is 64 the merge asked for a 34 GB offset table first.
+//
+// Now the merge throws std::length_error before it sizes or indexes anything.
+// That is a throw from a barrier finish hook, so this also pins what the
+// schedule does with one: the tick aborts as for any throwing system (the
+// wave's recorded edits are discarded, TickAbort replaces TickEnd), the Bins
+// is left EMPTY -- neither the previous tick's contents nor a half-built table
+// -- and the next clean tick runs as if the bad one had not happened.
+static void bin_rejects_bucket_uint32_max() {
+    std::vector<std::vector<int>> expect(16);
+    std::size_t per_tick = 1; // spawns a clean tick applies: "seed"'s one...
+    {
+        World w;
+        populate_mixed(w, 12'000);
+        w.for_each<Health const>([&](auto& h) {
+            expect[std::size_t(h.hp % 8)].push_back(h.hp);
+            per_tick += h.hp % 1'000 == 0; // ...plus one per such row
+        });
+    }
+    CHECK(per_tick > 1);
+
+    for (unsigned lanes : {1u, 4u}) {
+        World w;
+        auto& bins = w.emplace_resource<Bins<int>>();
+        bins.reserve_buckets(16);
+        populate_mixed(w, 12'000);
+
+        // The row that emits the bad bucket; -1 = none. Written only between
+        // runs. hp 6000 sits in the second of the system's four work items, so
+        // valid entries surround it in its own partial and fill the others.
+        int poison_hp = -1;
+        Schedule s;
+        s.add_parallel("bucketize",
+                       [&poison_hp](Query<Health const> q, Bin<int> bin, Commands& cmd) {
+                           q.for_each([&](auto& h) {
+                               bin.emit(h.hp == poison_hp ? ~std::uint32_t {0}
+                                                          : std::uint32_t(h.hp % 8),
+                                        h.hp);
+                               if (h.hp % 1'000 == 0)
+                                   cmd.spawn(Spawned {h.hp}); // per-item store
+                           });
+                       });
+        // Same wave, recording through the world's shared buffer: the edit the
+        // abort has to discard itself, or the next flush applies it.
+        s.add_serial("seed", [](Commands& cmd) { cmd.spawn(Spawned {-1}); });
+        CHECK(s.level_count() == 1);
+
+        int ends = 0, aborts = 0;
+        s.events().add([&](ScheduleEvent const& e) {
+            ends += std::holds_alternative<sched_event::TickEnd>(e);
+            aborts += std::holds_alternative<sched_event::TickAbort>(e);
+        });
+        WorkerPool pool {lanes};
+
+        // A clean tick first, so there are contents to go stale.
+        CHECK(run_tick(s, w, pool) == Ended::Normally);
+        CHECK(buckets_of(bins) == expect);
+        CHECK(w.count<Spawned const>() == per_tick);
+
+        poison_hp = 6'000;
+        CHECK(run_tick(s, w, pool) == Ended::LengthError);
+        CHECK(bins.bucket_count() == 0); // empty: not stale, not half-built
+        CHECK(bins.all().empty());
+        CHECK(w.count<Spawned const>() == per_tick); // nothing flushed
+        CHECK(ends == 1);                            // no TickEnd for it...
+        CHECK(aborts == 1);                          // ...a TickAbort instead
+
+        // The same schedule recovers, and the aborted tick's recordings do not
+        // resurface in the next flush.
+        poison_hp = -1;
+        CHECK(run_tick(s, w, pool) == Ended::Normally);
+        CHECK(buckets_of(bins) == expect);
+        CHECK(w.count<Spawned const>() == 2 * per_tick);
+        CHECK(ends == 2);
+        CHECK(aborts == 1);
+    }
+}
+
+// Bin: the offset table holds bucket count + 1 entries, and that + 1 must not
+// wrap either. A bucket count of SIZE_MAX used to wrap it to an EMPTY table,
+// which the count and prefix-sum loops then indexed. reserve_buckets() reaches
+// that count on every target (a grid size that underflowed, say); where
+// std::size_t is 32 bits, emitting bucket UINT32_MAX - 1 reaches it as well.
+// Either way it is the same clean std::length_error, entries or none.
+static void bin_rejects_bucket_count_without_room_for_offsets() {
+    for (bool const emits : {true, false}) {
+        World w;
+        auto& bins = w.emplace_resource<Bins<int>>();
+        bins.reserve_buckets(~std::size_t {0});
+        populate_mixed(w, 12'000);
+        Schedule s;
+        s.add_parallel("bucketize", [emits](Query<Health const> q, Bin<int> bin) {
+            q.for_each([&](auto& h) {
+                if (emits)
+                    bin.emit(std::uint32_t(h.hp % 8), h.hp);
+            });
+        });
+        WorkerPool pool {4};
+        CHECK(run_tick(s, w, pool) == Ended::LengthError);
+        CHECK(bins.bucket_count() == 0);
+        CHECK(bins.all().empty());
+
+        // With a reservation that fits, the same schedule runs.
+        bins.reserve_buckets(16);
+        CHECK(run_tick(s, w, pool) == Ended::Normally);
+        CHECK(bins.bucket_count() == 16);
+        CHECK(bins.all().size() == (emits ? w.count<Health const>() : 0));
+    }
+}
+
 // prewarm sizes kernel-param state against the populated world without running
 // any system body or barrier fold, so it must NOT change simulation state (the
 // reduce target stays empty), and a subsequent run must produce the bitwise
@@ -789,6 +993,9 @@ int main() {
     RUN_SUITE(local_state_persists_across_ticks);
     RUN_SUITE(kernel_commands_replay_in_canonical_order);
     RUN_SUITE(bin_groups_match_serial_walk);
+    RUN_SUITE(bin_bucket_count_follows_largest_bucket);
+    RUN_SUITE(bin_rejects_bucket_uint32_max);
+    RUN_SUITE(bin_rejects_bucket_count_without_room_for_offsets);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
     RUN_SUITE(prewarm_sizes_state_without_changing_results);
