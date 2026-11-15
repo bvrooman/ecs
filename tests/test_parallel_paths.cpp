@@ -7,6 +7,7 @@
 
 #include "check.hpp"
 #include "setup.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -631,6 +632,30 @@ static void random_streams_are_lane_count_invariant() {
     CHECK(mean > 0.45 && mean < 0.55); // sane uniform distribution
 }
 
+// A Random stream is keyed on (seed, tick, system, item) as an ORDERED tuple.
+// The derivation once XOR-ed separately hashed tick and system ids, which is
+// symmetric: system a at tick b drew exactly what system b drew at tick a. Six
+// systems over six ticks, one item each, must give 36 different streams.
+static void random_streams_differ_across_ticks_and_systems() {
+    constexpr int kSystems = 6;
+    constexpr int kTicks   = 6;
+    World w;
+    setup(w, [](Commands& cmd) { cmd.spawn(Position {}); }); // one row: one item
+    std::vector<std::uint64_t> draws(kSystems * kTicks);
+    int tick = 0;
+    Schedule s;
+    for (int k = 0; k < kSystems; ++k)
+        s.add_parallel("draw", [&draws, &tick, k](Query<Position const> q, Random rng) {
+            q.for_each([&](auto&) {
+                draws[std::size_t(tick * kSystems + k)] = rng.u64();
+            });
+        });
+    for (; tick < kTicks; ++tick)
+        s.run(w);
+    std::ranges::sort(draws);
+    CHECK(std::ranges::adjacent_find(draws) == draws.end());
+}
+
 // Local: per-system state persisting across ticks, private to each registered
 // system -- two registrations of the same callable get independent state, and
 // a times=1 system's Local dies with it.
@@ -998,6 +1023,7 @@ int main() {
     RUN_SUITE(bin_rejects_bucket_count_without_room_for_offsets);
     RUN_SUITE(scratch_is_private_and_cleared);
     RUN_SUITE(random_streams_are_lane_count_invariant);
+    RUN_SUITE(random_streams_differ_across_ticks_and_systems);
     RUN_SUITE(prewarm_sizes_state_without_changing_results);
     return REPORT();
 }
