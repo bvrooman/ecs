@@ -9,7 +9,12 @@
 
 #include "check.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace ecs;
 using namespace ecs::dynamic;
@@ -285,6 +290,73 @@ static void native_component_runtime_access() {
         CHECK((w.get<NPos>(Entity::from_raw(std::uint32_t(i), 0)).x == float(i) * 10.f));
 }
 
+// A malformed spawn bundle is rejected when spawn_deferred records it, before a
+// handle is reserved. A repeated component used to be accepted: the archetype got
+// one column per distinct id but a row per entry, so that column ran a row longer
+// than the archetype and later entities read their neighbour's values.
+static void spawn_bundle_validation() {
+    auto const Pos = define2("BundlePos");
+    auto const Vel = define2("BundleVel");
+    auto blob      = [](float x, float y) {
+        std::vector<std::byte> b(sizeof(F2));
+        F2 const v {x, y};
+        std::memcpy(b.data(), &v, sizeof v);
+        return b;
+    };
+    auto rejects = [](auto&& record) {
+        try {
+            record();
+        } catch (std::invalid_argument const&) {
+            return true;
+        }
+        return false;
+    };
+
+    World w;
+    Entity const first = WorldOps::spawn_deferred(w, {{Pos, blob(1, 1)}});
+    CHECK(rejects([&] { // Pos twice
+        (void)WorldOps::spawn_deferred(w,
+                                       {{Pos, blob(2, 2)},
+                                        {Vel, blob(0, 0)},
+                                        {Pos, blob(9, 9)}});
+    }));
+    CHECK(rejects([&] { // 4 bytes for an 8-byte component
+        (void)WorldOps::spawn_deferred(w, {{Pos, std::vector<std::byte>(4)}});
+    }));
+    CHECK(rejects([&] { // a native component's id
+        (void)WorldOps::spawn_deferred(w, {{component_id<NPos>, blob(0, 0)}});
+    }));
+    // The rejected calls reserved nothing: the next spawn takes the next index.
+    Entity const second =
+        WorldOps::spawn_deferred(w, {{Pos, blob(3, 3)}, {Vel, blob(4, 4)}});
+    CHECK(second.index() == first.index() + 1);
+
+    // Both valid spawns apply at the flush; the rejections did not poison it.
+    Schedule flush;
+    flush.add_serial("flush", [] {});
+    flush.run(w);
+    CHECK(w.size() == 2);
+    F2 out {};
+    CHECK(WorldOps::get(w, first, Pos, &out));
+    CHECK(out.x == 1.f && out.y == 1.f);
+    CHECK(WorldOps::get(w, second, Pos, &out));
+    CHECK(out.x == 3.f && out.y == 3.f);
+    CHECK(WorldOps::get(w, second, Vel, &out));
+    CHECK(out.x == 4.f && out.y == 4.f);
+
+    // build_now, the immediate form, rejects the same bundle before it touches
+    // the world (the handle is never reached, so any value will do).
+    CHECK(rejects([&] {
+        WorldOps::build_now(w,
+                            Entity::from_raw(99, 0),
+                            {{Vel, blob(5, 5)}, {Vel, blob(6, 6)}});
+    }));
+    CHECK(w.size() == 2);
+    for (auto const& arch : std::as_const(w).archetypes())
+        for (auto const& col : arch->columns)
+            CHECK(col->size() == arch->entities.size());
+}
+
 int main() {
     RUN_SUITE(round_trip);
     RUN_SUITE(archetype_transitions);
@@ -293,5 +365,6 @@ int main() {
     RUN_SUITE(dynamic_systems_run_and_level);
     RUN_SUITE(dynamic_system_filters_by_archetype);
     RUN_SUITE(native_component_runtime_access);
+    RUN_SUITE(spawn_bundle_validation);
     return REPORT();
 }
