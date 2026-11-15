@@ -138,31 +138,26 @@ struct WorldOps {
 
     // Place a reserved entity directly into the archetype matching `bundle`'s
     // component set (one transition, not one-per-component) and scatter each
-    // component's bytes. Runs at flush, when nothing is iterating.
+    // component's bytes. Runs at flush, when nothing is iterating. Throws
+    // std::invalid_argument, leaving the world untouched, for a bundle
+    // require_valid_bundle rejects.
     static void build_now(World& w, Entity e, Bundle const& bundle) {
-        for (auto const& id : bundle | std::views::keys)
-            require_dynamic(id, "spawn");
-        Signature const sig(bundle | std::views::keys); // ctor sorts + dedups
-        auto const to  = w.get_or_create_archetype(sig, [&](Archetype& b) {
-            b.columns.reserve(b.signature.size());
-            for (auto const id : b.signature)
-                b.columns.push_back(std::make_unique<DynamicColumn>(registry().desc(id)));
-        });
-        auto& arch     = *w.archetypes_[to];
-        auto const row = static_cast<std::uint32_t>(arch.entities.size());
-        arch.entities.push_back(e);
-        for (auto const& [id, bytes] : bundle)
-            col(arch, id).push(bytes.data());
-        w.entities_.commit(e, World::Record {to, row});
-        ++w.alive_count_;
+        require_valid_bundle(bundle);
+        place(w, e, bundle);
     }
 
     // Reserve a handle now, build the entity at the next flush (like
     // Commands::spawn). The returned handle is alive after that flush.
+    //
+    // The bundle is checked HERE, before the handle is reserved: a bad bundle
+    // throws std::invalid_argument to the caller (the JS host), reserving and
+    // recording nothing. Left to the flush, the same throw would discard every
+    // other command recorded for that flush.
     static Entity spawn_deferred(World& w, Bundle bundle) {
+        require_valid_bundle(bundle);
         Entity const e = w.reserve();
         auto build     = [bundle = std::move(bundle)](World& world, Entity self) {
-            build_now(world, self, bundle);
+            place(world, self, bundle);
         };
         w.commands_.record(
             ecs::detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
@@ -204,6 +199,47 @@ private:
                 std::string("ecs::dynamic::WorldOps::") + op +
                 ": component id is not a dynamic component (a native component "
                 "must be mutated through the C++ API)");
+    }
+
+    // A spawn bundle must name each component once, each a dynamic component,
+    // each with at least its stride of bytes. A repeated component is the
+    // dangerous case: place() makes one column per DISTINCT id but pushes a
+    // row per ENTRY, so that column would run a row longer than the archetype
+    // and every later entity in it would read its neighbour's values. A short
+    // blob would be read past its end.
+    static void require_valid_bundle(Bundle const& bundle) {
+        for (std::size_t i = 0; i < bundle.size(); ++i) {
+            auto const& [id, bytes] = bundle[i];
+            require_dynamic(id, "spawn");
+            auto const& desc = registry().desc(id);
+            for (std::size_t j = 0; j < i; ++j)
+                if (bundle[j].first == id)
+                    throw std::invalid_argument(
+                        "ecs::dynamic::WorldOps::spawn: component \"" + desc.name +
+                        "\" appears more than once in the bundle");
+            if (bytes.size() < desc.stride)
+                throw std::invalid_argument(
+                    "ecs::dynamic::WorldOps::spawn: the blob for component \"" +
+                    desc.name + "\" is " + std::to_string(bytes.size()) +
+                    " bytes; it needs " + std::to_string(desc.stride));
+        }
+    }
+
+    // build_now / spawn_deferred's shared body, for a bundle already checked.
+    static void place(World& w, Entity e, Bundle const& bundle) {
+        Signature const sig(bundle | std::views::keys); // ctor sorts (ids are unique)
+        auto const to  = w.get_or_create_archetype(sig, [&](Archetype& b) {
+            b.columns.reserve(b.signature.size());
+            for (auto const id : b.signature)
+                b.columns.push_back(std::make_unique<DynamicColumn>(registry().desc(id)));
+        });
+        auto& arch     = *w.archetypes_[to];
+        auto const row = static_cast<std::uint32_t>(arch.entities.size());
+        arch.entities.push_back(e);
+        for (auto const& [id, bytes] : bundle)
+            col(arch, id).push(bytes.data());
+        w.entities_.commit(e, World::Record {to, row});
+        ++w.alive_count_;
     }
 
     static DynamicColumn& col(Archetype& a, ComponentId id) {
