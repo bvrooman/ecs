@@ -360,13 +360,14 @@ system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
 1-lane pool claims in list order and is fully deterministic). Commands recorded
-by parallel systems are insulated from that timing: each item records into a
-private per-item store, and the barrier enqueues the stores into the wave's
-flush in ordinal order, so kernel structural edits *apply* in canonical
-serial-walk order at any lane count (`spawn()` still reserves its Entity handle
-at record time, so the IDs themselves — not the resulting layout — remain
-timing-dependent; serial systems' commands keep the thread-sharded buffer
-with its unspecified cross-shard order). `run(world)` is
+through a system's `Commands&` are insulated from that timing: each serial
+system, and each item of a parallel system, records into a private store, and
+the barrier splices the stores into the wave's flush in canonical order (wave
+order across systems, ordinal order across a parallel system's items), so
+structural edits *apply* in the same order at any lane count (`spawn()` still
+reserves its Entity handle at record time, so the IDs themselves — not the
+resulting layout — remain timing-dependent; dynamic systems' commands keep the
+thread-sharded buffer with its unspecified cross-shard order). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
 with the heavy system registered as a parallel system, because an opaque heavy system is
@@ -413,20 +414,21 @@ remaining caveats:
   system is genuinely unanalyzable, and it then runs alone. (Resource reads from
   outside any system, e.g. a consumer thread calling `world.resource<T>()`,
   remain the caller's responsibility.)
-* **Commands from parallel systems replay in canonical order; two things stay
-  timing-dependent.** Each work item of a parallel system records into its own
-  private store, and the barrier enqueues the stores in item-ordinal order, so
-  the structural edits a parallel system records apply in serial-walk order --
-  the same order, and the same resulting row layout -- at any lane count. What
-  still varies from run to run on a multi-lane pool is (a) the entity ids
-  `spawn()` hands out, which are reserved at record time, so which spawn
-  receives which id follows how the lanes' reservations interleave; and (b) the
-  cross-shard order of commands recorded by serial systems sharing a wave:
-  those go through the thread-sharded buffer, so each system's own commands
-  replay in record order, but where they fall relative to the wave's other
-  recorders follows which lane ran the system. A 1-lane pool claims items in
-  list order and is fully deterministic -- use one when you need
-  reproducibility, e.g. lockstep sims.
+* **Commands replay in canonical order; two things stay timing-dependent.**
+  Each serial system, and each work item of a parallel system, records into its
+  own private store, and the barrier splices the stores into the flush in wave
+  order (registration order within a wave), a parallel system's in
+  item-ordinal order. So the structural edits systems record apply in the same
+  order -- and leave the same row layout -- at any lane count. What still
+  varies from run to run on a multi-lane pool is (a) the entity ids `spawn()`
+  hands out, which are reserved at record time, so which spawn receives which
+  id follows how the lanes' reservations interleave; and (b) the commands of
+  dynamic systems (`add_dynamic_serial`/`add_dynamic_parallel`), which have no
+  parameter list to own a store: those go through the thread-sharded buffer,
+  so each lane's commands replay in record order, but their order relative to
+  other shards follows which lane ran what. A 1-lane pool claims items in list
+  order and is fully deterministic -- use one when you need reproducibility,
+  e.g. lockstep sims.
 
 ## 6. Resources (singletons)
 

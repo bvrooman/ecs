@@ -221,11 +221,12 @@ public:
     // prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
-    // is not. Commands recorded by PARALLEL systems replay in canonical order
-    // regardless (per-item stores enqueued at the barrier in ordinal order --
-    // see schedule/params/commands.hpp; spawn() handles are still reserved at
+    // is not. Commands recorded through a typed system's Commands& replay in
+    // canonical order regardless (private stores spliced at the barrier in
+    // wave order, a parallel system's per item in ordinal order -- see
+    // schedule/params/commands.hpp; spawn() handles are still reserved at
     // record time, so the IDs themselves remain timing-dependent). Commands
-    // recorded by serial systems keep the thread-sharded path, so their
+    // recorded by DYNAMIC systems keep the thread-sharded path, so their
     // cross-shard replay order -- already unspecified -- varies run to run.
     // A 1-lane pool claims items in list order and is fully deterministic.
     //

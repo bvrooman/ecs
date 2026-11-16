@@ -25,8 +25,8 @@
 //   Scratch<T>      per-item temp workspace, reset keeping capacity, no access
 //   Random          per-item deterministic PCG32 stream, seeded from
 //                   (RandomSeed resource, schedule tick, system id, ordinal)
-//   Commands&       in a parallel system: per-item private stores, enqueued
-//                   wave's flush in ordinal order (canonical replay)
+//   Commands&       per-item private stores, spliced into the wave's flush
+//                   in ordinal order (canonical replay)
 //
 // Every merge runs in canonical world order, so a schedule's observable
 // results are bitwise identical at 1 lane and N lanes -- including float
@@ -34,6 +34,8 @@
 //
 // The serial side is smaller: Local<T> (params/local.hpp) is per-system
 // state for add_serial(), and is the only parameter exclusive to it.
+// Commands& has a serial face too (params/commands.hpp): one private store
+// per system, spliced in wave order.
 
 #pragma once
 

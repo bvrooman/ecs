@@ -10,18 +10,24 @@
 #include <ecs/entity.hpp>
 #include <ecs/world/world.hpp>
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
 
 namespace ecs {
 
+namespace detail {
+    struct command_slot; // schedule/params/commands.hpp
+} // namespace detail
+
 // ===========================================================================
-//  Commands: the mutation API. A running Schedule creates one bound to the
-//  World and passes it to every system, so spawn/destroy/add/remove/set are
-//  reachable only from inside a system (or a schedule's setup). All of them are
-//  deferred -- recorded into the command buffer and applied at the next flush.
+//  Commands: the mutation API, handed to systems by the Schedule, so
+//  spawn/destroy/add/remove/set are reachable only from inside a system (or a
+//  schedule's setup). All of them are deferred -- recorded, then applied at the
+//  next flush. A typed system's Commands& records into a private store its
+//  parameter policy owns and splices into the flush in canonical order; a
+//  dynamic system gets the Schedule's shared one, which records into the
+//  world's thread-sharded buffer.
 // ===========================================================================
 class Commands {
 public:
@@ -93,14 +99,14 @@ public:
     }
 
 private:
-    friend class Schedule; // constructs Commands during run
-    template <class P>
-    friend struct detail::parallel_param; // per-item recording for parallel systems
+    friend class Schedule; // constructs the shared Commands for dynamic systems
+    friend struct detail::command_slot; // a store-backed Commands (see below)
     explicit Commands(World& w)
         : world_(w) {}
-    // A kernel work item's Commands records into its own private store (no
-    // lock, deterministic replay order) instead of the world's thread-sharded
-    // buffer; parallel_param<Commands&> owns the stores and enqueues them at
+    // A typed system's Commands records into a private store (no lock,
+    // deterministic replay order) instead of the world's thread-sharded
+    // buffer. The Commands& parameter policies own the stores (each paired
+    // with its Commands in a command_slot) and splice them into the flush at
     // the wave barrier (see schedule/params/commands.hpp).
     Commands(World& w, CommandStore& local)
         : world_(w)
@@ -111,14 +117,6 @@ private:
             local_->record(std::forward<F>(f));
         else
             world_.commands_.record(std::forward<F>(f));
-    }
-    // Barrier-time (single-threaded): splice this item's private store into
-    // the wave's flush, which drains it in record order after the shards.
-    // Spliced from one thread in ordinal order, so parallel-recorded edits
-    // apply in canonical order.
-    void enqueue_local() {
-        assert(local_);
-        world_.commands_.splice(*local_);
     }
     World& world_;
     CommandStore* local_ = nullptr;

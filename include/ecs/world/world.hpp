@@ -48,12 +48,18 @@ namespace detail {
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 
-    // The kernel-parameter policy (schedule/params/parallel.hpp), forward-
-    // declared so Commands can befriend its Commands& specialization (per-item
-    // command recording for parallel systems).
+    // The two parameter policies (schedule/params/parallel.hpp and
+    // schedule/params/serial.hpp), forward-declared so World can befriend
+    // their Commands& specializations, which own each system's private
+    // command stores and splice them into the flush
+    // (schedule/params/commands.hpp).
     template <class P>
     struct parallel_param;
+    template <class P>
+    struct serial_param;
 } // namespace detail
+
+class Commands; // world/commands.hpp; the mutation API over this World
 
 // Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
 // reuse World's generic archetype machinery via friendship -- forward-declared
@@ -288,8 +294,10 @@ public:
     }
 
 private:
-    friend class Commands;           // the mutation API; records into commands_
-    friend class Schedule;           // creates Commands and flushes at barriers
+    friend class Commands; // the mutation API; records into commands_
+    friend class Schedule; // creates Commands and flushes at barriers
+    friend struct detail::serial_param<Commands&>;   // splices a system's store
+    friend struct detail::parallel_param<Commands&>; // splices per-item stores
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
@@ -307,6 +315,11 @@ private:
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
     void apply_commands(FlushAttrib& attrib) { commands_.apply(*this, attrib); }
+
+    // Queue a system's private command store to drain at the next flush,
+    // after the thread-sharded commands. Called at the barrier by the
+    // Commands& parameter policies, in canonical order.
+    void splice_commands(CommandStore& store) { commands_.splice(store); }
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.
