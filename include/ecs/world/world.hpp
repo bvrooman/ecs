@@ -306,7 +306,7 @@ private:
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    void apply_commands(FlushAttrib* attrib = nullptr) { commands_.apply(*this, attrib); }
+    void apply_commands(FlushAttrib& attrib) { commands_.apply(*this, attrib); }
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.

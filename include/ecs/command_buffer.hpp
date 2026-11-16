@@ -18,6 +18,11 @@
 // thread's shard replay in record order; ordering *across* shards is
 // unspecified.
 //
+// A system that needs a canonical replay order records into a private
+// CommandStore instead, and the barrier splice()s that store into the buffer;
+// apply() drains spliced stores after the shards, in splice order, with the
+// same attribution and failure handling as a shard.
+//
 // A command is a type-erased `void(World&)` callable. Each shard stores its
 // callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
 // callable is constructed into in place and never relocated, so a move-only or
@@ -111,33 +116,27 @@ public:
         });
     }
 
-    void apply(World& world, FlushAttrib* attrib = nullptr) {
+    void apply(World& world, FlushAttrib& attrib) {
         // Invoke-and-destroy in ONE pass. If a command throws, the remaining
         // (uninvoked) commands are destroyed and the store rewound on unwind --
         // already-applied commands can never replay on the next flush (which
         // would duplicate spawns of the same reserved handle, double-destroy,
         // and replay adds).
+        //
+        // Apply time is attributed per recording source. Commands from one
+        // system are contiguous, so each run of same-source commands is timed
+        // as a batch -- a handful of clock reads, not one per command.
+        using clock   = std::chrono::steady_clock;
         std::size_t i = 0;
         try {
-            if (attrib == nullptr) {
-                for (; i < cmds_.size(); ++i) {
-                    auto const& c = cmds_[i];
-                    c.invoke(c.obj, world);
-                    c.destroy(c.obj);
-                }
-            } else if (!cmds_.empty()) {
-                // Attribute apply time per recording source. Commands from one
-                // work item are contiguous (same source), so time each run
-                // rather than each command -- a handful of clock reads, not one
-                // per command.
-                using clock = std::chrono::steady_clock;
-                auto batch  = clock::now();
-                auto src    = cmds_[0].source;
+            if (!cmds_.empty()) {
+                auto batch = clock::now();
+                auto src   = cmds_[0].source;
                 for (; i < cmds_.size(); ++i) {
                     auto const& c = cmds_[i];
                     if (c.source != src) {
                         auto const now = clock::now();
-                        (*attrib)[src] +=
+                        attrib[src] +=
                             std::chrono::duration<double, std::micro>(now - batch)
                                 .count();
                         batch = now;
@@ -146,7 +145,7 @@ public:
                     c.invoke(c.obj, world);
                     c.destroy(c.obj);
                 }
-                (*attrib)[src] +=
+                attrib[src] +=
                     std::chrono::duration<double, std::micro>(clock::now() - batch)
                         .count();
             }
@@ -245,11 +244,24 @@ public:
         shard.store.record(std::forward<F>(f));
     }
 
+    // Queue a store recorded outside the buffer (a system's private store) to
+    // drain at the next apply(), after every shard and in splice order. Called
+    // single-threaded at the barrier, between the join and the flush. The
+    // buffer does not own the store: it must outlive the next apply() or
+    // discard(), which drain/discard it and forget it.
+    void splice(CommandStore& store) {
+        assert(!applying_.load(std::memory_order_relaxed) &&
+               "CommandBuffer::splice called during apply()");
+        auto lock = std::lock_guard(create_mutex_);
+        spliced_.push_back(&store);
+    }
+
     // Replay all recorded commands, then clear. Must be called when no systems
-    // are executing. Drains shards in creation order; within a shard, in record
-    // order. Takes each shard's (uncontended) mutex so a stray recording thread
-    // is excluded rather than racing the drain.
-    void apply(World& world, FlushAttrib* attrib = nullptr) {
+    // are executing. Drains shards in creation order (within a shard, in record
+    // order), then the spliced stores in splice order. Takes each shard's
+    // (uncontended) mutex so a stray recording thread is excluded rather than
+    // racing the drain.
+    void apply(World& world, FlushAttrib& attrib) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
@@ -257,14 +269,20 @@ public:
                 std::lock_guard shard_lock(shard->mutex);
                 shard->store.apply(world, attrib);
             }
+            for (auto* store : spliced_)
+                store->apply(world, attrib);
+            spliced_.clear();
         } catch (...) {
-            // The throwing shard already cleaned itself up; discard the
-            // not-yet-drained shards too so no command from this failed flush
-            // replays on a later apply.
+            // The throwing store already cleaned itself up; discard the
+            // not-yet-drained shards and spliced stores too so no command from
+            // this failed flush replays on a later apply.
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
                 shard->store.discard();
             }
+            for (auto* store : spliced_)
+                store->discard();
+            spliced_.clear();
             applying_.store(false, std::memory_order_relaxed);
             throw;
         }
@@ -278,6 +296,9 @@ public:
             std::lock_guard shard_lock(shard->mutex);
             shard->store.discard();
         }
+        for (auto* store : spliced_)
+            store->discard();
+        spliced_.clear();
     }
 
     auto size() {
@@ -285,6 +306,8 @@ public:
         auto n    = 0ul;
         for (auto const& shard : shards_)
             n += shard->store.size();
+        for (auto* store : spliced_)
+            n += store->size();
         return n;
     }
 
@@ -315,6 +338,7 @@ private:
     std::array<std::atomic<Shard*>, kShards> slots_ {};
     // lock-free shard lookup
     std::vector<std::unique_ptr<Shard>> shards_; // ownership + apply order
+    std::vector<CommandStore*> spliced_;         // barrier-spliced private stores
     std::mutex create_mutex_;                    // shard creation + apply
     std::atomic<bool> applying_ {false};         // debug: no record during apply
 };

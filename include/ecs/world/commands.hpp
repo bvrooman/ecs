@@ -10,6 +10,7 @@
 #include <ecs/entity.hpp>
 #include <ecs/world/world.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -111,12 +112,13 @@ private:
         else
             world_.commands_.record(std::forward<F>(f));
     }
-    // Barrier-time (single-threaded): splice this item's recorded commands
-    // into the wave's flush by enqueueing one replay command that drains the
-    // private store in record order. Enqueued from one thread in ordinal
-    // order, so parallel-recorded edits apply in canonical order.
+    // Barrier-time (single-threaded): splice this item's private store into
+    // the wave's flush, which drains it in record order after the shards.
+    // Spliced from one thread in ordinal order, so parallel-recorded edits
+    // apply in canonical order.
     void enqueue_local() {
-        world_.commands_.record([s = local_](World& w) { s->apply(w); });
+        assert(local_);
+        world_.commands_.splice(*local_);
     }
     World& world_;
     CommandStore* local_ = nullptr;

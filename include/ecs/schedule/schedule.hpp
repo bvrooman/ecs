@@ -511,7 +511,7 @@ private:
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
             auto const tf = detail::sched_clock::now();
-            world.apply_commands(&flush_attrib_);
+            world.apply_commands(flush_attrib_);
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
             world.discard_commands();

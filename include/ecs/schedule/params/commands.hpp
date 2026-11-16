@@ -73,9 +73,9 @@ namespace detail {
             s.active = rows.size();
         }
 
-        // Single-threaded, before the wave's flush: enqueue each item's store
-        // in ordinal order. The flush then drains them in that order (the
-        // replay commands live in the barrier thread's one shard).
+        // Single-threaded, before the wave's flush: splice each item's store
+        // into the world's buffer in ordinal order. The flush then drains
+        // them in that order, after the thread-sharded commands.
         static void finish(state& s, World&) {
             for (std::size_t i = 0; i < s.active; ++i)
                 if (s.slots[i]->store.size() > 0)
