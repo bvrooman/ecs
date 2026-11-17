@@ -127,10 +127,13 @@ struct WorldOps {
 
     // --- deferred (in-system) structural mutation -------------------------
     // The immediate ops above are unsafe mid-tick (they relocate storage while a
-    // system iterates). These instead RECORD into the world's command buffer --
-    // the same one native Commands use -- so they apply at the next Schedule
-    // flush (wave barrier). A JS emit/reap kernel reaches them through the
-    // binding (DynamicWorld.spawn/destroy).
+    // system iterates). These instead RECORD into the world's command buffer,
+    // so they apply at the next Schedule flush (wave barrier). Called while a
+    // system's work item runs, the buffer redirects them into that item's
+    // private store, so they splice in canonical order like the item's
+    // Commands; called between ticks, they land in the thread-sharded buffer.
+    // A JS emit/reap kernel reaches them through the binding
+    // (DynamicWorld.spawn/destroy).
 
     // A packed component bundle: (id, AoS bytes) per component, as a JS emitter
     // hands it over.

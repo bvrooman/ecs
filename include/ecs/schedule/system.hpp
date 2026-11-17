@@ -114,7 +114,7 @@ void declare_component(SystemAccess& a) {
 template <class... Cs>
 struct system_param<Query<Cs...>> {
     static void declare(SystemAccess& a) { (declare_component<Cs>(a), ...); }
-    static Query<Cs...> bind(World& w, Commands&, WorkItem const& item) {
+    static Query<Cs...> bind(World& w, WorkItem const& item) {
         return Query<Cs...>(w, item);
     }
     static Signature const& signature() { return Query<Cs...>::required(); }
@@ -122,12 +122,12 @@ struct system_param<Query<Cs...>> {
 template <class T>
 struct system_param<Res<T>> {
     static void declare(SystemAccess& a) { a.res_reads.push_back(resource_id<T>); }
-    static Res<T> bind(World& w, Commands&, WorkItem const&) { return Res<T>(w); }
+    static Res<T> bind(World& w, WorkItem const&) { return Res<T>(w); }
 };
 template <class T>
 struct system_param<ResMut<T>> {
     static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
-    static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
+    static ResMut<T> bind(World& w, WorkItem const&) { return ResMut<T>(w); }
 };
 // Commands& is deliberately not routed through system_param: it needs a
 // private store per recorder, so serial_param<Commands&> and
@@ -140,7 +140,7 @@ struct system_param<ResMut<T>> {
 template <>
 struct system_param<WorldView> {
     static void declare(SystemAccess& a) { a.reads_all = true; }
-    static WorldView bind(World& w, Commands&, WorkItem const&) { return WorldView(w); }
+    static WorldView bind(World& w, WorkItem const&) { return WorldView(w); }
 };
 // Note there is deliberately NO system_param<World&>: raw world access cannot
 // be analyzed and is dangerous under any concurrent executor, so it is not a
@@ -154,11 +154,10 @@ struct system_param<WorldView> {
 // unsupported type (Query<..> const&, T*, int, ...) fails this concept instead
 // of erroring inside an instantiation.
 template <class P>
-concept SystemParam =
-    requires(SystemAccess& a, World& w, Commands& c, WorkItem const& item) {
-        system_param<P>::declare(a);
-        system_param<P>::bind(w, c, item);
-    };
+concept SystemParam = requires(SystemAccess& a, World& w, WorkItem const& item) {
+    system_param<P>::declare(a);
+    system_param<P>::bind(w, item);
+};
 
 template <class P>
 inline constexpr bool is_query_param_v = false;
@@ -235,7 +234,7 @@ struct MatchCache {
     }
 };
 
-using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
+using RunFn = move_only_function<void(World&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;

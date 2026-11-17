@@ -80,10 +80,7 @@ namespace detail {
                 op(target, s.parts[i]);
         }
 
-        static Reduce<T, Op, Partial> bind(state& s,
-                                           World&,
-                                           Commands&,
-                                           WorkItem const& item) {
+        static Reduce<T, Op, Partial> bind(state& s, World&, WorkItem const& item) {
             auto ordinal = item.ordinal;
             return Reduce<T, Op, Partial>(s.parts[ordinal]);
         }

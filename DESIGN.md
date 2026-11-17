@@ -360,14 +360,16 @@ system's slices overlap both with each other and with the wave's other systems:
 data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
 1-lane pool claims in list order and is fully deterministic). Commands recorded
-through a system's `Commands&` are insulated from that timing: each serial
-system, and each item of a parallel system, records into a private store, and
-the barrier splices the stores into the wave's flush in canonical order (wave
-order across systems, ordinal order across a parallel system's items), so
-structural edits *apply* in the same order at any lane count (`spawn()` still
-reserves its Entity handle at record time, so the IDs themselves — not the
-resulting layout — remain timing-dependent; dynamic systems' commands keep the
-thread-sharded buffer with its unspecified cross-shard order). `run(world)` is
+during a run are insulated from that timing: each serial system, and each item
+of a parallel system, records into a private store -- typed systems through
+their `Commands&`, dynamic systems through the `Commands&` their run is handed
+and through `dynamic::WorldOps` while their item runs -- and the barrier
+splices the stores into the wave's flush in canonical order (wave order across
+systems, ordinal order across a parallel system's items), so structural edits
+*apply* in the same order at any lane count (`spawn()` still reserves its
+Entity handle at record time, so the IDs themselves — not the resulting layout
+— remain timing-dependent; only edits recorded outside any run, by host code
+between ticks, go through the thread-sharded buffer). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
 with the heavy system registered as a parallel system, because an opaque heavy system is
@@ -414,21 +416,22 @@ remaining caveats:
   system is genuinely unanalyzable, and it then runs alone. (Resource reads from
   outside any system, e.g. a consumer thread calling `world.resource<T>()`,
   remain the caller's responsibility.)
-* **Commands replay in canonical order; two things stay timing-dependent.**
+* **Commands replay in canonical order; entity ids stay timing-dependent.**
   Each serial system, and each work item of a parallel system, records into its
   own private store, and the barrier splices the stores into the flush in wave
   order (registration order within a wave), a parallel system's in
-  item-ordinal order. So the structural edits systems record apply in the same
+  item-ordinal order. That covers typed systems' `Commands&`, the `Commands&`
+  a dynamic system's run is handed, and `dynamic::WorldOps` deferred edits made
+  while a system's item runs (the executor points the thread's recording at
+  the item's store). So the structural edits systems record apply in the same
   order -- and leave the same row layout -- at any lane count. What still
-  varies from run to run on a multi-lane pool is (a) the entity ids `spawn()`
-  hands out, which are reserved at record time, so which spawn receives which
-  id follows how the lanes' reservations interleave; and (b) the commands of
-  dynamic systems (`add_dynamic_serial`/`add_dynamic_parallel`), which have no
-  parameter list to own a store: those go through the thread-sharded buffer,
-  so each lane's commands replay in record order, but their order relative to
-  other shards follows which lane ran what. A 1-lane pool claims items in list
-  order and is fully deterministic -- use one when you need reproducibility,
-  e.g. lockstep sims.
+  varies from run to run on a multi-lane pool is the entity ids `spawn()` hands
+  out, which are reserved at record time, so which spawn receives which id
+  follows how the lanes' reservations interleave. Edits recorded outside any
+  run (host code between ticks) go through the thread-sharded buffer and apply
+  at the next flush, ahead of the spliced stores. A 1-lane pool claims items in
+  list order and is fully deterministic -- use one when you need
+  reproducibility, e.g. lockstep sims.
 
 ## 6. Resources (singletons)
 

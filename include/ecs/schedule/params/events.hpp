@@ -160,7 +160,7 @@ namespace detail {
             }
         }
 
-        static EventWriter<T> bind(state& s, World&, Commands&, WorkItem const& item) {
+        static EventWriter<T> bind(state& s, World&, WorkItem const& item) {
             auto ordinal = item.ordinal;
             return EventWriter<T>(s.parts[ordinal]);
         }
@@ -191,7 +191,7 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static EventReader<T> bind(state& s, World&, Commands&, WorkItem const&) {
+        static EventReader<T> bind(state& s, World&, WorkItem const&) {
             return EventReader<T>(s.events);
         }
     };

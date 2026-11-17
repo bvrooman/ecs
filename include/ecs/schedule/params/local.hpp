@@ -63,7 +63,7 @@ namespace detail {
                             std::span<std::uint32_t const>,
                             WaveContext const&) {}
         static void finish(state&, World&) {}
-        static Local<T> bind(state& s, World&, Commands&, WorkItem const&) {
+        static Local<T> bind(state& s, World&, WorkItem const&) {
             return Local<T>(s.value);
         }
     };

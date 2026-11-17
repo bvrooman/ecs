@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <ecs/command_buffer.hpp>
+#include <ecs/command_buffer.hpp> // CommandStore
 #include <ecs/entity.hpp>
 #include <ecs/world/world.hpp>
 
@@ -24,10 +24,9 @@ namespace detail {
 //  Commands: the mutation API, handed to systems by the Schedule, so
 //  spawn/destroy/add/remove/set are reachable only from inside a system (or a
 //  schedule's setup). All of them are deferred -- recorded, then applied at the
-//  next flush. A typed system's Commands& records into a private store its
-//  parameter policy owns and splices into the flush in canonical order; a
-//  dynamic system gets the Schedule's shared one, which records into the
-//  world's thread-sharded buffer.
+//  next flush. Every Commands records into one work item's private store,
+//  which the barrier splices into the flush in canonical order (see
+//  schedule/params/commands.hpp).
 // ===========================================================================
 class Commands {
 public:
@@ -99,27 +98,19 @@ public:
     }
 
 private:
-    friend class Schedule; // constructs the shared Commands for dynamic systems
-    friend struct detail::command_slot; // a store-backed Commands (see below)
-    explicit Commands(World& w)
-        : world_(w) {}
-    // A typed system's Commands records into a private store (no lock,
-    // deterministic replay order) instead of the world's thread-sharded
-    // buffer. The Commands& parameter policies own the stores (each paired
-    // with its Commands in a command_slot) and splice them into the flush at
-    // the wave barrier (see schedule/params/commands.hpp).
-    Commands(World& w, CommandStore& local)
+    friend struct detail::command_slot; // the only constructor of a Commands
+    // Records into one work item's private store (no lock, deterministic
+    // replay order); a command_slot pairs the two, and the barrier splices
+    // the store into the flush.
+    Commands(World& w, CommandStore& store)
         : world_(w)
-        , local_(&local) {}
+        , store_(store) {}
     template <class F>
     void record(F&& f) {
-        if (local_)
-            local_->record(std::forward<F>(f));
-        else
-            world_.commands_.record(std::forward<F>(f));
+        store_.record(std::forward<F>(f));
     }
-    World& world_;
-    CommandStore* local_ = nullptr;
+    World& world_; // spawn() reserves its handle here at record time
+    CommandStore& store_;
 };
 
 } // namespace ecs

@@ -135,14 +135,14 @@ public:
 
     // Execute the item list: each item is claimed by whichever lane is free.
     // Each item's busy time is rolled up per system into result_.
-    void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
+    void run(SystemVector& systems, World& world, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock  = std::chrono::steady_clock;
         auto run_one = [&](WorkItem& item) {
             auto& system               = systems[item.system];
             detail::recording_source() = system.id;
             auto const t0              = clock::now();
-            system.run(world, cmds, item);
+            system.run(world, item);
             item.busy_us = detail::elapsed_us(t0);
         };
         pool.for_each(items_, run_one);

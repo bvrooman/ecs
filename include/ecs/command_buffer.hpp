@@ -21,7 +21,12 @@
 // A system that needs a canonical replay order records into a private
 // CommandStore instead, and the barrier splice()s that store into the buffer;
 // apply() drains spliced stores after the shards, in splice order, with the
-// same attribution and failure handling as a shard.
+// same attribution and failure handling as a shard. While a work item that
+// owns such a store runs, the executor also points the thread's recording
+// target at it (detail::ScopedRecordingTarget), so world-level record() calls
+// made on that thread -- e.g. dynamic::WorldOps from a JS kernel -- land in
+// the item's store too. The shards therefore only collect recording done
+// outside any work item: host code between ticks.
 //
 // A command is a type-erased `void(World&)` callable. Each shard stores its
 // callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
@@ -228,10 +233,47 @@ private:
     std::vector<Cmd> cmds_;
 };
 
+class CommandBuffer;
+
+namespace detail {
+    // Where the calling thread's CommandBuffer::record calls go instead of a
+    // shard: set by the executor around a work item that owns a private store,
+    // so world-level deferred edits made while it runs (dynamic::WorldOps,
+    // called from a JS kernel) join that item's store and splice with it in
+    // canonical order. Keyed by buffer, so recording into some OTHER world from
+    // inside the item still goes to that world's shards.
+    struct RecordingTarget {
+        CommandBuffer const* buffer = nullptr;
+        CommandStore* store         = nullptr;
+    };
+    inline RecordingTarget& recording_target() noexcept {
+        thread_local RecordingTarget target {};
+        return target;
+    }
+
+    // Redirect the calling thread's record() calls on `buffer` into `store` for
+    // the guard's lifetime, restoring the previous target after.
+    class ScopedRecordingTarget {
+    public:
+        ScopedRecordingTarget(CommandBuffer const& buffer, CommandStore& store) noexcept
+            : prev_(recording_target()) {
+            recording_target() = RecordingTarget {&buffer, &store};
+        }
+        ~ScopedRecordingTarget() { recording_target() = prev_; }
+        ScopedRecordingTarget(ScopedRecordingTarget const&)            = delete;
+        ScopedRecordingTarget& operator=(ScopedRecordingTarget const&) = delete;
+
+    private:
+        RecordingTarget prev_;
+    };
+} // namespace detail
+
 class CommandBuffer {
 public:
-    // Record a deferred operation. Lock-free shard lookup; the only lock is the
-    // calling thread's own (normally uncontended) shard mutex.
+    // Record a deferred operation: into the calling thread's recording target
+    // when one is set for this buffer, else into its shard. Lock-free shard
+    // lookup; the only lock is the calling thread's own (normally
+    // uncontended) shard mutex.
     template <class F>
     void record(F&& f) {
         // Recording from inside a flushing command would invalidate the store
@@ -239,6 +281,11 @@ public:
         // debug before the deadlock does.
         assert(!applying_.load(std::memory_order_relaxed) &&
                "CommandBuffer::record called during apply() (from a command?)");
+        // Inside a work item that owns a private store: record there, no lock.
+        if (auto const& target = detail::recording_target(); target.buffer == this) {
+            target.store->record(std::forward<F>(f));
+            return;
+        }
         auto& shard = local_shard();
         std::lock_guard lock(shard.mutex);
         shard.store.record(std::forward<F>(f));

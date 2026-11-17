@@ -113,9 +113,12 @@ public:
     // Register a system whose access is *declared* (a runtime SystemAccess)
     // rather than derived from C++ parameter types -- the entry point for a
     // JS-defined system. `run` is the type-erased body (typically a runtime query
-    // that dispatches per chunk) with the usual (World&, Commands&, WorkItem const&)
-    // signature. It conflicts and levels against every other system by `access`
-    // exactly like a native one, so JS and C++ systems share one wave plan.
+    // that dispatches per chunk) with a (World&, Commands&, WorkItem const&)
+    // signature; the Commands is the work item's own, spliced into the flush in
+    // canonical order like a typed system's (dynamic::WorldOps deferred edits
+    // made while `run` executes join the same store). It conflicts and levels
+    // against every other system by `access` exactly like a native one, so JS
+    // and C++ systems share one wave plan.
     //
     // Serial: the scheduler emits ONE opaque work item, so `run` is invoked once
     // per tick and must iterate every matching archetype itself. The WorkItem it
@@ -221,14 +224,13 @@ public:
     // prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
-    // is not. Commands recorded through a typed system's Commands& replay in
-    // canonical order regardless (private stores spliced at the barrier in
-    // wave order, a parallel system's per item in ordinal order -- see
-    // schedule/params/commands.hpp; spawn() handles are still reserved at
-    // record time, so the IDs themselves remain timing-dependent). Commands
-    // recorded by DYNAMIC systems keep the thread-sharded path, so their
-    // cross-shard replay order -- already unspecified -- varies run to run.
-    // A 1-lane pool claims items in list order and is fully deterministic.
+    // is not. Commands recorded during a run replay in canonical order
+    // regardless -- every work item, typed or dynamic, records into a private
+    // store spliced at the barrier in wave order, a system's items in ordinal
+    // order (see schedule/params/commands.hpp; spawn() handles are still
+    // reserved at record time, so the IDs themselves remain
+    // timing-dependent). A 1-lane pool claims items in list order and is
+    // fully deterministic.
     //
     // Recorded edits flush at each wave barrier; one-shot systems are removed
     // afterwards. A system that throws (in its body or a parallel item)
@@ -241,12 +243,11 @@ public:
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
         using namespace sched_event;
         events_.emit(TickBegin {wave_plans_.size()});
-        auto cmds = Commands {world};
         for (auto& plan : wave_plans_) {
             plan.prepare(systems_, tick_);
             if (plan.size() > 0) {
                 try {
-                    run_wave(plan, world, cmds, pool);
+                    run_wave(plan, world, pool);
                 } catch (...) {
                     events_.emit(TickAbort {plan.id, SystemId::none()});
                     throw;
@@ -305,6 +306,13 @@ private:
     // declared-access System and hand it to register_system. is_parallel + query_sig
     // decide how the wave builds this system's work items (one opaque item vs. sliced row
     // ranges).
+    //
+    // A dynamic system has no parameter list to own its command stores, so it
+    // gets the same per-item command_slots a Commands& parameter would, owned
+    // here: `run` is handed its item's Commands, the thread's world-level
+    // recording (dynamic::WorldOps) is redirected into that item's store while
+    // it runs, and the stores splice into the flush at the barrier in ordinal
+    // order -- exactly like a typed system's.
     template <class Run>
     SystemId emplace_dynamic(std::string name,
                              SystemAccess access,
@@ -324,7 +332,19 @@ private:
         sys.times       = times;
         sys.grain       = grain;
         sys.is_parallel = is_parallel;
-        sys.run         = std::forward<Run>(run);
+
+        auto slots = std::make_shared<detail::command_slots>();
+        sys.run    = [run = std::forward<Run>(run),
+                      slots](World& w, detail::WorkItem const& item) mutable {
+            auto const redirect = slots->redirect(w, item.ordinal);
+            run(w, (*slots)[item.ordinal].cmds, item);
+        };
+        sys.prepare_items = [slots](World& w,
+                                    std::span<std::uint32_t const> rows,
+                                    detail::WaveContext const&) {
+            slots->prepare(w, rows.size());
+        };
+        sys.finish_items = [slots](World& w) { slots->splice(w); };
         return register_system(std::move(sys));
     }
 
@@ -385,9 +405,9 @@ private:
         }
 
         auto states = std::make_shared<typename Info::states>();
-        sys.run = [fn = std::forward<Fn>(fn),
-                   states](World& w, Commands& c, detail::WorkItem const& item) mutable {
-            detail::invoke<Param, Args>(fn, *states, w, c, item, Seq {});
+        sys.run     = [fn = std::forward<Fn>(fn),
+                       states](World& w, detail::WorkItem const& item) mutable {
+            detail::invoke<Param, Args>(fn, *states, w, item, Seq {});
         };
         if constexpr (Info::any_stateful) {
             sys.prepare_items = [states](World& w,
@@ -501,7 +521,7 @@ private:
 
     // Build and execute one wave's item list; on a throw, discard the aborted
     // run's recorded edits and emit TickAbort (see run()).
-    void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
+    void run_wave(WavePlan& plan, World& world, WorkerPool& pool) {
         using namespace sched_event;
         events_.emit(WaveBegin {plan.id, plan.size()});
         flush_attrib_.clear();
@@ -509,7 +529,7 @@ private:
         auto flush_us = 0.0;
         try {
             wave.prepare(world);
-            wave.run(systems_, world, cmds, pool);
+            wave.run(systems_, world, pool);
             wave.finish(world);
             auto const tf = detail::sched_clock::now();
             world.apply_commands(flush_attrib_);

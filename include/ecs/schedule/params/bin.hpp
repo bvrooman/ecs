@@ -164,7 +164,7 @@ namespace detail {
                     target.items_[s.cursors[k]++] = std::move(v);
         }
 
-        static Bin<V> bind(state& s, World&, Commands&, WorkItem const& item) {
+        static Bin<V> bind(state& s, World&, WorkItem const& item) {
             auto ordinal = item.ordinal;
             return Bin<V>(s.parts[ordinal]);
         }

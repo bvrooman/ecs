@@ -84,12 +84,8 @@ template <template <class> class Param,
           class Fn,
           class States,
           std::size_t... I>
-void invoke(Fn& fn,
-            States& st,
-            World& w,
-            Commands& c,
-            WorkItem const& item,
-            std::index_sequence<I...>) {
-    fn(Param<std::tuple_element_t<I, Args>>::bind(std::get<I>(st), w, c, item)...);
+void invoke(
+    Fn& fn, States& st, World& w, WorkItem const& item, std::index_sequence<I...>) {
+    fn(Param<std::tuple_element_t<I, Args>>::bind(std::get<I>(st), w, item)...);
 }
 }

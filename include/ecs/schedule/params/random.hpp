@@ -104,7 +104,7 @@ namespace detail {
 
         static void finish(state&, World&) {}
 
-        static Random bind(state& s, World&, Commands&, WorkItem const& item) {
+        static Random bind(state& s, World&, WorkItem const& item) {
             auto ordinal = item.ordinal;
             return Random(mix_in(s.stream_base, ordinal), ordinal);
         }
