@@ -167,10 +167,11 @@ if (ECS_BUILD_TOOLS)
     add_subdirectory(tools)
 endif ()
 
-# WebAssembly targets (Phase 0 smoke test; later the browser demo). Only under an
-# Emscripten toolchain -- native builds skip this entirely.
+# WebAssembly smoke tests for the core. Only under an Emscripten toolchain --
+# native builds skip this entirely. (The JS bindings and browser demos are
+# parked; see docs/PARKED.md.)
 if (EMSCRIPTEN)
-    add_subdirectory(web)
+    add_subdirectory(tests/wasm)
 endif ()
 
 # ---------------------------------------------------------------------------

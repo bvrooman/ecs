@@ -135,9 +135,11 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TSAN_OPTIONS: halt_on_error=1
 
-  # Emscripten build of the wasm targets + the node smoke tests. Validates the
-  # ILP32 hash paths, the portable reflection backend under wasm, and the
-  # atomic_shared_ptr fallback (Emscripten's libc++).
+  # Emscripten build of the core + its node smoke tests. Keeps the core
+  # portable to wasm32 -- the ILP32 hash paths, the portable reflection
+  # backend, Emscripten's libc++ (atomic_shared_ptr fallback), and the
+  # WorkerPool on wasm threads -- while the JS bindings and browser demos are
+  # parked (docs/PARKED.md).
   wasm:
     name: wasm (Emscripten)
     runs-on: ubuntu-24.04
@@ -156,9 +158,9 @@ jobs:
           -DECS_BUILD_TOOLS=OFF
       - name: Build
         run: cmake --build build-wasm
-      - name: Smoke test (single-threaded core)
-        run: node build-wasm/web/ecs_smoke.js
-      - name: Smoke test (dynamic components)
-        run: node build-wasm/web/smoke_dynamic.mjs
-      - name: Smoke test (parallel JS kernels)
-        run: node build-wasm/web/ecs_parallel_smoke.js
+      - name: Smoke test (single-threaded core + runtime-typed components)
+        run: node build-wasm/tests/wasm/ecs_smoke.js
+      # Bounded: a lane that dies mid-wave would leave the pool's join spinning.
+      - name: Smoke test (core on wasm threads)
+        timeout-minutes: 5
+        run: node build-wasm/tests/wasm/ecs_smoke_mt.js

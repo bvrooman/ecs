@@ -464,11 +464,11 @@ static double sum_with(std::size_t const grain_rows, unsigned const lanes) {
     return w.resource<GrainSum>().v;
 }
 
-// add_dynamic_parallel is a template with no native caller -- only the wasm
-// bindings instantiate it -- so a signature error in it compiles clean through
-// a full native build and the whole test suite, and surfaces only in the
-// Emscripten CI leg. That is not a safety net worth relying on: instantiate it
-// here, and check grain reaches the dynamic path while we are at it.
+// add_dynamic_parallel is a template with no other caller in the tree -- the
+// JS bindings that used it are parked (docs/PARKED.md) -- so a signature error
+// in it would compile clean through a full build and the whole test suite.
+// Instantiate it here, and check grain reaches the dynamic path while we are
+// at it.
 static void dynamic_parallel_is_instantiated_and_honours_grain() {
     World w;
     setup(w, [](Commands& cmd) {
