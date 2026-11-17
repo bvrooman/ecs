@@ -129,8 +129,8 @@ struct WorldOps {
     // The immediate ops above are unsafe mid-tick (they relocate storage while a
     // system iterates). These instead RECORD into the world's command buffer --
     // the same one native Commands use -- so they apply at the next Schedule
-    // flush (wave barrier). A JS emit/reap kernel reaches them through the
-    // binding (DynamicWorld.spawn/destroy).
+    // flush (wave barrier). The parked JS bindings reached them through
+    // DynamicWorld.spawn/destroy (see docs/PARKED.md).
 
     // A packed component bundle: (id, AoS bytes) per component, as a JS emitter
     // hands it over.

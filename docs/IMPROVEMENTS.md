@@ -425,7 +425,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
   observer/missing-resource paths; tag components through the full archetype
   path; doctest (or extend `check.hpp` with variadic `CHECK`, value-printing
   `CHECK_EQ`, per-case ctest registration); `-march=native` as an option;
-  optional EnTT/flecs comparison; a wasm CI leg running `web/test/smoke.cpp`
+  optional EnTT/flecs comparison; a wasm CI leg running `tests/wasm/smoke.cpp`
   under node. **[done]** structural churn / fragmentation / random-access
   benchmark dimensions (churn/access suites), machine-readable results
   (`ECS_BENCH_OUT`), per-suite dispersion via the shared `bench::Dist`.
@@ -477,6 +477,12 @@ the results CSV's `lanes` column makes each run a lanes×metric matrix, and
 diagonal so the turnover past the physical-core count is a picture.
 
 ## 8. Wasm & JS interop
+
+**Parked.** The JS bindings and browser demos (`web/`) were removed from
+`main` after commit `fd5971c` while the core architecture settles; the core
+keeps building and running as wasm in CI (`tests/wasm/`). See
+[`PARKED.md`](PARKED.md) for what was kept and how to bring it back. The
+entries below describe that code as of `fd5971c`.
 
 - **[rejected]** Idle-lane parking under Emscripten (see §2) — the Worker
   100%-burn problem needs an explicit app-driven idle API instead; roadmap.

@@ -1,7 +1,9 @@
-// web/smoke.cpp
+// tests/wasm/smoke.cpp
 //
-// Phase 0 WebAssembly smoke test: prove the ECS *core* compiles and runs under
+// WebAssembly smoke test: prove the ECS *core* compiles and runs under
 // Emscripten with the portable (non-P2996) reflection backend, single-threaded.
+// Run with `node build-wasm/tests/wasm/ecs_smoke.js`; it exits non-zero if a
+// check fails. (smoke_mt.cpp covers the core on wasm threads.)
 //
 // It deliberately drives the schedule only through Schedule::run(World&) -- a
 // 1-lane WorkerPool that spawns no std::thread (see parallel/worker_pool.hpp) --
@@ -9,18 +11,26 @@
 // SharedArrayBuffer. There is no graphics: results go to stdout, so running it
 // with `node ecs_smoke.js` is enough to confirm the toolchain end-to-end.
 //
-// What it exercises (the three Phase 0 risks):
+// What it exercises:
 //   * the portable reflection backend (field_count_v on plain structs)
 //   * recent libc++ features the core leans on (std::move_only_function in
 //     Schedule; std::atomic<std::shared_ptr> in SnapshotChannel)
 //   * the single-threaded core: deferred spawn/destroy through the Commands
 //     command buffer, and automatic ordering across parallel levels
 //     (gravity writes Velocity -> integrate reads it on a later level)
+//   * the runtime-typed component module (ecs/dynamic.hpp: Registry,
+//     DynamicColumn, WorldOps) that runtime-defined content and an editor
+//     build on -- it is not part of ecs/ecs.hpp, so it is included here to
+//     keep it compiling and working on wasm32 too
 
+#include <ecs/dynamic.hpp>
 #include <ecs/ecs.hpp>
 #include <ecs/reflection/reflect.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 using namespace ecs;
@@ -47,6 +57,44 @@ struct Gravity {
 
 using Snapshot = std::vector<Position>;
 
+static int fails = 0;
+static void check(bool const ok, char const* what) {
+    if (!ok) {
+        std::printf("FAIL: %s\n", what);
+        ++fails;
+    }
+}
+
+// The runtime-typed path: a component described by a field list rather than a
+// C++ struct, added and read back by ComponentId, then spawned through the
+// deferred command buffer and applied at a flush.
+static void dynamic_round_trip() {
+    using namespace ecs::dynamic;
+    struct Packed { // matches the descriptor below: two packed f32 fields
+        float t, u;
+    };
+    auto const Heat =
+        registry().define("Heat", {{"t", FieldType::f32}, {"u", FieldType::f32}});
+
+    World w;
+    Entity const e = WorldOps::create_entity(w);
+    Packed const in {36.5f, -2.25f};
+    WorldOps::add(w, e, Heat, &in);
+    Packed out {};
+    check(WorldOps::get(w, e, Heat, &out) && out.t == in.t && out.u == in.u,
+          "dynamic component round-trips by ComponentId");
+
+    std::vector<std::byte> blob(sizeof(Packed));
+    std::memcpy(blob.data(), &in, sizeof in);
+    Entity const spawned = WorldOps::spawn_deferred(w, {{Heat, std::move(blob)}});
+    Schedule flush;
+    flush.add_serial("flush", [] {});
+    flush.run(w);
+    check(w.size() == 2 && WorldOps::get(w, spawned, Heat, &out) && out.t == in.t,
+          "deferred dynamic spawn applies at the flush");
+    std::printf("dynamic: Heat id=%u, %zu entities\n", unsigned(Heat), w.size());
+}
+
 int main() {
     constexpr int kParticles = 50'000;
     constexpr int kTicks     = 60;
@@ -62,6 +110,10 @@ int main() {
                 reflect::field_count_v<Velocity>,
                 reflect::field_count_v<Mass>,
                 reflect::field_count_v<Lifetime>);
+    check(reflect::field_count_v<Position> == 3 &&
+              reflect::field_count_v<Velocity> == 3 &&
+              reflect::field_count_v<Mass> == 1 && reflect::field_count_v<Lifetime> == 1,
+          "portable reflection counts every field");
 
     World world;
     world.emplace_resource<Gravity>(-9.81f);
@@ -84,6 +136,8 @@ int main() {
         init.run(world); // inline: builds WorkerPool{1}, spawns no thread
     }
     std::printf("spawned %zu entities\n", world.size());
+    check(world.size() == std::size_t(kParticles),
+          "the setup system spawned every particle");
 
     Schedule schedule;
 
@@ -150,6 +204,13 @@ int main() {
                 world.size(),
                 snap);
     std::printf("entity 0 final position = (%.3f, %.3f, %.3f)\n", p0.x, p0.y, p0.z);
-    std::printf("=== ok ===\n");
-    return 0;
+    check(world.size() > std::size_t(kParticles),
+          "tracers are alive alongside the particles");
+    check(snap > 0, "the snapshot channel delivered the tracer positions");
+    check(p0.x > 0.0f && p0.y < 0.0f, "gravity and integrate moved entity 0");
+
+    dynamic_round_trip();
+
+    std::printf("=== %s ===\n", fails == 0 ? "ok" : "FAILED");
+    return fails == 0 ? 0 : 1;
 }

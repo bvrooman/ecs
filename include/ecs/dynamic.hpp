@@ -14,6 +14,11 @@
 // This module is deliberately NOT part of ecs/ecs.hpp: a program that only
 // uses statically-typed components should not pay for the registry or the
 // type-erased column. Include this header to opt in.
+//
+// It is the foundation for runtime-defined content and an editor, so it stays
+// maintained -- tested natively (tests/test_dynamic.cpp) and on wasm
+// (tests/wasm/smoke.cpp) -- even while the JS bindings built on it are parked
+// (docs/PARKED.md).
 
 #pragma once
 
