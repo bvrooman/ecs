@@ -129,13 +129,11 @@ struct system_param<ResMut<T>> {
     static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
     static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
 };
-template <>
-struct system_param<Commands&> {
-    // A side channel: no tracked component/resource access. We still flag it
-    // so tooling can surface that the system records commands.
-    static void declare(SystemAccess& a) { a.commands = true; }
-    static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
-};
+// Commands& is deliberately not routed through system_param: it needs a
+// private store per recorder, so serial_param<Commands&> and
+// parallel_param<Commands&> (schedule/params/commands.hpp) own its whole
+// protocol.
+//
 // Read-only ad-hoc access: WorldView reads everything but writes nothing,
 // so it runs in parallel with other readers and is serialized only against
 // writers.
