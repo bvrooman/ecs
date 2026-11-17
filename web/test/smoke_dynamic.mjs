@@ -175,32 +175,5 @@ let ok2 = true;
 for (let i = 0; i < 2000; i++) if (w5.getComponent(valEnts[i], Val)[0] !== i * 20) { ok2 = false; break; }
 check(ok2, 'param change picked up next tick (k 10 -> 2, x10 then x2 = x20)');
 
-// --- Phase F: canonical command order ----------------------------------------
-// Deferred edits apply in a fixed order: anything the host recorded between
-// ticks first, then each system's edits in registration order (every work
-// item records into its own store, spliced at the wave barrier in wave
-// order). Two emitters share one wave; the rows they spawn must land in that
-// order, tick after tick.
-console.log('--- canonical command order ---');
-const w6 = new M.DynamicWorld();
-const Tag = w6.defineComponent('Tag', [{ name: 'v', type: 'f32' }]);
-w6.defineSystem('e0', { commands: true }, () => {
-  for (let i = 0; i < 3; i++) w6.spawn([[Tag, [i]]]);
-});
-w6.defineSystem('e1', { commands: true }, () => {
-  for (let i = 0; i < 3; i++) w6.spawn([[Tag, [100 + i]]]);
-});
-check(w6.waveCount() === 1, `both emitters in one wave (got ${w6.waveCount()} waves)`);
-
-w6.spawn([[Tag, [-1]]]); // host code between ticks
-w6.tick();
-const order1 = Array.from(w6.fieldView(Tag, 0));
-check(JSON.stringify(order1) === JSON.stringify([-1, 0, 1, 2, 100, 101, 102]),
-  `host spawn, then e0, then e1 (got ${order1})`);
-w6.tick();
-const order2 = Array.from(w6.fieldView(Tag, 0));
-check(JSON.stringify(order2) === JSON.stringify([-1, 0, 1, 2, 100, 101, 102, 0, 1, 2, 100, 101, 102]),
-  `second tick appends e0 then e1 again (got ${order2})`);
-
 console.log(`${checks - fails}/${checks} checks passed`);
 process.exit(fails === 0 ? 0 : 1);

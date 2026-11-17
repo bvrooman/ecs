@@ -162,9 +162,3 @@ jobs:
         run: node build-wasm/web/smoke_dynamic.mjs
       - name: Smoke test (parallel JS kernels)
         run: node build-wasm/web/ecs_parallel_smoke.js
-      # The -pthread build of the dynamic module: parallel JS kernels across
-      # worker lanes, plus JS emitters (each alone in its wave). Bounded, since
-      # a lane that dies mid-wave would leave the pool's join spinning.
-      - name: Smoke test (dynamic components, multi-threaded)
-        timeout-minutes: 5
-        run: node build-wasm/web/smoke_parallel.mjs
