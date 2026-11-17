@@ -35,5 +35,42 @@ let ok = true;
 for (let i = 0; i < N; i++) if (w.getComponent(ents[i], Val)[0] !== i * 3) { ok = false; break; }
 check(ok, `all ${N} Val.x scaled by p.k=3 across worker lanes (every slice correct)`);
 
+// --- JS serial systems that spawn, in a wave shared with a parallel system ---
+// The emitters' work items sit in the same wave as the parallel system's
+// slices, so any lane can claim them. Each spawns tagged rows through the
+// deferred spawn(); the rows must apply in registration order (e0, e1, e2, e3)
+// every tick, whichever lane ran which emitter.
+const w2 = new M.DynamicWorld();
+const Tag = w2.defineComponent('Tag', [{ name: 'v', type: 'f32' }]);
+const Busy = w2.defineComponent('Busy', [{ name: 'x', type: 'f32' }]);
+for (let i = 0; i < N; i++) { const e = w2.createEntity(); w2.addComponent(e, Busy, [i]); }
+w2.defineParallelSystem('busy', { write: [Busy], params: { k: 1 } },
+  (lo, hi, c, p) => { for (let i = lo; i < hi; i++) c.Busy.x[i] += p.k; });
+const EMITTERS = 4, PER = 3, TICKS = 5;
+for (let k = 0; k < EMITTERS; k++)
+  w2.defineSystem(`e${k}`, { commands: true }, () => {
+    for (let i = 0; i < PER; i++) w2.spawn([[Tag, [k * 100 + i]]]);
+  });
+check(w2.waveCount() === 1, `emitters share one wave with the parallel system (${w2.waveCount()} waves)`);
+
+let ran = true;
+try {
+  for (let t = 0; t < TICKS; t++) w2.tick();
+} catch (err) {
+  ran = false;
+  console.log('tick threw: ' + err);
+}
+check(ran, `${TICKS} ticks with JS emitters in a multi-lane wave ran`);
+const spawned = EMITTERS * PER * TICKS;
+check(w2.entityCount() === N + spawned, `all ${spawned} emitted rows applied (entityCount ${w2.entityCount() - N})`);
+const expect = [];
+for (let t = 0; t < TICKS; t++)
+  for (let k = 0; k < EMITTERS; k++)
+    for (let i = 0; i < PER; i++) expect.push(k * 100 + i);
+const tags = w2.fieldView(Tag, 0);
+const got = tags ? Array.from(tags) : [];
+check(JSON.stringify(got) === JSON.stringify(expect),
+  `emitted rows in registration order every tick (first 12: ${got.slice(0, 12)})`);
+
 console.log(`${checks - fails}/${checks} checks passed`);
 process.exit(fails === 0 ? 0 : 1);
