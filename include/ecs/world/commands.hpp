@@ -25,7 +25,7 @@ namespace detail {
 //  spawn/destroy/add/remove/set are reachable only from inside a system (or a
 //  schedule's setup). All of them are deferred -- recorded, then applied at the
 //  next flush. Every Commands records into one work item's private store,
-//  which the barrier splices into the flush in canonical order (see
+//  which the wave drains at its flush in canonical order (see
 //  schedule/params/commands.hpp).
 // ===========================================================================
 class Commands {
@@ -38,13 +38,17 @@ public:
     // spawn returns a usable handle immediately (alive after the next flush).
     // At flush the entity is placed directly into its final archetype.
     // Perfect-forwarded: an rvalue component moves into the capture and again
-    // into storage at flush -- no copies for heap-owning fields.
+    // into storage at flush -- no copies for heap-owning fields. If the spawn
+    // never applies (the run aborts first), the handle stays dead and its slot
+    // is reused.
     template <class... Cs>
     Entity spawn(Cs&&... comps) {
         Entity const e = world_.reserve();
-        record([e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
-            w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
-        });
+        auto build     = [... comps = std::forward<Cs>(comps)](World& w,
+                                                               Entity self) mutable {
+            w.spawn_now<std::decay_t<Cs>...>(self, std::move(comps)...);
+        };
+        record(detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
         return e;
     }
 
@@ -100,8 +104,8 @@ public:
 private:
     friend struct detail::command_slot; // the only constructor of a Commands
     // Records into one work item's private store (no lock, deterministic
-    // replay order); a command_slot pairs the two, and the barrier splices
-    // the store into the flush.
+    // replay order); a command_slot pairs the two, and the wave drains the
+    // store at its flush.
     Commands(World& w, CommandStore& store)
         : world_(w)
         , store_(store) {}

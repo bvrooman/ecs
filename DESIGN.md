@@ -363,12 +363,13 @@ Item contents and order are deterministic; item→lane assignment is not (a
 during a run are insulated from that timing: each serial system, and each item
 of a parallel system, records into a private store -- typed systems through
 their `Commands&`, dynamic systems through the `Commands&` their run is handed
-and through `dynamic::WorldOps` while their item runs -- and the barrier
-splices the stores into the wave's flush in canonical order (wave order across
-systems, ordinal order across a parallel system's items), so structural edits
-*apply* in the same order at any lane count (`spawn()` still reserves its
-Entity handle at record time, so the IDs themselves — not the resulting layout
-— remain timing-dependent; only edits recorded outside any run, by host code
+and through `dynamic::WorldOps` while their item runs. The stores are
+registered with the wave at prepare and drained at its flush, after the
+thread-sharded commands, in canonical order (wave order across systems,
+ordinal order across a parallel system's items), so structural edits *apply*
+in the same order at any lane count (`spawn()` still reserves its Entity
+handle at record time, so the IDs themselves — not the resulting layout —
+remain timing-dependent; only edits recorded outside any run, by host code
 between ticks, go through the thread-sharded buffer). `run(world)` is
 sugar for a 1-lane pool. `benchmarks/schedule_bench` quantifies the shape this
 buys: a wave of 8 small systems plus one compute-heavy one runs ~2.2× faster
@@ -389,9 +390,19 @@ kernel is referenced via a static trampoline, not stored) and **not
 re-entrant**: there is one job slot, so a nested dispatch on the same pool
 throws rather than corrupting the in-flight dispatch (parallel systems cannot
 reach this by construction; a serial system that iterates one pool-bound
-query inside another's kernel can). The first exception from any lane is
-rethrown on the caller, so a throwing system escapes `run()` as it would
-serially. Commands flush at each level barrier. (An earlier
+query inside another's kernel can). The first work item to throw ends the
+wave: items not yet started are skipped and its exception is rethrown on the
+caller after the join, so a throwing system escapes `run()` as it would
+serially. The wave's edits that have not been applied are discarded, the
+entities those dropped spawns reserved are handed back (their handles stay
+dead), and `TickAbort` names the system that failed. Two limits: a flush is not
+transactional -- if a command throws mid-flush, the commands before it have
+already taken effect -- and component writes made directly by work items that
+already ran are not rolled back. With more than one lane, which items ran
+before the wave stopped (and, if two systems throw, which one `TickAbort`
+names) depends on timing; one lane stops at the same item every time. So treat
+a world after an aborted tick as suspect: rebuild or reload it when the run
+must stay deterministic. Commands flush at each level barrier. (An earlier
 `std::execution`/P2300 backend — a general async framework that parallelized
 only *across* systems and woke workers per wave — cost more than it saved for a
 tight fixed-timestep loop and was removed; the work-item executor gets the
@@ -418,18 +429,20 @@ remaining caveats:
   remain the caller's responsibility.)
 * **Commands replay in canonical order; entity ids stay timing-dependent.**
   Each serial system, and each work item of a parallel system, records into its
-  own private store, and the barrier splices the stores into the flush in wave
-  order (registration order within a wave), a parallel system's in
-  item-ordinal order. That covers typed systems' `Commands&`, the `Commands&`
-  a dynamic system's run is handed, and `dynamic::WorldOps` deferred edits made
-  while a system's item runs (the executor points the thread's recording at
-  the item's store). So the structural edits systems record apply in the same
+  own private store, which the wave drains at its flush in wave order
+  (registration order within a wave), a parallel system's in item-ordinal
+  order. That covers typed systems' `Commands&`, the `Commands&` a dynamic
+  system's run is handed, and `dynamic::WorldOps` deferred edits made while a
+  system's item runs (the executor points the thread's recording at the item's
+  store). If the wave aborts, it discards those stores along with the world's
+  thread-sharded commands, and their spawns hand their reserved entities back.
+  So the structural edits systems record apply in the same
   order -- and leave the same row layout -- at any lane count. What still
   varies from run to run on a multi-lane pool is the entity ids `spawn()` hands
   out, which are reserved at record time, so which spawn receives which id
   follows how the lanes' reservations interleave. Edits recorded outside any
   run (host code between ticks) go through the thread-sharded buffer and apply
-  at the next flush, ahead of the spliced stores. A 1-lane pool claims items in
+  at the next flush, ahead of the private stores. A 1-lane pool claims items in
   list order and is fully deterministic -- use one when you need
   reproducibility, e.g. lockstep sims.
 

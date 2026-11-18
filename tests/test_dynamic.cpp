@@ -383,7 +383,7 @@ struct Spawned {
 // Dynamic systems' commands replay in canonical order, both the ones recorded
 // through the Commands& their run is handed and the ones recorded through
 // WorldOps (what a JS kernel's DynamicWorld.spawn reaches) while the system
-// runs: each work item records into its own store, spliced at the barrier in
+// runs: each work item records into its own store, drained at the flush in
 // wave order (registration order within a wave), a parallel system's items in
 // ordinal order. So the spawned rows come out in exactly that order at any
 // lane count -- through the thread-sharded buffer they followed lane timing.
@@ -531,6 +531,39 @@ static void dynamic_commands_discarded_on_abort() {
     CHECK(gather_x(w, Mark) == std::vector<float> {1});
 }
 
+// A WorldOps::spawn_deferred recorded by a system whose run aborts never
+// applies: its handle stays dead and its slot is handed back one generation on,
+// exactly like a Commands::spawn.
+static void aborted_deferred_spawn_is_released() {
+    auto const Pos = define2("AbortedSpawnPos");
+    auto blob      = [] {
+        F2 const v {1, 2};
+        std::vector<std::byte> b(sizeof v);
+        std::memcpy(b.data(), &v, sizeof v);
+        return b;
+    };
+    World w;
+    Entity e = Entity::null();
+    Schedule s;
+    s.add_serial("spawn_then_throw", [&] {
+        e = WorldOps::spawn_deferred(w, {{Pos, blob()}});
+        throw std::runtime_error("abort");
+    });
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.size() == 0);
+    CHECK(!w.alive(e));
+
+    Entity const again = WorldOps::spawn_deferred(w, {{Pos, blob()}});
+    CHECK(again.index() == e.index());
+    CHECK(again.generation() == e.generation() + 1);
+}
+
 int main() {
     RUN_SUITE(round_trip);
     RUN_SUITE(archetype_transitions);
@@ -543,5 +576,6 @@ int main() {
     RUN_SUITE(dynamic_commands_replay_in_canonical_order);
     RUN_SUITE(worldops_into_another_world_stays_there);
     RUN_SUITE(dynamic_commands_discarded_on_abort);
+    RUN_SUITE(aborted_deferred_spawn_is_released);
     return REPORT();
 }

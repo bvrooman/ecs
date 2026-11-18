@@ -53,8 +53,14 @@ namespace detail {
     template <class P>
     struct parallel_param;
 
+    // A recorded spawn (defined after World), befriended so a dropped one can
+    // hand its reservation back.
+    template <class Build>
+    struct ReservedSpawn;
+
     // Every system's private command recorders (schedule/params/commands.hpp),
-    // forward-declared so World can let them splice into its flush.
+    // befriended so a work item can redirect its thread's world-level
+    // recording into its own store.
     class command_slots;
 } // namespace detail
 
@@ -292,11 +298,13 @@ public:
 
 private:
     friend class Commands; // the mutation API; its commands call the *_now edits
-    friend class Schedule; // flushes at barriers
-    friend class detail::command_slots; // splices/redirects private stores
+    friend class Wave;     // flushes, or on abort discards, each wave's commands
+    friend class detail::command_slots; // redirects recording into an item's store
     friend struct dynamic::WorldOps;    // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
+    template <class Build>
+    friend struct detail::ReservedSpawn; // hands a dropped spawn's handle back
 
     // Mutable archetype access for the friends above.
     auto& archetypes() { return archetypes_; }
@@ -309,17 +317,18 @@ private:
         std::uint32_t row = 0;
     };
 
-    // Apply all recorded commands; driven by the Schedule at each barrier.
-    void apply_commands(FlushAttrib& attrib) { commands_.apply(*this, attrib); }
+    // Apply all recorded commands -- the thread-sharded ones, then the
+    // systems' private `stores` in the order given; driven by the schedule's
+    // Wave at each barrier. See CommandStore::apply for `report`.
+    void apply_commands(FlushReport& report,
+                        std::span<CommandStore* const> const stores) {
+        commands_.apply(*this, report, stores);
+    }
 
-    // Queue a work item's private command store to drain at the next flush,
-    // after the thread-sharded commands. Called at the barrier by
-    // detail::command_slots, in canonical order.
-    void splice_commands(CommandStore& store) { commands_.splice(store); }
-
-    // Drop all recorded commands unapplied; driven by the Schedule when a run
-    // aborts, so a failed run's edits cannot leak into the next run's flush.
-    void discard_commands() noexcept { commands_.discard(); }
+    // Drop all recorded commands unapplied; driven by the schedule's Wave when
+    // a run aborts, so a failed run's edits cannot leak into the next run's
+    // flush. Dropped spawns hand their reserved entities back.
+    void discard_commands() noexcept { commands_.discard(*this); }
 
     // Immediate mutation primitives, called only by the command closures at
     // flush time -- so they always run with exclusive, single-threaded access.
@@ -407,6 +416,19 @@ private:
     // generation, or freshly minted at generation 0) without touching the dense
     // record table, which spawn_now materializes at the barrier.
     Entity reserve() { return entities_.reserve(); }
+
+    // Give back a handle from reserve() whose spawn will never materialize --
+    // its command was dropped unapplied (an aborted run, or a flush that threw
+    // first). The generation is bumped, so the handle spawn() returned stays
+    // dead even once the slot is reused. Barrier only, like the *_now
+    // primitives. Runs on unwind paths, so it does not throw: out of memory
+    // growing the slot table, the slot stays reserved (one index is lost).
+    void release_reservation(Entity const e) noexcept {
+        try {
+            (void)entities_.release(e);
+        } catch (...) {
+        }
+    }
 
     // Place a reserved entity directly into its final archetype with all of its
     // components in one step -- no empty-archetype materialization and no
@@ -571,6 +593,21 @@ private:
     WorldId const instance_id_ = WorldId::next();
     std::atomic<std::uint64_t> archetype_gen_ {0};
 };
+
+namespace detail {
+    // The command a spawn records: run, it materializes the entity reserve()
+    // handed out; dropped without running (see CommandStore), it hands the
+    // reservation back, so the slot is reused and the handle the caller got
+    // never comes alive. `build` is void(World&, Entity).
+    template <class Build>
+    struct ReservedSpawn {
+        Entity entity;
+        Build build;
+
+        void operator()(World& w) { build(w, entity); }
+        void on_unapplied(World& w) noexcept { w.release_reservation(entity); }
+    };
+} // namespace detail
 
 // --- ad-hoc read-only iteration: definitions (declared on World above) -------
 // Out-of-class so count() sees matching_archetypes()' deduced return type; the

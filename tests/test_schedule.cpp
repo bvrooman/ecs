@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <variant>
@@ -185,6 +186,400 @@ static void aborted_run_discards_recorded_commands() {
     ok.add_serial("noop", [](Commands&) {}, times {1});
     ok.run(w);
     CHECK(w.size() == 0);
+}
+
+struct Total {
+    int n = 0;
+};
+struct AddTotal {
+    void operator()(Total& into, Total& part) const { into.n += part.n; }
+};
+struct FailingFold {
+    void operator()(Total&, Total&) const { throw std::runtime_error("fold"); }
+};
+
+// An aborted wave hands back every entity its spawns reserved -- recorded
+// through the world's buffer (a serial system) or a parallel system's per-item
+// stores -- one generation on, so the handles those spawns returned never come
+// alive and the slots are reused. Each aborted spawn used to leak its slot for
+// good: 100 aborted ticks of 60 spawns pushed the next fresh index past 6000.
+static void aborted_runs_release_reserved_entities() {
+    constexpr int kLive   = 10;
+    constexpr int kSerial = 50;
+    for (unsigned lanes : {1u, 4u}) {
+        World w;
+        w.emplace_resource<Total>();
+        setup(w, [](Commands& cmd) {
+            for (int i = 0; i < kLive; ++i)
+                cmd.spawn(Position {});
+        });
+
+        std::vector<Entity> serial_spawns;                     // one item writes it
+        std::vector<Entity> row_spawns(kLive, Entity::null()); // a slot per row
+        Schedule bad;
+        bad.add_serial("spawner", [&](Commands& cmd) {
+            serial_spawns.clear();
+            for (int i = 0; i < kSerial; ++i)
+                serial_spawns.push_back(cmd.spawn(Position {}));
+        });
+        bad.add_parallel(
+            "row_spawner",
+            [&](Query<Position const> q, Commands& cmd) {
+                q.for_each([&](Entity e, auto&) {
+                    row_spawns[e.index()] = cmd.spawn(Position {});
+                });
+            },
+            grain {2});
+        // Its finish hook throws -- after every item above has recorded.
+        auto const fold =
+            bad.add_parallel("fold",
+                             [](Query<Position const> q, Reduce<Total, FailingFold> t) {
+                                 q.for_each([&](auto&) { ++t->n; });
+                             });
+        CHECK(bad.level_count() == 1);
+        SystemId blamed = SystemId::none();
+        auto const sub =
+            bad.events().subscribe(event::observer([&](sched_event::TickAbort const& a) {
+                blamed = a.system;
+            }));
+
+        WorkerPool pool {lanes};
+        std::vector<Entity> dead;
+        for (int t = 0; t < 100; ++t) {
+            bool threw = false;
+            try {
+                bad.run(w, pool);
+            } catch (std::runtime_error const&) {
+                threw = true;
+            }
+            CHECK(threw);
+            dead.insert(dead.end(), serial_spawns.begin(), serial_spawns.end());
+            dead.insert(dead.end(), row_spawns.begin(), row_spawns.end());
+        }
+        CHECK(blamed == fold);
+        CHECK(w.size() == std::size_t(kLive));
+
+        // Another schedule -- so row_spawner never runs again -- spawns as many
+        // entities as one aborted tick reserved. Every one lands in a released
+        // slot, below the indices the first aborted tick minted.
+        constexpr int kAgain = kSerial + kLive;
+        std::vector<Entity> again;
+        run_system(w, [&](Commands& cmd) {
+            for (int i = 0; i < kAgain; ++i)
+                again.push_back(cmd.spawn(Position {}));
+        });
+        CHECK(w.size() == std::size_t(kLive + kAgain));
+        for (Entity const e : again) {
+            CHECK(w.alive(e));
+            CHECK(e.index() < std::uint32_t(kLive + kAgain));
+        }
+        for (Entity const e : dead) // reused slots, older generations
+            CHECK(!w.alive(e));
+    }
+}
+
+// When the flush itself throws, it is not rolled back: commands applied before
+// the throwing one stand. The throwing command and everything after it are
+// dropped, and a spawn among them hands its reservation back one generation on.
+static void flush_failure_releases_unapplied_spawns() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 64; ++i)
+            cmd.spawn(Position {float(i), 0});
+    });
+    Entity before = Entity::null();
+    Entity after  = Entity::null();
+    Schedule s;
+    s.add_serial("record", [&](Commands& cmd) {
+        before = cmd.spawn(Position {-1, 0});
+        cmd.sort<Position>([](Position const&) -> int {
+            throw std::runtime_error("key");
+        });
+        after = cmd.spawn(Position {-2, 0});
+    });
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.alive(before)); // applied before the throw
+    CHECK(!w.alive(after)); // dropped unapplied
+    CHECK(w.size() == 65);
+
+    Entity again = Entity::null();
+    run_system(w, [&](Commands& cmd) { again = cmd.spawn(Position {}); });
+    CHECK(again.index() == after.index()); // its slot was handed back
+    CHECK(again.generation() == after.generation() + 1);
+    CHECK(!w.alive(after));
+}
+
+// prewarm() runs the prepare hooks, and a Commands& hook registers its private
+// stores there -- with the wave, never with the world. A schedule prewarmed
+// and then destroyed (its stores with it) must leave nothing that a later
+// flush of the same world, by another schedule, would touch (ASan would flag
+// a dangling store).
+static void prewarmed_then_destroyed_schedule_leaves_nothing_behind() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 2048; ++i)
+            cmd.spawn(Position {float(i), 0});
+    });
+    {
+        Schedule s;
+        s.add_serial("serial", [](Commands& cmd) { cmd.spawn(Position {}); });
+        s.add_parallel("parallel", [](Query<Position const> q, Commands& cmd) {
+            q.for_each([&](auto&) { cmd.spawn(Position {}); });
+        });
+        s.prewarm(w);
+    }
+    Schedule other;
+    other.add_serial("spawn", [](Commands& cmd) { cmd.spawn(Position {}); });
+    other.run(w);
+    CHECK(w.size() == 2049); // only the other schedule's spawn applied
+}
+
+// TickAbort.system names where a failed tick went wrong: the system whose
+// body, work item, prepare hook or finish hook threw, or the system that
+// recorded the command whose flush threw -- and none() when no system is to
+// blame. It used to be none() every time.
+struct NeverInstalled {
+    int n = 0;
+};
+struct AddNever {
+    void operator()(NeverInstalled& into, NeverInstalled& part) const {
+        into.n += part.n;
+    }
+};
+static void tick_abort_names_the_failing_system() {
+    auto blame = [](Schedule& s, World& w, unsigned lanes) {
+        SystemId got = SystemId::none();
+        auto const sub =
+            s.events().subscribe(event::observer([&](sched_event::TickAbort const& a) {
+                got = a.system;
+            }));
+        WorkerPool pool {lanes};
+        try {
+            s.run(w, pool);
+        } catch (std::exception const&) {
+        }
+        return got;
+    };
+    for (unsigned lanes : {1u, 4u}) {
+        World w;
+        w.emplace_resource<Total>();
+        setup(w, [](Commands& cmd) {
+            for (int i = 0; i < 4096; ++i)
+                cmd.spawn(Position {float(i), 0});
+        });
+
+        { // a serial system's body
+            Schedule s;
+            s.add_serial("fine", [](Query<Position const>) {});
+            auto const bad = s.add_serial("bad", [](Query<Position const>) {
+                throw std::runtime_error("body");
+            });
+            CHECK(blame(s, w, lanes) == bad);
+        }
+        { // one work item of a parallel system
+            Schedule s;
+            s.add_parallel("fine",
+                           [](Query<Position const> q) { q.for_each([](auto&) {}); });
+            auto const bad = s.add_parallel(
+                "bad",
+                [](Query<Position const> q) {
+                    q.for_each([](auto& p) {
+                        if (p.x == 3000.f)
+                            throw std::runtime_error("item");
+                    });
+                },
+                grain {256});
+            CHECK(blame(s, w, lanes) == bad);
+        }
+        { // a prepare hook: the Reduce target resource is missing
+            Schedule s;
+            s.add_parallel("fine", [](Query<Position const> q, Reduce<Total, AddTotal>) {
+                q.for_each([](auto&) {});
+            });
+            auto const bad = s.add_parallel("bad",
+                                            [](Query<Position const> q,
+                                               Reduce<NeverInstalled, AddNever>) {
+                                                q.for_each([](auto&) {});
+                                            });
+            CHECK(blame(s, w, lanes) == bad);
+        }
+        { // a finish hook: the fold throws
+            Schedule s;
+            auto const bad =
+                s.add_parallel("bad",
+                               [](Query<Position const> q, Reduce<Total, FailingFold> t) {
+                                   q.for_each([&](auto&) { ++t->n; });
+                               });
+            CHECK(blame(s, w, lanes) == bad);
+        }
+        { // a command whose flush throws: charged to the system that recorded it
+            Schedule s;
+            s.add_serial("fine", [](Commands& cmd) { cmd.spawn(Position {}); });
+            auto const bad = s.add_serial("bad", [](Commands& cmd) {
+                cmd.sort<Position>([](Position const&) -> int {
+                    throw std::runtime_error("key");
+                });
+            });
+            CHECK(blame(s, w, lanes) == bad);
+        }
+        { // an observer throwing is no system's fault, and the culprit of an
+          // earlier abort does not linger into the next one
+            Schedule s;
+            bool observer_throws = false;
+            auto const bad       = s.add_serial("bad", [&observer_throws] {
+                if (!observer_throws)
+                    throw std::runtime_error("body");
+            });
+            CHECK(blame(s, w, lanes) == bad);
+            observer_throws = true;
+            auto const obs =
+                s.events().subscribe(event::observer([](sched_event::WaveBegin const&) {
+                    throw std::runtime_error("observer");
+                }));
+            CHECK(blame(s, w, lanes) == SystemId::none());
+        }
+    }
+}
+
+// A system that is done -- retired by times{n} or removed -- releases what it
+// owns (captures, Local<T>, per-item state) instead of holding it until the
+// Schedule dies. A removal made from inside a running tick waits for the tick to
+// end: the system may still run in it, and may be the one removing itself.
+struct LocalProbe {
+    inline static int alive = 0;
+    LocalProbe() { ++alive; }
+    ~LocalProbe() { --alive; }
+    LocalProbe(LocalProbe const&)            = delete;
+    LocalProbe& operator=(LocalProbe const&) = delete;
+};
+static void retired_and_removed_systems_release_their_state() {
+    World w;
+    setup(w, [](Commands& cmd) { cmd.spawn(Position {}); });
+    auto const token = std::make_shared<int>(0); // each system below holds a copy
+    Schedule s;
+    s.add_serial("keep", [](Query<Position const>) {});
+
+    // Retired by its budget: released as soon as its one run is done.
+    s.add_serial("once", [token](Local<LocalProbe>) {}, times {1});
+    CHECK(token.use_count() == 2);
+    CHECK(LocalProbe::alive == 1);
+    s.run(w);
+    CHECK(token.use_count() == 1);
+    CHECK(LocalProbe::alive == 0);
+
+    // Removed between ticks: released by remove() itself.
+    auto const removed = s.add_serial("removed", [token] {});
+    CHECK(token.use_count() == 2);
+    CHECK(s.remove(removed));
+    CHECK(token.use_count() == 1);
+
+    // Removed from inside a tick, by another system and by itself: each still
+    // runs that tick, so neither is released until the next run() begins.
+    int victim_runs = 0, self_runs = 0;
+    SystemId victim = SystemId::none(), self = SystemId::none();
+    s.add_serial("remover", [&s, &victim](Query<Position>) { (void)s.remove(victim); });
+    victim = s.add_serial("victim", [token, &victim_runs](Query<Position const>) {
+        ++victim_runs; // reads what remover writes: a later wave
+    });
+    self   = s.add_serial("self", [token, &s, &self, &self_runs](Commands&) {
+        ++self_runs;
+        (void)s.remove(self);
+    });
+    CHECK(token.use_count() == 3);
+    s.run(w);
+    CHECK(victim_runs == 1);
+    CHECK(self_runs == 1);
+    CHECK(token.use_count() == 3); // still owned: the tick was running
+    s.run(w);
+    CHECK(token.use_count() == 1); // released as the next run() began
+    CHECK(victim_runs == 1);
+    CHECK(self_runs == 1);
+    CHECK(s.size() == 2); // keep + remover
+}
+
+// A times{n} budget is charged when the system's wave completes, not at the end
+// of the tick. If a later wave aborts the tick, a one-shot whose wave already
+// flushed has run -- its edits are in the world -- and must not run again (it
+// used to, doubling a setup's spawns). A one-shot in the aborted wave itself is
+// not charged: its edits were discarded, so it runs again next tick.
+static void budgets_are_charged_per_completed_wave() {
+    World w;
+    Schedule s;
+    int setup_runs = 0, retry_runs = 0;
+    bool fail = true;
+    s.add_serial(
+        "setup",
+        [&](Commands& cmd) {
+            ++setup_runs;
+            for (int i = 0; i < 3; ++i)
+                cmd.spawn(Position {});
+        },
+        phase {-1},
+        times {1});
+    s.add_serial(
+        "retry",
+        [&](Commands& cmd) {
+            ++retry_runs;
+            cmd.spawn(Velocity {});
+        },
+        times {1});
+    s.add_serial("fails", [&](Commands&) {
+        if (fail)
+            throw std::runtime_error("fails");
+    });
+
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.count<Position>() == 3); // setup's wave flushed before the abort
+    CHECK(w.count<Velocity>() == 0); // retry's spawn went with its wave
+    fail = false;
+    s.run(w);
+    s.run(w);
+    CHECK(setup_runs == 1); // charged when its wave flushed: not run again
+    CHECK(retry_runs == 2); // not charged in the aborted wave: ran once more
+    CHECK(w.count<Position>() == 3);
+    CHECK(w.count<Velocity>() == 1);
+    CHECK(s.size() == 1); // fails
+}
+
+// Per-wave results are zeroed per DUE system rather than per system ever
+// registered, so retired systems cost nothing -- and a system that skips ticks
+// still reports each due tick afresh, not accumulated.
+static void system_work_reports_each_due_tick_afresh() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 3000; ++i)
+            cmd.spawn(Position {});
+    });
+    Schedule s;
+    auto const sometimes = s.add_parallel(
+        "sometimes",
+        [](Query<Position> q) { q.for_each([](auto& p) { p.x += 1; }); },
+        every {2},
+        grain {1000});
+    for (int i = 0; i < 50; ++i) // tombstones once the first tick retires them
+        s.add_serial("once", [] {}, times {1});
+    std::vector<std::uint32_t> items;
+    auto const sub =
+        s.events().subscribe(event::observer([&](sched_event::SystemWork const& e) {
+            if (e.id == sometimes)
+                items.push_back(e.items);
+        }));
+    for (int t = 0; t < 6; ++t)
+        s.run(w);
+    CHECK((items == std::vector<std::uint32_t> {3, 3, 3}));
+    CHECK(s.size() == 1);
 }
 
 // Registration options are an order-independent pack: each add_* form accepts
@@ -516,6 +911,13 @@ int main() {
     RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
     RUN_SUITE(system_exception_propagates);
     RUN_SUITE(aborted_run_discards_recorded_commands);
+    RUN_SUITE(flush_failure_releases_unapplied_spawns);
+    RUN_SUITE(prewarmed_then_destroyed_schedule_leaves_nothing_behind);
+    RUN_SUITE(aborted_runs_release_reserved_entities);
+    RUN_SUITE(tick_abort_names_the_failing_system);
+    RUN_SUITE(retired_and_removed_systems_release_their_state);
+    RUN_SUITE(budgets_are_charged_per_completed_wave);
+    RUN_SUITE(system_work_reports_each_due_tick_afresh);
     RUN_SUITE(registration_options_are_order_independent);
     RUN_SUITE(wave_ordinals_are_plan_positions);
     RUN_SUITE(multiple_observers_notified_in_order);

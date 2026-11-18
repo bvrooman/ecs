@@ -207,13 +207,17 @@ inline double elapsed_us(sched_clock::time_point const t0) {
     return std::chrono::duration<double, std::micro>(sched_clock::now() - t0).count();
 }
 
-// Identity a wave hands to stateful parameters' prepare hooks: which
-// system is preparing and which schedule tick this is. Random derives its
-// per-item stream seeds from these (deterministic, lane-count-independent);
-// most parameters ignore it.
+// What a wave hands to stateful parameters' prepare hooks: which system is
+// preparing and which schedule tick this is -- Random derives its per-item
+// stream seeds from these (deterministic, lane-count-independent) -- and the
+// wave's list of private command stores. A parameter that records into its own
+// stores (Commands&) appends them here, in drain order; the wave drains them at
+// its flush, after the thread-sharded commands, and discards them if it
+// aborts. Most parameters ignore all three.
 struct WaveContext {
-    SystemId system    = {};
-    std::uint64_t tick = 0;
+    SystemId system                    = {};
+    std::uint64_t tick                 = 0;
+    std::vector<CommandStore*>* stores = nullptr;
 };
 
 // A memoized query match list, keyed by (world instance, archetype
@@ -261,9 +265,11 @@ struct SystemRecord {
     // spend a system's budget before it has run.
     std::uint64_t times = 0;
     std::uint64_t runs  = 0;
-    // Tombstone: a removed (or spent) system. Its slot is retained so
-    // every other system keeps its position -- and a SystemId, being that
-    // position, stays valid. Skipped by leveling, wave building, and size().
+    // Tombstone: a removed (or spent) system. Its callables are released (see
+    // detail::release in graph.hpp) but its slot is retained, so every other
+    // system keeps its position -- and a SystemId, being that position, stays
+    // valid. Not in the schedule's live list, so leveling, wave building, and
+    // size() never visit it.
     bool dead = false;
     // Cadence: the system runs only on ticks where tick % every == 0 (every==1
     // is every tick). A skipped system contributes no work items that tick;

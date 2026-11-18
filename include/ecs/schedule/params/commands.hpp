@@ -8,11 +8,14 @@
 // structural edits would land in a different order run to run. Instead each
 // work item gets its own private CommandStore -- one per item for a parallel
 // system, one for a serial system (a single work item) -- recorded with no
-// lock at all, and the barrier splices the stores into the wave's flush in
-// canonical order: due systems in wave order (registration order within a
-// wave), and a system's items in ordinal (serial-walk) order. Recorded edits
-// therefore APPLY in the same order, with the same resulting archetype-row
-// layout, at 1 lane and N.
+// lock at all. At prepare each system registers its stores with the wave
+// (WaveContext::stores), and the wave drains them at its flush, after the
+// thread-sharded commands, in canonical order: due systems in wave order
+// (registration order within a wave), and a system's items in ordinal
+// (serial-walk) order. Recorded edits therefore APPLY in the same order, with
+// the same resulting archetype-row layout, at 1 lane and N. If the wave
+// aborts, it discards the stores with the world, so their spawns hand their
+// reserved entities back -- no hook of this module's is needed for that.
 //
 // Typed systems reach their store through the Commands& parameter
 // (serial_param / parallel_param below). Dynamic systems
@@ -58,33 +61,27 @@ namespace detail {
             : cmds(w, store) {}
     };
 
-    // A system's recorders, one per work item, indexed by item ordinal, with
-    // the two barrier hooks that bracket a wave. Used by both Commands&
-    // parameter policies and, through the Schedule, by dynamic systems.
+    // A system's recorders, one per work item, indexed by item ordinal. Used
+    // by both Commands& parameter policies and, through the Schedule, by
+    // dynamic systems.
     class command_slots {
     public:
-        // Before the dispatch, single-threaded: one slot per item. Normally
-        // every store is empty here (spliced and drained at the previous
-        // barrier); after an aborted run they may still hold the aborted
-        // wave's recordings, which must not leak into this run.
-        void prepare(World& w, std::size_t const items) {
+        // Before the dispatch, single-threaded: one slot per item, each
+        // registered with the wave in ordinal order -- the order the wave
+        // drains them in at its flush, or discards them in if it aborts.
+        void prepare(World& w, std::size_t const items, WaveContext const& ctx) {
             if (world_ != &w) { // slots hold World&: rebuilt on change
                 slots_.clear();
                 world_ = &w;
             }
             while (slots_.size() < items)
                 slots_.push_back(std::make_unique<command_slot>(w));
-            for (auto const& slot : slots_)
-                slot->store.discard();
-            active_ = items;
-        }
-
-        // After the join, before the wave's flush, single-threaded: splice
-        // each non-empty store into the world's buffer in ordinal order.
-        void splice(World& w) {
-            for (std::size_t i = 0; i < active_; ++i)
-                if (slots_[i]->store.size() > 0)
-                    w.splice_commands(slots_[i]->store);
+            for (std::size_t i = 0; i < items; ++i) {
+                // Empty already (drained, or discarded with an aborted wave);
+                // discarding is a cheap guarantee nothing earlier leaks in.
+                slots_[i]->store.discard(w);
+                ctx.stores->push_back(&slots_[i]->store);
+            }
         }
 
         [[nodiscard]]
@@ -102,12 +99,11 @@ namespace detail {
 
     private:
         std::vector<std::unique_ptr<command_slot>> slots_;
-        std::size_t active_ = 0;
-        World* world_       = nullptr;
+        World* world_ = nullptr;
     };
 
     // Commands& is the same parameter for both system kinds: one slot per
-    // work item (a serial system has exactly one), spliced at the barrier.
+    // work item (a serial system has exactly one), registered at prepare.
     struct commands_param {
         static constexpr bool allowed = true;
         using state                   = command_slots;
@@ -117,11 +113,11 @@ namespace detail {
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            WaveContext const&) {
-            s.prepare(w, rows.size());
+                            WaveContext const& ctx) {
+            s.prepare(w, rows.size(), ctx);
         }
 
-        static void finish(state& s, World& w) { s.splice(w); }
+        static void finish(state&, World&) {}
 
         static Commands& bind(state& s, World&, WorkItem const& item) {
             return s[item.ordinal].cmds;

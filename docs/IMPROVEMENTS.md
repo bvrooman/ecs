@@ -60,7 +60,11 @@ that introduced this document; the rest are recorded as a roadmap.
   the world-owned buffer kept earlier systems' recorded edits; the **next**
   run (possibly a different schedule) silently applied them, and
   `spawn()`-reserved ids leaked. `Schedule::run` now discards pending commands
-  on unwind (`CommandBuffer::discard()`).
+  on unwind (`CommandBuffer::discard()`), parallel systems' per-item stores
+  included, and each dropped spawn hands its reserved slot back one generation
+  on (`detail::ReservedSpawn`), so the handle stays dead and the slot is reused.
+  (Discarding alone fixed the replay; the ids kept leaking until the release.)
+  `TickAbort` names the system the failure came from.
 - **[done]** `soa_storage::push_back` scattered field-by-field; a throw at
   column *k* permanently desynchronized the columns (silent data corruption).
   Same class of bug in `World::relocate`. Columns are now pre-reserved so the
@@ -256,7 +260,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | primitive | shape | output size | merge | status |
    |---|---|---|---|---|
    | kernel map | write own components in place | — | none (disjoint rows) | done |
-   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores spliced at the barrier in canonical order, dynamic systems (and their `WorldOps` edits) included; only between-tick host edits use the sharded flush | **done** |
+   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores registered with the wave at prepare and drained at its flush in canonical order, dynamic systems (and their `WorldOps` edits) included; only between-tick host edits use the sharded flush | **done** |
    | `Reduce<T, Op, Partial = T>` | fold state (sums, bounds, grids); `Partial` may differ from the target — e.g. a sparse map of touched cells folded into a big dense grid | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
@@ -278,7 +282,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    usable handle immediately), so the *IDs* still follow cross-lane
    reservation timing — canonical IDs need barrier-time reservation, an
    API-visible change left for when something actually needs it. (Every
-   work item now records into a private store spliced in canonical order:
+   work item now records into a private store drained in canonical order:
    imperative systems' `Commands&`, and dynamic systems -- both the
    `Commands&` their run is handed and the `WorldOps` edits a JS kernel makes
    while the item runs. Only host edits between ticks use the sharded path.)

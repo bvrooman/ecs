@@ -724,8 +724,8 @@ static void kernel_commands_replay_in_canonical_order() {
 }
 
 // Commands from SERIAL systems: each records into its own private store,
-// spliced at the barrier in wave order (registration order within a wave),
-// with a parallel system's per-item stores spliced at that system's position.
+// drained at the wave's flush in wave order (registration order within a
+// wave), with a parallel system's per-item stores at that system's position.
 // The spawned rows must come out in exactly that order at any lane count --
 // through the thread-sharded buffer, their order followed which lane ran
 // which system.

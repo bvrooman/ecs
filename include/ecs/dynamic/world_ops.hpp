@@ -130,7 +130,7 @@ struct WorldOps {
     // system iterates). These instead RECORD into the world's command buffer,
     // so they apply at the next Schedule flush (wave barrier). Called while a
     // system's work item runs, the buffer redirects them into that item's
-    // private store, so they splice in canonical order like the item's
+    // private store, so they drain in canonical order like the item's
     // Commands; called between ticks, they land in the thread-sharded buffer.
     // A JS emit/reap kernel reaches them through the binding
     // (DynamicWorld.spawn/destroy).
@@ -159,9 +159,11 @@ struct WorldOps {
     static Entity spawn_deferred(World& w, Bundle bundle) {
         require_valid_bundle(bundle);
         Entity const e = w.reserve();
-        w.commands_.record([e, bundle = std::move(bundle)](World& world) {
-            place(world, e, bundle);
-        });
+        auto build     = [bundle = std::move(bundle)](World& world, Entity self) {
+            place(world, self, bundle);
+        };
+        w.commands_.record(
+            ecs::detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
         return e;
     }
 
