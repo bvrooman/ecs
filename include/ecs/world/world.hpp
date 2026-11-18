@@ -321,7 +321,7 @@ private:
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.
     // Dropped spawns hand their reserved entities back.
-    void discard_commands() noexcept { commands_.discard(this); }
+    void discard_commands() noexcept { commands_.discard(*this); }
 
     // Immediate mutation primitives, called only by the command closures at
     // flush time -- so they always run with exclusive, single-threaded access.

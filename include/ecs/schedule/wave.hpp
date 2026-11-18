@@ -156,8 +156,11 @@ public:
     //
     // The first item to throw ends the wave: items not yet started are skipped
     // (the tick is aborting) and that exception is rethrown after the join, so
-    // failed_system() names the system whose exception escapes. One lane runs
-    // items in list order, so it stops at exactly the same item every time.
+    // failed_system() names the system whose exception escapes. With several
+    // lanes, which items had started -- and so which direct component writes
+    // happened -- depends on timing, as does the culprit when two items throw.
+    // One lane runs items in list order, so it stops at exactly the same item
+    // every time.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock = std::chrono::steady_clock;

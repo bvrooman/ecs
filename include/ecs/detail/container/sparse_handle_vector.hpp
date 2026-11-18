@@ -161,8 +161,7 @@ public:
             return false;
         }
         ++slot.generation;
-        slots_alloc_.compact();
-        slots_alloc_.free(slot_index);
+        slots_alloc_.recycle(slot_index);
         return true;
     }
 
@@ -177,10 +176,7 @@ public:
         slot.value.reset();
         ++slot.generation;
         --live_;
-        // Reconcile the slots reserve() claimed during the wave before recycling
-        // this one (IndexRecycler contract); idempotent once at rest.
-        slots_alloc_.compact();
-        slots_alloc_.free(handle.index());
+        slots_alloc_.recycle(handle.index());
         return true;
     }
 

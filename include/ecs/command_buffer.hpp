@@ -106,8 +106,8 @@ public:
     CommandStore() = default;
     // A store may die holding never-applied commands: destroy their captures
     // rather than leak them. With no World at hand, a reserved entity among
-    // them stays reserved -- discard(&world) first where that matters.
-    ~CommandStore() { discard(); }
+    // them stays reserved -- discard(world) first where that matters.
+    ~CommandStore() { destroy_all(nullptr); }
     CommandStore(CommandStore const&)            = delete;
     CommandStore& operator=(CommandStore const&) = delete;
 
@@ -194,13 +194,9 @@ public:
 
     // Destroy every pending command WITHOUT invoking it and rewind. Used when a
     // run aborts (a system threw): the aborted wave's edits must not leak into
-    // the next run's first flush. Pass the World the commands were recorded
-    // against so a dropped spawn can hand its reserved entity back.
-    void discard(World* unapplied = nullptr) noexcept {
-        for (auto const& c : cmds_)
-            c.destroy(c.obj, unapplied);
-        rewind();
-    }
+    // the next run's first flush. `world` is the World the commands were
+    // recorded against, so a dropped spawn can hand its reserved entity back.
+    void discard(World& world) noexcept { destroy_all(&world); }
 
     [[nodiscard]]
     std::size_t size() const noexcept {
@@ -222,6 +218,14 @@ private:
         std::size_t cap;
     };
     static constexpr std::size_t kBlock = 64 * 1024;
+
+    // Destroy every pending command without invoking it, then rewind. A
+    // non-null `unapplied` is told about each one (see the class comment).
+    void destroy_all(World* unapplied) noexcept {
+        for (auto const& c : cmds_)
+            c.destroy(c.obj, unapplied);
+        rewind();
+    }
 
     // Forget the recorded commands and rewind the block chain; blocks and the
     // cmds_ capacity are retained for reuse.
@@ -299,7 +303,7 @@ public:
             // replays on a later apply.
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.discard(&world);
+                shard->store.discard(world);
             }
             applying_.store(false, std::memory_order_relaxed);
             throw;
@@ -308,11 +312,11 @@ public:
     }
 
     // Drop every pending command without applying it (see CommandStore::discard).
-    void discard(World* unapplied = nullptr) noexcept {
+    void discard(World& world) noexcept {
         auto lock = std::lock_guard(create_mutex_);
         for (auto const& shard : shards_) {
             std::lock_guard shard_lock(shard->mutex);
-            shard->store.discard(unapplied);
+            shard->store.discard(world);
         }
     }
 

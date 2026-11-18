@@ -278,6 +278,43 @@ static void aborted_runs_release_reserved_entities() {
     }
 }
 
+// When the flush itself throws, it is not rolled back: commands applied before
+// the throwing one stand. The throwing command and everything after it are
+// dropped, and a spawn among them hands its reservation back one generation on.
+static void flush_failure_releases_unapplied_spawns() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 64; ++i)
+            cmd.spawn(Position {float(i), 0});
+    });
+    Entity before = Entity::null();
+    Entity after  = Entity::null();
+    Schedule s;
+    s.add_serial("record", [&](Commands& cmd) {
+        before = cmd.spawn(Position {-1, 0});
+        cmd.sort<Position>([](Position const&) -> int {
+            throw std::runtime_error("key");
+        });
+        after = cmd.spawn(Position {-2, 0});
+    });
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.alive(before)); // applied before the throw
+    CHECK(!w.alive(after)); // dropped unapplied
+    CHECK(w.size() == 65);
+
+    Entity again = Entity::null();
+    run_system(w, [&](Commands& cmd) { again = cmd.spawn(Position {}); });
+    CHECK(again.index() == after.index()); // its slot was handed back
+    CHECK(again.generation() == after.generation() + 1);
+    CHECK(!w.alive(after));
+}
+
 // TickAbort.system names where a failed tick went wrong: the system whose
 // body, work item, prepare hook or finish hook threw, or the system that
 // recorded the command whose flush threw -- and none() when no system is to
@@ -849,6 +886,7 @@ int main() {
     RUN_SUITE(worldview_sees_writers_flush_in_prior_wave);
     RUN_SUITE(system_exception_propagates);
     RUN_SUITE(aborted_run_discards_recorded_commands);
+    RUN_SUITE(flush_failure_releases_unapplied_spawns);
     RUN_SUITE(aborted_runs_release_reserved_entities);
     RUN_SUITE(tick_abort_names_the_failing_system);
     RUN_SUITE(retired_and_removed_systems_release_their_state);

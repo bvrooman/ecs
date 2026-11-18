@@ -176,8 +176,7 @@ public:
             return false;
         }
         ++slot.generation;
-        slots_alloc_.compact();
-        slots_alloc_.free(slot_index);
+        slots_alloc_.recycle(slot_index);
         return true;
     }
 
@@ -201,11 +200,7 @@ public:
         removed_slot.alive        = false;
         removed_slot.record_index = invalid_index;
         ++removed_slot.generation;
-        // Reconcile the slots reserve() claimed during the wave before recycling
-        // this one -- otherwise free() would resurrect those claimed entries.
-        // compact() is idempotent once at rest, so repeated destroys are cheap.
-        slots_alloc_.compact();
-        slots_alloc_.free(handle.index());
+        slots_alloc_.recycle(handle.index());
         return true;
     }
 
