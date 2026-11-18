@@ -300,7 +300,8 @@ public:
 
 private:
     friend class Commands; // the mutation API; records into commands_
-    friend class Schedule; // creates Commands and flushes at barriers
+    friend class Schedule; // creates Commands; discards commands on abort
+    friend class Wave;     // flushes the commands at each barrier
     friend struct detail::serial_param<Commands&>;   // splices a system's store
     friend struct detail::parallel_param<Commands&>; // splices per-item stores
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
@@ -320,11 +321,9 @@ private:
         std::uint32_t row = 0;
     };
 
-    // Apply all recorded commands; driven by the Schedule at each barrier.
-    // `failed` receives the recording system of a command that throws.
-    void apply_commands(FlushAttrib& attrib, SystemId* failed = nullptr) {
-        commands_.apply(*this, attrib, failed);
-    }
+    // Apply all recorded commands; driven by the schedule's Wave at each
+    // barrier. See CommandStore::apply for `report`.
+    void apply_commands(FlushReport& report) { commands_.apply(*this, report); }
 
     // Queue a system's private command store to drain at the next flush,
     // after the thread-sharded commands. Called at the barrier by the

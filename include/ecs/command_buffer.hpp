@@ -94,6 +94,19 @@ namespace detail {
 // recording_source() held when each command was recorded.
 using FlushAttrib = std::unordered_map<SystemId, double>;
 
+// What one flush reports: each recording system's apply time, and -- if a
+// command threw -- the system that recorded it (none() when nothing threw, or
+// the command was recorded outside any system).
+struct FlushReport {
+    FlushAttrib time;
+    SystemId failed = SystemId::none();
+
+    void clear() noexcept {
+        time.clear();
+        failed = SystemId::none();
+    }
+};
+
 class World; // defined in world.hpp
 
 // A monotonic arena of type-erased `void(World&)` commands, kept in record
@@ -144,9 +157,9 @@ public:
         });
     }
 
-    // `failed`, when given, receives the recording system of a command that
-    // throws (the schedule names it in TickAbort).
-    void apply(World& world, FlushAttrib& attrib, SystemId* failed = nullptr) {
+    // Apply time accumulates into report.time; a throwing command's recording
+    // system lands in report.failed (the schedule names it in TickAbort).
+    void apply(World& world, FlushReport& report) {
         // Invoke-and-destroy in ONE pass. If a command throws, the remaining
         // (uninvoked) commands are destroyed and the store rewound on unwind --
         // already-applied commands can never replay on the next flush (which
@@ -166,7 +179,7 @@ public:
                     auto const& c = cmds_[i];
                     if (c.source != src) {
                         auto const now = clock::now();
-                        attrib[src] +=
+                        report.time[src] +=
                             std::chrono::duration<double, std::micro>(now - batch)
                                 .count();
                         batch = now;
@@ -175,13 +188,13 @@ public:
                     c.invoke(c.obj, world);
                     c.destroy(c.obj, nullptr);
                 }
-                attrib[src] +=
+                report.time[src] +=
                     std::chrono::duration<double, std::micro>(clock::now() - batch)
                         .count();
             }
         } catch (...) {
-            if (failed != nullptr && i < cmds_.size()) // not the timing map's throw
-                *failed = cmds_[i].source;
+            if (i < cmds_.size()) // not a throw from the timing map
+                report.failed = cmds_[i].source;
             // The throwing command and everything after it never took effect.
             for (; i < cmds_.size(); ++i)
                 cmds_[i].destroy(cmds_[i].obj, &world);
@@ -300,17 +313,17 @@ public:
     // are executing. Drains shards in creation order (within a shard, in record
     // order), then the spliced stores in splice order. Takes each shard's
     // (uncontended) mutex so a stray recording thread is excluded rather than
-    // racing the drain. `failed`: see CommandStore.
-    void apply(World& world, FlushAttrib& attrib, SystemId* failed = nullptr) {
+    // racing the drain. See CommandStore::apply for `report`.
+    void apply(World& world, FlushReport& report) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.apply(world, attrib, failed);
+                shard->store.apply(world, report);
             }
             for (auto* store : spliced_)
-                store->apply(world, attrib, failed);
+                store->apply(world, report);
             spliced_.clear();
         } catch (...) {
             // The throwing store already cleaned itself up; discard the

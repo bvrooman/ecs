@@ -100,8 +100,10 @@ struct WaveResult {
     detail::IdVector<SystemId, double> finish_us;
     detail::IdVector<SystemId, double> busy_us;
     detail::IdVector<SystemId, uint32_t> item_counts;
+    double flush_us = 0; // the wave's command flush, all systems together
 
     void reset(std::size_t const n, std::span<SystemId const> const due) {
+        flush_us = 0;
         if (busy_us.size() < n) {
             prepare_us.resize(n, 0.0);
             finish_us.resize(n, 0.0);
@@ -121,7 +123,7 @@ struct WaveResult {
 // their measured outcomes. Owned and reused by its WavePlan across ticks (see
 // WavePlan::build), so its buffers retain capacity; reset() drops the previous
 // tick's contents without freeing. Lifecycle is a strict New -> Prepared -> Ran
-// -> Finished progression (debug-asserted).
+// -> Finished -> Flushed progression (debug-asserted).
 class Wave {
 public:
     using System       = detail::SystemRecord;
@@ -210,14 +212,41 @@ public:
         state_ = State::Finished;
     }
 
+    // The command flush, single-threaded, after finish(): every edit the
+    // wave's systems recorded is applied. Its duration lands in
+    // result_.flush_us and each recording system's share in flush_us(id); if
+    // a command throws, failed_system() names the system that recorded it.
+    void flush(World& world) {
+        assert(state_ == State::Finished);
+        report_.clear();
+        auto const t0 = detail::sched_clock::now();
+        try {
+            world.apply_commands(report_);
+        } catch (...) {
+            failed_ = report_.failed;
+            throw;
+        }
+        result_.flush_us = detail::elapsed_us(t0);
+        state_           = State::Flushed;
+    }
+
     [[nodiscard]]
     auto const& result() const {
-        assert(state_ == State::Finished);
+        assert(state_ == State::Flushed);
         return result_;
     }
 
-    // The system whose prepare hook, work item, or finish hook threw this
-    // tick; none() if none did.
+    // One system's share of the flush (0 if it recorded nothing).
+    [[nodiscard]]
+    double flush_us(SystemId const system) const {
+        auto const it = report_.time.find(system);
+        return it != report_.time.end() ? it->second : 0.0;
+    }
+
+    // Where this tick's wave failed: the system whose prepare hook, work item
+    // or finish hook threw, or that recorded the command whose flush threw.
+    // none() if nothing failed, or the failure was no system's (a command
+    // recorded outside any system, or a throw outside the wave's phases).
     [[nodiscard]]
     SystemId failed_system() const noexcept {
         return failed_;
@@ -243,9 +272,10 @@ private:
     std::vector<FinishContext> finish_;
     std::vector<std::uint32_t> rows_scratch_; // shared prepare-hook scratch
     WaveResult result_;
+    FlushReport report_;                 // the flush's per-system time, culprit
     SystemId failed_ = SystemId::none(); // see failed_system()
 
-    enum class State { New, Prepared, Ran, Finished };
+    enum class State { New, Prepared, Ran, Finished, Flushed };
     State state_ = State::New;
 };
 
@@ -297,6 +327,7 @@ public:
     // Compute this tick's due subset (tick % every == 0). Returns the due count;
     // due_ is reused, so this allocates nothing in steady state.
     std::size_t prepare(SystemVector& systems, std::uint64_t const tick) {
+        wave_.failed_ = SystemId::none(); // a fresh tick: no culprit yet
         due_.clear();
         for (auto const id : systems_)
             if (tick % systems[id].every == 0)
@@ -347,9 +378,13 @@ public:
 
     // The build timings of the most recent build().
     [[nodiscard]]
-    WavePlanResult const& result() const noexcept {
-        return result_;
+    // Where this tick's wave failed, if it did; see Wave::failed_system().
+    [[nodiscard]]
+    SystemId failed_system() const noexcept {
+        return wave_.failed_system();
     }
+
+    WavePlanResult const& result() const noexcept { return result_; }
 
 private:
     void build_parallel(auto& world, auto& system, auto& items) {
