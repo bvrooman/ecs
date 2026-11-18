@@ -357,6 +357,180 @@ static void spawn_bundle_validation() {
             CHECK(col->size() == arch->entities.size());
 }
 
+// A packed F2 bundle entry for spawn_deferred.
+static std::vector<std::byte> f2_blob(float x, float y) {
+    std::vector<std::byte> b(sizeof(F2));
+    F2 const v {x, y};
+    std::memcpy(b.data(), &v, sizeof v);
+    return b;
+}
+
+// Field 0 of `id` across every archetype holding it, in walk order.
+static std::vector<float> gather_x(World& w, ComponentId id) {
+    std::vector<float> out;
+    for (auto const ai : w.matching_archetypes(Signature({id}))) {
+        auto& a        = WorldOps::archetype_at(w, ai);
+        auto const* xs = base(a, id, 0);
+        out.insert(out.end(), xs, xs + a.size());
+    }
+    return out;
+}
+
+struct Spawned {
+    int v = 0;
+};
+
+// Dynamic systems' commands replay in canonical order, both the ones recorded
+// through the Commands& their run is handed and the ones recorded through
+// WorldOps (what a JS kernel's DynamicWorld.spawn reaches) while the system
+// runs: each work item records into its own store, drained at the flush in
+// wave order (registration order within a wave), a parallel system's items in
+// ordinal order. So the spawned rows come out in exactly that order at any
+// lane count -- through the thread-sharded buffer they followed lane timing.
+static void dynamic_commands_replay_in_canonical_order() {
+    auto const Pos      = define2("CanonPos");
+    auto const Mark     = define2("CanonMark");
+    constexpr int kRows = 12'000;
+    constexpr int kPer  = 100;
+
+    auto emitter = [Mark](int const k) { // dynamic serial: WorldOps only
+        return [Mark, k](World& w, Commands&, detail::WorkItem const&) {
+            for (int j = 0; j < kPer; ++j)
+                (void)WorldOps::spawn_deferred(w,
+                                               {{Mark,
+                                                 f2_blob(float(k * 1'000 + j), 0)}});
+        };
+    };
+    auto run_and_gather = [&](unsigned lanes) {
+        World w;
+        for (int i = 0; i < kRows; ++i) {
+            Entity const e = WorldOps::create_entity(w);
+            F2 const v {float(i), 0};
+            WorldOps::add(w, e, Pos, &v);
+        }
+        SystemAccess emits;
+        emits.commands = true;
+        SystemAccess walks;
+        walks.reads    = {Pos};
+        walks.commands = true;
+
+        Schedule s;
+        s.add_dynamic_serial("e0", emits, emitter(0));
+        s.add_dynamic_serial("e1", emits, emitter(1));
+        // Dynamic parallel: both recording paths, from every lane.
+        s.add_dynamic_parallel(
+            "walk",
+            walks,
+            Signature({Pos}),
+            [Pos, Mark](World& w, Commands& cmd, detail::WorkItem const& item) {
+                for (auto const& u : item.units) {
+                    auto const* xs = base(WorldOps::archetype_at(w, u.archetype), Pos, 0);
+                    for (auto r = u.begin; r < u.end; ++r) {
+                        int const x = int(xs[r]);
+                        if (x % 7 != 0)
+                            continue;
+                        cmd.spawn(Spawned {x});
+                        (void)WorldOps::spawn_deferred(w,
+                                                       {{Mark,
+                                                         f2_blob(float(-(x + 1)), 0)}});
+                    }
+                }
+            });
+        s.add_dynamic_serial("e2", emits, emitter(2));
+        s.add_dynamic_serial("e3", emits, emitter(3));
+        CHECK(s.level_count() == 1); // no access conflict -> one shared wave
+
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 2; ++t) // second tick: stores rewound and reused
+            s.run(w, pool);
+        std::vector<int> spawned;
+        w.for_each<Spawned const>([&](auto& sp) { spawned.push_back(sp.v); });
+        return std::pair {gather_x(w, Mark), spawned};
+    };
+
+    // Per tick: e0, e1, then walk's rows in serial-walk order, then e2, e3.
+    std::vector<float> marks;
+    std::vector<int> spawns;
+    for (int t = 0; t < 2; ++t) {
+        for (int k = 0; k < 2; ++k)
+            for (int j = 0; j < kPer; ++j)
+                marks.push_back(float(k * 1'000 + j));
+        for (int x = 0; x < kRows; x += 7) {
+            marks.push_back(float(-(x + 1)));
+            spawns.push_back(x);
+        }
+        for (int k = 2; k < 4; ++k)
+            for (int j = 0; j < kPer; ++j)
+                marks.push_back(float(k * 1'000 + j));
+    }
+    for (unsigned lanes : {1u, 2u, 4u}) {
+        auto const [got_marks, got_spawns] = run_and_gather(lanes);
+        CHECK(got_marks == marks);   // WorldOps edits: wave and ordinal order
+        CHECK(got_spawns == spawns); // Commands& edits: ordinal order
+    }
+}
+
+// WorldOps recording into a DIFFERENT world from inside a system must not be
+// captured by the running item's store (which flushes into the world the
+// schedule runs on): it goes to the target world's own buffer and applies at
+// that world's next flush.
+static void worldops_into_another_world_stays_there() {
+    auto const Mark = define2("ElsewhereMark");
+    World a, b;
+    SystemAccess emits;
+    emits.commands = true;
+    Schedule s;
+    s.add_dynamic_serial(
+        "emit",
+        emits,
+        [&b, Mark](World& w, Commands&, detail::WorkItem const&) {
+            (void)WorldOps::spawn_deferred(w, {{Mark, f2_blob(1, 0)}}); // own world
+            (void)WorldOps::spawn_deferred(b, {{Mark, f2_blob(2, 0)}}); // another
+        });
+    s.run(a);
+    CHECK(gather_x(a, Mark) == std::vector<float> {1}); // only its own spawn
+    CHECK(b.size() == 0);                               // b's waits for b's flush
+
+    Schedule flush;
+    flush.add_serial("flush", [] {});
+    flush.run(b);
+    CHECK(gather_x(b, Mark) == std::vector<float> {2});
+    CHECK(gather_x(a, Mark) == std::vector<float> {1});
+}
+
+// A dynamic system that throws aborts the run: neither its Commands& edits nor
+// its WorldOps edits apply, and they do not resurface on the next run.
+static void dynamic_commands_discarded_on_abort() {
+    auto const Mark = define2("AbortMark");
+    World w;
+    bool fail = true;
+    SystemAccess emits;
+    emits.commands = true;
+    Schedule s;
+    s.add_dynamic_serial("emit",
+                         emits,
+                         [&fail, Mark](World& w, Commands& cmd, detail::WorkItem const&) {
+                             cmd.spawn(Spawned {1});
+                             (void)WorldOps::spawn_deferred(w, {{Mark, f2_blob(1, 0)}});
+                             if (fail)
+                                 throw std::runtime_error("boom");
+                         });
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.size() == 0); // nothing applied
+
+    fail = false;
+    s.run(w);
+    CHECK(w.size() == 2); // this run's two spawns, not the aborted run's too
+    CHECK(w.count<Spawned const>() == 1);
+    CHECK(gather_x(w, Mark) == std::vector<float> {1});
+}
+
 // A WorldOps::spawn_deferred recorded by a system whose run aborts never
 // applies: its handle stays dead and its slot is handed back one generation on,
 // exactly like a Commands::spawn.
@@ -399,6 +573,9 @@ int main() {
     RUN_SUITE(dynamic_system_filters_by_archetype);
     RUN_SUITE(native_component_runtime_access);
     RUN_SUITE(spawn_bundle_validation);
+    RUN_SUITE(dynamic_commands_replay_in_canonical_order);
+    RUN_SUITE(worldops_into_another_world_stays_there);
+    RUN_SUITE(dynamic_commands_discarded_on_abort);
     RUN_SUITE(aborted_deferred_spawn_is_released);
     return REPORT();
 }

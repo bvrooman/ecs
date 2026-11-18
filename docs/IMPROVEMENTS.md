@@ -260,7 +260,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | primitive | shape | output size | merge | status |
    |---|---|---|---|---|
    | kernel map | write own components in place | — | none (disjoint rows) | done |
-   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores registered with the wave at prepare and drained at its flush in canonical order; dynamic systems: sharded flush | **done** |
+   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores registered with the wave at prepare and drained at its flush in canonical order, dynamic systems (and their `WorldOps` edits) included; only between-tick host edits use the sharded flush | **done** |
    | `Reduce<T, Op, Partial = T>` | fold state (sums, bounds, grids); `Partial` may differ from the target — e.g. a sparse map of touched cells folded into a big dense grid | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
@@ -281,11 +281,11 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    `spawn()` reserves its Entity handle at record time (the API returns a
    usable handle immediately), so the *IDs* still follow cross-lane
    reservation timing — canonical IDs need barrier-time reservation, an
-   API-visible change left for when something actually needs it — and
-   commands from *dynamic* systems keep the thread-sharded path with its
-   unspecified cross-shard order. (Imperative systems' `Commands&` now get a
-   per-system private store drained in wave order, so their edits apply
-   canonically too.)
+   API-visible change left for when something actually needs it. (Every
+   work item now records into a private store drained in canonical order:
+   imperative systems' `Commands&`, and dynamic systems -- both the
+   `Commands&` their run is handed and the `WorldOps` edits a JS kernel makes
+   while the item runs. Only host edits between ticks use the sharded path.)
 
    **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this
    branch; mist proves both faces (`grid` → Reduce, `extract` → Extract);

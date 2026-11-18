@@ -82,7 +82,7 @@ namespace detail {
             }
         }
 
-        static Collect<T> bind(state& s, World&, Commands&, WorkItem const& item) {
+        static Collect<T> bind(state& s, World&, WorkItem const& item) {
             auto ordinal = item.ordinal;
             return Collect<T>(s.parts[ordinal]);
         }

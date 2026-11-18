@@ -57,9 +57,12 @@ namespace detail {
     // hand its reservation back.
     template <class Build>
     struct ReservedSpawn;
-} // namespace detail
 
-class Commands; // world/commands.hpp; the mutation API over this World
+    // Every system's private command recorders (schedule/params/commands.hpp),
+    // befriended so a work item can redirect its thread's world-level
+    // recording into its own store.
+    class command_slots;
+} // namespace detail
 
 // Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
 // reuse World's generic archetype machinery via friendship -- forward-declared
@@ -294,10 +297,10 @@ public:
     }
 
 private:
-    friend class Commands; // the mutation API; records into commands_
-    friend class Schedule; // creates the shared Commands for dynamic systems
+    friend class Commands; // the mutation API; its commands call the *_now edits
     friend class Wave;     // flushes, or on abort discards, each wave's commands
-    friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
+    friend class detail::command_slots; // redirects recording into an item's store
+    friend struct dynamic::WorldOps;    // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
     template <class Build>

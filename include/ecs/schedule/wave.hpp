@@ -79,7 +79,7 @@ public:
     bool finish(World& world) const {
         if (!*fn_)
             return false;
-        detail::RecordingAs const recording {system};
+        detail::RecordingScope const recording {system};
         (*fn_)(world);
         return true;
     }
@@ -169,7 +169,7 @@ public:
     // happened -- depends on timing, as does the culprit when two items throw.
     // One lane runs items in list order, so it stops at exactly the same item
     // every time.
-    void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
+    void run(SystemVector& systems, World& world, WorkerPool& pool) {
         assert(state_ == State::Prepared);
         using clock = std::chrono::steady_clock;
         std::atomic<bool> failed {false};
@@ -178,10 +178,10 @@ public:
             if (failed.load(std::memory_order_relaxed))
                 return;
             auto& system = systems[item.system];
-            detail::RecordingAs const recording {system.id};
+            detail::RecordingScope const recording {system.id};
             auto const t0 = clock::now();
             try {
-                system.run(world, cmds, item);
+                system.run(world, item);
             } catch (...) {
                 if (!failed.exchange(true, std::memory_order_acq_rel)) {
                     error   = std::current_exception();

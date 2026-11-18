@@ -22,7 +22,12 @@
 // CommandStore instead. The buffer never holds those: whoever owns the flush
 // (the schedule's Wave) passes them to apply(), which drains them after the
 // shards, in the order given, with the same attribution and failure handling
-// as a shard.
+// as a shard. While a work item that owns such a store runs, the executor
+// also points the thread's recording target at it
+// (detail::RecordingScope), so world-level record() calls made on that
+// thread -- e.g. dynamic::WorldOps from a JS kernel -- land in the item's
+// store too. The shards therefore only collect recording done outside any
+// work item: host code between ticks.
 //
 // A command is a type-erased `void(World&)` callable. Each shard stores its
 // callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
@@ -64,36 +69,61 @@ namespace detail {
         return idx;
     }
 
-    // The system whose commands the calling thread is currently recording --
-    // set by the executor around each work item and around each single-threaded
-    // barrier finish hook, read by CommandStore::record so each command carries
-    // its recording system. That lets apply() attribute the flush time per
-    // system (see Schedule's per-system flush reporting) and name the system
-    // whose command threw. SystemId::none() means "unattributed": recorded
-    // outside any system (a host's deferred spawn, say).
-    inline SystemId& recording_source() noexcept {
-        thread_local SystemId src = SystemId::none();
-        return src;
+} // namespace detail
+
+class CommandBuffer;
+class CommandStore;
+
+namespace detail {
+    // What the calling thread is recording for. One per thread, set by the
+    // executor through RecordingScope:
+    //   source  -- the system its commands are charged to, around each work
+    //              item and each single-threaded finish hook. Every command
+    //              carries it, so a flush can attribute its time per system
+    //              and name the system whose command threw. none() means
+    //              recorded outside any system (a host's deferred spawn, say).
+    //   buffer, -- while a work item that owns a private store runs: world-
+    //   store      level CommandBuffer::record calls on `buffer` (dynamic::
+    //              WorldOps, called from a JS kernel) go to `store` instead of
+    //              a shard, so they drain with the item's edits in canonical
+    //              order. Keyed by buffer, so recording into some OTHER world
+    //              from inside the item still goes to that world's shards.
+    struct RecordingContext {
+        SystemId source             = SystemId::none();
+        CommandBuffer const* buffer = nullptr;
+        CommandStore* store         = nullptr;
+    };
+    inline RecordingContext& recording() noexcept {
+        thread_local RecordingContext context {};
+        return context;
     }
 
-    // Scope the calling thread's recording source to one system, restoring the
-    // previous source on exit (thrown or not), so commands recorded after the
-    // system finishes are not charged to it.
-    class RecordingAs {
+    // Set the calling thread's recording context for the scope's lifetime,
+    // restoring the previous one on exit (thrown or not), so nothing recorded
+    // after a system finishes is charged to it or lands in its store.
+    class RecordingScope {
     public:
-        explicit RecordingAs(SystemId const id) noexcept
-            : prev_(std::exchange(recording_source(), id)) {}
-        ~RecordingAs() { recording_source() = prev_; }
-        RecordingAs(RecordingAs const&)            = delete;
-        RecordingAs& operator=(RecordingAs const&) = delete;
+        // Charge commands to `source`; world-level records go to the shards.
+        explicit RecordingScope(SystemId const source) noexcept
+            : RecordingScope(RecordingContext {source, nullptr, nullptr}) {}
+        // ...and send `buffer`'s world-level records to `store`.
+        RecordingScope(SystemId const source,
+                       CommandBuffer const& buffer,
+                       CommandStore& store) noexcept
+            : RecordingScope(RecordingContext {source, &buffer, &store}) {}
+        ~RecordingScope() { recording() = prev_; }
+        RecordingScope(RecordingScope const&)            = delete;
+        RecordingScope& operator=(RecordingScope const&) = delete;
 
     private:
-        SystemId prev_;
+        explicit RecordingScope(RecordingContext const next) noexcept
+            : prev_(std::exchange(recording(), next)) {}
+        RecordingContext prev_;
     };
 } // namespace detail
 
-// Per-system command-apply time accumulated by a flush; keys are whatever
-// recording_source() held when each command was recorded.
+// Per-system command-apply time accumulated by a flush; keys are the recording
+// source (detail::recording().source) each command was recorded under.
 using FlushAttrib = std::unordered_map<SystemId, double>;
 
 // What one flush reports: each recording system's apply time, and -- if a
@@ -155,7 +185,7 @@ public:
                 }
                 fn->~Fn();
             },
-            detail::recording_source(), // the system recording this command
+            detail::recording().source, // the system recording this command
         });
     }
 
@@ -285,8 +315,10 @@ private:
 
 class CommandBuffer {
 public:
-    // Record a deferred operation. Lock-free shard lookup; the only lock is the
-    // calling thread's own (normally uncontended) shard mutex.
+    // Record a deferred operation: into the calling thread's redirect store
+    // when its recording context names this buffer, else into its shard. Lock-free shard
+    // lookup; the only lock is the calling thread's own (normally
+    // uncontended) shard mutex.
     template <class F>
     void record(F&& f) {
         // Recording from inside a flushing command would invalidate the store
@@ -294,6 +326,11 @@ public:
         // debug before the deadlock does.
         assert(!applying_.load(std::memory_order_relaxed) &&
                "CommandBuffer::record called during apply() (from a command?)");
+        // Inside a work item that owns a private store: record there, no lock.
+        if (auto const& context = detail::recording(); context.buffer == this) {
+            context.store->record(std::forward<F>(f));
+            return;
+        }
         auto& shard = local_shard();
         std::lock_guard lock(shard.mutex);
         shard.store.record(std::forward<F>(f));

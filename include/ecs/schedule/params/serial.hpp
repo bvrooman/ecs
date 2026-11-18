@@ -22,8 +22,8 @@ struct serial_param {
                         std::span<std::uint32_t const>,
                         WaveContext const&) {}
     static void finish(state&, World&) {}
-    static P bind(state&, World& w, Commands& c, WorkItem const& item) {
-        return system_param<P>::bind(w, c, item);
+    static P bind(state&, World& w, WorkItem const& item) {
+        return system_param<P>::bind(w, item);
     }
 };
 }
