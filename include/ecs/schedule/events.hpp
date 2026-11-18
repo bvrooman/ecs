@@ -67,7 +67,8 @@ namespace sched_event {
     // came from: the system whose prepare hook, work item, or finish hook threw,
     // or the system that recorded the command whose flush threw. none() when no
     // system is to blame (an observer threw, or a command recorded outside any
-    // system).
+    // system). With several lanes, if two work items throw, which system is
+    // named depends on timing.
     struct TickAbort {
         WaveId ordinal;
         SystemId system;
