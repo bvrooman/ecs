@@ -38,9 +38,13 @@ public:
     SystemId system;
 
     // rows: the Wave's shared scratch, sized here to this system's item count.
+    // stores: the Wave's private command stores, which the hook may append to.
     template <std::ranges::input_range Items>
         requires std::same_as<std::ranges::range_value_t<Items>, WorkItem>
-    bool prepare(World& world, Items&& items, std::vector<uint32_t>& rows) const {
+    bool prepare(World& world,
+                 Items&& items,
+                 std::vector<uint32_t>& rows,
+                 std::vector<CommandStore*>& stores) const {
         if (!*fn_)
             return false;
         rows.clear();
@@ -49,7 +53,7 @@ public:
                 rows.resize(it.ordinal + 1);
             rows[it.ordinal] = it.end - it.begin;
         }
-        (*fn_)(world, rows, detail::WaveContext {system, tick_});
+        (*fn_)(world, rows, detail::WaveContext {system, tick_, &stores});
         return true;
     }
 
@@ -135,6 +139,8 @@ public:
     // Barrier prepare hooks (Reduce targets reset, Extract pre-sizing, ...),
     // single-threaded, before the dispatch. Each hooked system's duration lands
     // in result_.prepare_us[system]; unhooked systems keep their zeroed slot.
+    // Commands& hooks register their private stores here, in due-system order
+    // (and item order within a system) -- the order flush() drains them in.
     void prepare(World& world) {
         assert(state_ == State::New);
         for (auto const& ctx : prepare_) {
@@ -143,7 +149,7 @@ public:
                              return item.system == ctx.system;
                             });
             try {
-                if (ctx.prepare(world, items, rows_scratch_))
+                if (ctx.prepare(world, items, rows_scratch_, stores_))
                     result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
             } catch (...) {
                 failed_ = ctx.system;
@@ -212,22 +218,33 @@ public:
         state_ = State::Finished;
     }
 
-    // The command flush, single-threaded, after finish(): every edit the
-    // wave's systems recorded is applied. Its duration lands in
-    // result_.flush_us and each recording system's share in flush_us(id); if
-    // a command throws, failed_system() names the system that recorded it.
+    // The command flush, single-threaded, after finish(): the world's
+    // thread-sharded commands, then the private stores registered at prepare,
+    // in that order. Its duration lands in result_.flush_us and each recording
+    // system's share in flush_us(id); if a command throws, failed_system()
+    // names the system that recorded it.
     void flush(World& world) {
         assert(state_ == State::Finished);
         report_.clear();
         auto const t0 = detail::sched_clock::now();
         try {
-            world.apply_commands(report_);
+            world.apply_commands(report_, stores_);
         } catch (...) {
             failed_ = report_.failed;
             throw;
         }
         result_.flush_us = detail::elapsed_us(t0);
         state_           = State::Flushed;
+    }
+
+    // The wave threw (in any phase): drop every edit it recorded and has not
+    // applied -- the world's thread-sharded commands and the private stores
+    // registered at prepare -- handing the entities their spawns reserved back
+    // to the world, so a failed wave leaves nothing to leak into a later flush.
+    void discard(World& world) noexcept {
+        for (auto* const store : stores_)
+            store->discard(world);
+        world.discard_commands();
     }
 
     [[nodiscard]]
@@ -262,6 +279,7 @@ private:
         items_.clear();
         prepare_.clear();
         finish_.clear();
+        stores_.clear();
         result_.reset(n, due);
         failed_ = SystemId::none();
         state_  = State::New;
@@ -271,6 +289,10 @@ private:
     std::vector<PrepareContext> prepare_;
     std::vector<FinishContext> finish_;
     std::vector<std::uint32_t> rows_scratch_; // shared prepare-hook scratch
+    // Private command stores registered at prepare, in drain order. Valid for
+    // this tick's run of the wave; reset() forgets them (prewarm() leaves its
+    // registrations here unused until then).
+    std::vector<CommandStore*> stores_;
     WaveResult result_;
     FlushReport report_;                 // the flush's per-system time, culprit
     SystemId failed_ = SystemId::none(); // see failed_system()

@@ -315,6 +315,31 @@ static void flush_failure_releases_unapplied_spawns() {
     CHECK(!w.alive(after));
 }
 
+// prewarm() runs the prepare hooks, and a Commands& hook registers its private
+// stores there -- with the wave, never with the world. A schedule prewarmed
+// and then destroyed (its stores with it) must leave nothing that a later
+// flush of the same world, by another schedule, would touch (ASan would flag
+// a dangling store).
+static void prewarmed_then_destroyed_schedule_leaves_nothing_behind() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 2048; ++i)
+            cmd.spawn(Position {float(i), 0});
+    });
+    {
+        Schedule s;
+        s.add_serial("serial", [](Commands& cmd) { cmd.spawn(Position {}); });
+        s.add_parallel("parallel", [](Query<Position const> q, Commands& cmd) {
+            q.for_each([&](auto&) { cmd.spawn(Position {}); });
+        });
+        s.prewarm(w);
+    }
+    Schedule other;
+    other.add_serial("spawn", [](Commands& cmd) { cmd.spawn(Position {}); });
+    other.run(w);
+    CHECK(w.size() == 2049); // only the other schedule's spawn applied
+}
+
 // TickAbort.system names where a failed tick went wrong: the system whose
 // body, work item, prepare hook or finish hook threw, or the system that
 // recorded the command whose flush threw -- and none() when no system is to
@@ -887,6 +912,7 @@ int main() {
     RUN_SUITE(system_exception_propagates);
     RUN_SUITE(aborted_run_discards_recorded_commands);
     RUN_SUITE(flush_failure_releases_unapplied_spawns);
+    RUN_SUITE(prewarmed_then_destroyed_schedule_leaves_nothing_behind);
     RUN_SUITE(aborted_runs_release_reserved_entities);
     RUN_SUITE(tick_abort_names_the_failing_system);
     RUN_SUITE(retired_and_removed_systems_release_their_state);

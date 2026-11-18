@@ -231,7 +231,7 @@ public:
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
     // is not. Commands recorded through a typed system's Commands& replay in
-    // canonical order regardless (private stores spliced at the barrier in
+    // canonical order regardless (private stores drained at the flush in
     // wave order, a parallel system's per item in ordinal order -- see
     // schedule/params/commands.hpp; spawn() handles are still reserved at
     // record time, so the IDs themselves remain timing-dependent). Commands
@@ -434,11 +434,6 @@ private:
                 detail::finish_all<Param, Args>(*states, w, Seq {});
             };
         }
-        if constexpr (Info::any_abortable) {
-            sys.abort_items = [states](World& w) {
-                detail::abort_all<Param, Args>(*states, w, Seq {});
-            };
-        }
         return register_system(std::move(sys));
     }
 
@@ -552,13 +547,7 @@ private:
             wave.finish(world);
             wave.flush(world);
         } catch (...) {
-            // Drop every edit the wave recorded -- including any still in
-            // parallel systems' per-item stores -- handing reserved entities
-            // back to the world.
-            for (auto const id : plan)
-                if (auto& abort = systems_[id].abort_items)
-                    abort(world);
-            world.discard_commands();
+            wave.discard(world); // every unapplied edit, reservations returned
             throw;
         }
         auto const& plan_result = plan.result();

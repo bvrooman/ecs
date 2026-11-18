@@ -274,7 +274,7 @@ static void flush_attributed_per_system() {
 }
 
 // The same attribution for a PARALLEL system's commands, which are recorded
-// into per-item private stores and spliced into the flush at the barrier
+// into per-item private stores and drained at the wave's flush
 // rather than going through the thread-sharded buffer. Each item's commands
 // still carry the system as their source, so its flush time lands on it.
 static void parallel_flush_attributed_to_its_system() {
@@ -303,7 +303,7 @@ static void parallel_flush_attributed_to_its_system() {
     s.run(w, pool);
 
     CHECK(w.count<Position const>() == 20'001); // both systems' spawns applied
-    CHECK(heavy_flush > 0.0);                   // spliced stores were timed
+    CHECK(heavy_flush > 0.0);                   // private stores were timed
     CHECK(heavy_flush > cheap_flush);           // and charged to their system
 }
 

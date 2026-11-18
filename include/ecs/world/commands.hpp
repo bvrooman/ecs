@@ -25,7 +25,7 @@ namespace detail {
 //  spawn/destroy/add/remove/set are reachable only from inside a system (or a
 //  schedule's setup). All of them are deferred -- recorded, then applied at the
 //  next flush. A typed system's Commands& records into a private store its
-//  parameter policy owns and splices into the flush in canonical order; a
+//  parameter policy owns and the wave drains in canonical order; a
 //  dynamic system gets the Schedule's shared one, which records into the
 //  world's thread-sharded buffer.
 // ===========================================================================
@@ -110,8 +110,8 @@ private:
     // A typed system's Commands records into a private store (no lock,
     // deterministic replay order) instead of the world's thread-sharded
     // buffer. The Commands& parameter policies own the stores (each paired
-    // with its Commands in a command_slot) and splice them into the flush at
-    // the wave barrier (see schedule/params/commands.hpp).
+    // with its Commands in a command_slot) and register them with the wave,
+    // which drains them at its flush (see schedule/params/commands.hpp).
     Commands(World& w, CommandStore& local)
         : world_(w)
         , local_(&local) {}

@@ -19,9 +19,10 @@
 // unspecified.
 //
 // A system that needs a canonical replay order records into a private
-// CommandStore instead, and the barrier splice()s that store into the buffer;
-// apply() drains spliced stores after the shards, in splice order, with the
-// same attribution and failure handling as a shard.
+// CommandStore instead. The buffer never holds those: whoever owns the flush
+// (the schedule's Wave) passes them to apply(), which drains them after the
+// shards, in the order given, with the same attribution and failure handling
+// as a shard.
 //
 // A command is a type-erased `void(World&)` callable. Each shard stores its
 // callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
@@ -46,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -297,24 +299,15 @@ public:
         shard.store.record(std::forward<F>(f));
     }
 
-    // Queue a store recorded outside the buffer (a system's private store) to
-    // drain at the next apply(), after every shard and in splice order. Called
-    // single-threaded at the barrier, between the join and the flush. The
-    // buffer does not own the store: it must outlive the next apply() or
-    // discard(), which drain/discard it and forget it.
-    void splice(CommandStore& store) {
-        assert(!applying_.load(std::memory_order_relaxed) &&
-               "CommandBuffer::splice called during apply()");
-        auto lock = std::lock_guard(create_mutex_);
-        spliced_.push_back(&store);
-    }
-
     // Replay all recorded commands, then clear. Must be called when no systems
     // are executing. Drains shards in creation order (within a shard, in record
-    // order), then the spliced stores in splice order. Takes each shard's
-    // (uncontended) mutex so a stray recording thread is excluded rather than
-    // racing the drain. See CommandStore::apply for `report`.
-    void apply(World& world, FlushReport& report) {
+    // order), then `stores` -- private stores recorded outside the buffer -- in
+    // the order given. Takes each shard's (uncontended) mutex so a stray
+    // recording thread is excluded rather than racing the drain. See
+    // CommandStore::apply for `report`.
+    void apply(World& world,
+               FlushReport& report,
+               std::span<CommandStore* const> const stores = {}) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
@@ -322,20 +315,18 @@ public:
                 std::lock_guard shard_lock(shard->mutex);
                 shard->store.apply(world, report);
             }
-            for (auto* store : spliced_)
+            for (auto* const store : stores)
                 store->apply(world, report);
-            spliced_.clear();
         } catch (...) {
             // The throwing store already cleaned itself up; discard the
-            // not-yet-drained shards and spliced stores too so no command from
-            // this failed flush replays on a later apply.
+            // not-yet-drained shards and stores too so no command from this
+            // failed flush replays on a later apply.
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
                 shard->store.discard(world);
             }
-            for (auto* store : spliced_)
+            for (auto* const store : stores)
                 store->discard(world);
-            spliced_.clear();
             applying_.store(false, std::memory_order_relaxed);
             throw;
         }
@@ -349,9 +340,6 @@ public:
             std::lock_guard shard_lock(shard->mutex);
             shard->store.discard(world);
         }
-        for (auto* store : spliced_)
-            store->discard(world);
-        spliced_.clear();
     }
 
     auto size() {
@@ -359,8 +347,6 @@ public:
         auto n    = 0ul;
         for (auto const& shard : shards_)
             n += shard->store.size();
-        for (auto* store : spliced_)
-            n += store->size();
         return n;
     }
 
@@ -391,7 +377,6 @@ private:
     std::array<std::atomic<Shard*>, kShards> slots_ {};
     // lock-free shard lookup
     std::vector<std::unique_ptr<Shard>> shards_; // ownership + apply order
-    std::vector<CommandStore*> spliced_;         // barrier-spliced private stores
     std::mutex create_mutex_;                    // shard creation + apply
     std::atomic<bool> applying_ {false};         // debug: no record during apply
 };

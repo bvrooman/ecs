@@ -8,11 +8,14 @@
 // ran what, so structural edits land in a different order run to run.
 // Instead each recorder gets its own private CommandStore -- one per work
 // item for a parallel system, one for a serial system (which is a single work
-// item) -- recorded with no lock at all, and the barrier splices the stores
-// into the wave's flush in canonical order: due systems in wave order
-// (registration order within a wave), and a parallel system's items in
-// ordinal (serial-walk) order. Recorded edits therefore APPLY in the same
-// order, with the same resulting archetype-row layout, at 1 lane and N.
+// item) -- recorded with no lock at all. At prepare each system registers its
+// stores with the wave (WaveContext::stores), and the wave drains them at its
+// flush, after the thread-sharded commands, in canonical order: due systems in
+// wave order (registration order within a wave), and a parallel system's
+// items in ordinal (serial-walk) order. Recorded edits therefore APPLY in the
+// same order, with the same resulting archetype-row layout, at 1 lane and N.
+// If the wave aborts, it discards the stores with the world, so their spawns
+// hand their reserved entities back -- no hook of this parameter's is needed.
 //
 // The residual nondeterminism, documented rather than hidden: spawn()
 // reserves its Entity handle at RECORD time (the API returns a usable handle
@@ -26,7 +29,9 @@
 
 #pragma once
 
+#include <ecs/schedule/params/parallel.hpp>
 #include <ecs/schedule/params/protocol.hpp>
+#include <ecs/schedule/params/serial.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -59,32 +64,24 @@ namespace detail {
 
         static void declare(SystemAccess& a) { a.commands = true; }
 
+        // Single-threaded, before the dispatch: register this system's store
+        // with the wave, which drains it at its flush (or discards it if the
+        // wave aborts).
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const>,
-                            WaveContext const&) {
+                            WaveContext const& ctx) {
             if (s.world != &w) {
                 s.slot  = std::make_unique<command_slot>(w);
                 s.world = &w;
             }
-            // Empty here: drained at the previous barrier, or dropped by
-            // abort() if that wave threw. Discarding is a cheap guarantee that
-            // nothing recorded earlier leaks into this run.
+            // Empty already (drained, or discarded with the aborted wave);
+            // discarding is a cheap guarantee nothing earlier leaks in.
             s.slot->store.discard(w);
+            ctx.stores->push_back(&s.slot->store);
         }
 
-        // The wave threw before (or while) this store reached the flush: drop
-        // the system's edits now, handing their reserved entities back to `w`.
-        static void abort(state& s, World& w) noexcept {
-            if (s.world == &w) // bound to another world: empty (see parallel)
-                s.slot->store.discard(w);
-        }
-
-        // Single-threaded, before the wave's flush.
-        static void finish(state& s, World& w) {
-            if (s.slot->store.size() > 0)
-                w.splice_commands(s.slot->store);
-        }
+        static void finish(state&, World&) {}
 
         static Commands& bind(state& s, World&, Commands&, WorkItem const&) {
             return s.slot->cmds;
@@ -96,53 +93,34 @@ namespace detail {
         static constexpr bool allowed = true;
         struct state {
             std::vector<std::unique_ptr<command_slot>> slots;
-            std::size_t active = 0;
-            World* world       = nullptr; // slots hold World&: rebuilt on change
+            World* world = nullptr; // slots hold World&: rebuilt on change
         };
 
         static void declare(SystemAccess& a) { a.commands = true; }
 
+        // Single-threaded, before the dispatch: one store per work item,
+        // registered with the wave in ordinal order -- the order it drains
+        // them in.
         static void prepare(state& s,
                             World& w,
                             std::span<std::uint32_t const> rows,
-                            WaveContext const&) {
+                            WaveContext const& ctx) {
             if (s.world != &w) {
                 s.slots.clear();
                 s.world = &w;
             }
             while (s.slots.size() < rows.size())
                 s.slots.push_back(std::make_unique<command_slot>(w));
-            // As in serial_param<Commands&>: all stores are empty here.
-            for (auto const& slot : s.slots)
-                slot->store.discard(w);
-            s.active = rows.size();
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                s.slots[i]->store.discard(w); // as in serial_param: empty
+                ctx.stores->push_back(&s.slots[i]->store);
+            }
         }
 
-        // The wave threw before (or while) these stores reached the flush: drop
-        // the items' edits now, handing their reserved entities back to `w`, so
-        // nothing waits on this system running again.
-        static void abort(state& s, World& w) noexcept {
-            // Slots still bound to another world hold nothing: they were drained
-            // or aborted there, and prepare() rebinds them before any item here
-            // records.
-            if (s.world != &w)
-                return;
-            for (auto const& slot : s.slots)
-                slot->store.discard(w);
-        }
-
-        // Single-threaded, before the wave's flush: splice each item's store
-        // into the world's buffer in ordinal order. The flush then drains
-        // them in that order, after the thread-sharded commands.
-        static void finish(state& s, World& w) {
-            for (std::size_t i = 0; i < s.active; ++i)
-                if (s.slots[i]->store.size() > 0)
-                    w.splice_commands(s.slots[i]->store);
-        }
+        static void finish(state&, World&) {}
 
         static Commands& bind(state& s, World&, Commands&, WorkItem const& item) {
-            auto ordinal = item.ordinal;
-            return s.slots[ordinal]->cmds;
+            return s.slots[item.ordinal]->cmds;
         }
     };
 

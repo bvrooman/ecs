@@ -260,7 +260,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    | primitive | shape | output size | merge | status |
    |---|---|---|---|---|
    | kernel map | write own components in place | — | none (disjoint rows) | done |
-   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores spliced at the barrier in canonical order; dynamic systems: sharded flush | **done** |
+   | `Commands&` | structural edits | unknown | per-item (parallel) or per-system (serial) private stores registered with the wave at prepare and drained at its flush in canonical order; dynamic systems: sharded flush | **done** |
    | `Reduce<T, Op, Partial = T>` | fold state (sums, bounds, grids); `Partial` may differ from the target — e.g. a sparse map of touched cells folded into a big dense grid | small | barrier fold, canonical order | **done** |
    | `Extract<T>` | gather where output ≈ rows | known | none (disjoint scatter at known offsets) | **done** |
    | `Collect<T>` | filtered gather (kill/visibility/target lists) | unknown | barrier concat, canonical order | **done** |
@@ -284,7 +284,7 @@ HEADERS)`, `install(EXPORT)` + `ecsConfig.cmake` (with
    API-visible change left for when something actually needs it — and
    commands from *dynamic* systems keep the thread-sharded path with its
    unspecified cross-shard order. (Imperative systems' `Commands&` now get a
-   per-system private store spliced in wave order, so their edits apply
+   per-system private store drained in wave order, so their edits apply
    canonically too.)
 
    **Sequencing**: (1) slot substrate + `Reduce` + `Extract` — done, this

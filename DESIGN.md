@@ -361,9 +361,10 @@ data parallelism *within and across* systems from one dispatch, no task queue.
 Item contents and order are deterministic; item→lane assignment is not (a
 1-lane pool claims in list order and is fully deterministic). Commands recorded
 through a system's `Commands&` are insulated from that timing: each serial
-system, and each item of a parallel system, records into a private store, and
-the barrier splices the stores into the wave's flush in canonical order (wave
-order across systems, ordinal order across a parallel system's items), so
+system, and each item of a parallel system, records into a private store; the
+stores are registered with the wave at prepare and drained at its flush, after
+the thread-sharded commands, in canonical order (wave order across systems,
+ordinal order across a parallel system's items), so
 structural edits *apply* in the same order at any lane count (`spawn()` still
 reserves its Entity handle at record time, so the IDs themselves — not the
 resulting layout — remain timing-dependent; dynamic systems' commands keep the
@@ -426,9 +427,10 @@ remaining caveats:
   remain the caller's responsibility.)
 * **Commands replay in canonical order; two things stay timing-dependent.**
   Each serial system, and each work item of a parallel system, records into its
-  own private store, and the barrier splices the stores into the flush in wave
-  order (registration order within a wave), a parallel system's in
-  item-ordinal order. So the structural edits systems record apply in the same
+  own private store, which the wave drains at its flush in wave order
+  (registration order within a wave), a parallel system's in item-ordinal
+  order. If the wave aborts, it discards those stores along with the world's
+  thread-sharded commands, and their spawns hand their reserved entities back. So the structural edits systems record apply in the same
   order -- and leave the same row layout -- at any lane count. What still
   varies from run to run on a multi-lane pool is (a) the entity ids `spawn()`
   hands out, which are reserved at record time, so which spawn receives which

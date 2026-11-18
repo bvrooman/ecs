@@ -48,15 +48,10 @@ namespace detail {
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 
-    // The two parameter policies (schedule/params/parallel.hpp and
-    // schedule/params/serial.hpp), forward-declared so World can befriend
-    // their Commands& specializations, which own each system's private
-    // command stores and splice them into the flush
-    // (schedule/params/commands.hpp).
+    // The parallel-parameter policy (schedule/params/parallel.hpp),
+    // forward-declared so the per-item primitives can befriend it.
     template <class P>
     struct parallel_param;
-    template <class P>
-    struct serial_param;
 
     // A recorded spawn (defined after World), befriended so a dropped one can
     // hand its reservation back.
@@ -300,10 +295,8 @@ public:
 
 private:
     friend class Commands; // the mutation API; records into commands_
-    friend class Schedule; // creates Commands; discards commands on abort
-    friend class Wave;     // flushes the commands at each barrier
-    friend struct detail::serial_param<Commands&>;   // splices a system's store
-    friend struct detail::parallel_param<Commands&>; // splices per-item stores
+    friend class Schedule; // creates the shared Commands for dynamic systems
+    friend class Wave;     // flushes, or on abort discards, each wave's commands
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
@@ -321,18 +314,17 @@ private:
         std::uint32_t row = 0;
     };
 
-    // Apply all recorded commands; driven by the schedule's Wave at each
-    // barrier. See CommandStore::apply for `report`.
-    void apply_commands(FlushReport& report) { commands_.apply(*this, report); }
+    // Apply all recorded commands -- the thread-sharded ones, then the
+    // systems' private `stores` in the order given; driven by the schedule's
+    // Wave at each barrier. See CommandStore::apply for `report`.
+    void apply_commands(FlushReport& report,
+                        std::span<CommandStore* const> const stores) {
+        commands_.apply(*this, report, stores);
+    }
 
-    // Queue a system's private command store to drain at the next flush,
-    // after the thread-sharded commands. Called at the barrier by the
-    // Commands& parameter policies, in canonical order.
-    void splice_commands(CommandStore& store) { commands_.splice(store); }
-
-    // Drop all recorded commands unapplied; driven by the Schedule when a run
-    // aborts, so a failed run's edits cannot leak into the next run's flush.
-    // Dropped spawns hand their reserved entities back.
+    // Drop all recorded commands unapplied; driven by the schedule's Wave when
+    // a run aborts, so a failed run's edits cannot leak into the next run's
+    // flush. Dropped spawns hand their reserved entities back.
     void discard_commands() noexcept { commands_.discard(*this); }
 
     // Immediate mutation primitives, called only by the command closures at
