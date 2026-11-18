@@ -69,7 +69,7 @@ namespace detail {
             // dropped by abort() if that wave threw. Discarding is a cheap
             // guarantee that nothing recorded earlier leaks into this run.
             for (auto const& slot : s.slots)
-                slot->store.discard(&w);
+                slot->store.discard(w);
             s.active = rows.size();
         }
 
@@ -77,9 +77,13 @@ namespace detail {
         // the items' edits now, handing their reserved entities back to `w`, so
         // nothing waits on this system running again.
         static void abort(state& s, World& w) noexcept {
-            World* const owner = s.world == &w ? &w : nullptr;
+            // Slots still bound to another world hold nothing: they were drained
+            // or aborted there, and prepare() rebinds them before any item here
+            // records.
+            if (s.world != &w)
+                return;
             for (auto const& slot : s.slots)
-                slot->store.discard(owner);
+                slot->store.discard(w);
         }
 
         // Single-threaded, before the wave's flush: enqueue each item's store
