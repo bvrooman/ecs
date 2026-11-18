@@ -89,12 +89,12 @@ namespace detail {
             return *slots_[ordinal];
         }
 
-        // On the lane running item `ordinal`: send the thread's world-level
+        // On the lane running `item`: send the thread's world-level
         // CommandBuffer::record calls on `w` to that item's store until the
-        // returned guard dies.
+        // returned scope ends.
         [[nodiscard]]
-        ScopedRecordingTarget redirect(World& w, std::size_t const ordinal) {
-            return ScopedRecordingTarget(w.commands_, slots_[ordinal]->store);
+        RecordingScope redirect(World& w, WorkItem const& item) {
+            return RecordingScope(item.system, w.commands_, slots_[item.ordinal]->store);
         }
 
     private:

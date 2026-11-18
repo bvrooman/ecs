@@ -372,7 +372,7 @@ private:
         auto slots = std::make_shared<detail::command_slots>();
         sys.run    = [run = std::forward<Run>(run),
                       slots](World& w, detail::WorkItem const& item) mutable {
-            auto const redirect = slots->redirect(w, item.ordinal);
+            auto const recording = slots->redirect(w, item);
             run(w, (*slots)[item.ordinal].cmds, item);
         };
         sys.prepare_items = [slots](World& w,
