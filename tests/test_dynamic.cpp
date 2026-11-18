@@ -357,6 +357,39 @@ static void spawn_bundle_validation() {
             CHECK(col->size() == arch->entities.size());
 }
 
+// A WorldOps::spawn_deferred recorded by a system whose run aborts never
+// applies: its handle stays dead and its slot is handed back one generation on,
+// exactly like a Commands::spawn.
+static void aborted_deferred_spawn_is_released() {
+    auto const Pos = define2("AbortedSpawnPos");
+    auto blob      = [] {
+        F2 const v {1, 2};
+        std::vector<std::byte> b(sizeof v);
+        std::memcpy(b.data(), &v, sizeof v);
+        return b;
+    };
+    World w;
+    Entity e = Entity::null();
+    Schedule s;
+    s.add_serial("spawn_then_throw", [&] {
+        e = WorldOps::spawn_deferred(w, {{Pos, blob()}});
+        throw std::runtime_error("abort");
+    });
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.size() == 0);
+    CHECK(!w.alive(e));
+
+    Entity const again = WorldOps::spawn_deferred(w, {{Pos, blob()}});
+    CHECK(again.index() == e.index());
+    CHECK(again.generation() == e.generation() + 1);
+}
+
 int main() {
     RUN_SUITE(round_trip);
     RUN_SUITE(archetype_transitions);
@@ -366,5 +399,6 @@ int main() {
     RUN_SUITE(dynamic_system_filters_by_archetype);
     RUN_SUITE(native_component_runtime_access);
     RUN_SUITE(spawn_bundle_validation);
+    RUN_SUITE(aborted_deferred_spawn_is_released);
     return REPORT();
 }

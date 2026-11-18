@@ -60,7 +60,11 @@ that introduced this document; the rest are recorded as a roadmap.
   the world-owned buffer kept earlier systems' recorded edits; the **next**
   run (possibly a different schedule) silently applied them, and
   `spawn()`-reserved ids leaked. `Schedule::run` now discards pending commands
-  on unwind (`CommandBuffer::discard()`).
+  on unwind (`CommandBuffer::discard()`), parallel systems' per-item stores
+  included, and each dropped spawn hands its reserved slot back one generation
+  on (`detail::ReservedSpawn`), so the handle stays dead and the slot is reused.
+  (Discarding alone fixed the replay; the ids kept leaking until the release.)
+  `TickAbort` names the system the failure came from.
 - **[done]** `soa_storage::push_back` scattered field-by-field; a throw at
   column *k* permanently desynchronized the columns (silent data corruption).
   Same class of bug in `World::relocate`. Columns are now pre-reserved so the

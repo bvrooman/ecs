@@ -208,6 +208,50 @@ static void concurrent_reserve_yields_unique_indices() {
     CHECK(seen.size() == static_cast<std::size_t>(threads) * per);
 }
 
+// release() hands back a reservation that will never commit (a spawn dropped
+// before it materialized). The slot is reused one generation on, so the
+// released handle -- and any copy of it -- stays dead. A committed handle, or
+// one already released, is refused.
+static void release_returns_an_uncommitted_reservation() {
+    auto i = Ints {};
+    // A minted index with no slot yet.
+    auto const fresh = i.reserve();
+    CHECK(i.release(fresh));
+    CHECK(!i.is_alive(fresh));
+    CHECK(!i.release(fresh)); // a second release is refused
+    auto const reuse = i.reserve();
+    CHECK(reuse.index() == fresh.index());
+    CHECK(reuse.generation() == fresh.generation() + 1);
+    i.commit(reuse, 7);
+    CHECK(i.is_alive(reuse));
+    CHECK(!i.is_alive(fresh));
+    CHECK(!i.release(reuse)); // committed: destroy() it instead
+    CHECK(i.size() == 1);
+
+    // A recycled slot (destroyed, then reserved again).
+    CHECK(i.destroy(reuse));
+    auto const recycled = i.reserve();
+    CHECK(recycled.index() == reuse.index());
+    CHECK(i.release(recycled));
+    auto const next = i.reserve();
+    CHECK(next.index() == recycled.index());
+    CHECK(next.generation() == recycled.generation() + 1);
+
+    // A minted index released after a HIGHER index committed (so its slot
+    // exists, never used); the other handles are untouched.
+    auto const lo = i.reserve();
+    auto const hi = i.create(9);
+    CHECK(lo.index() < hi.index());
+    CHECK(i.release(lo));
+    i.commit(next, 1);
+    CHECK(i.is_alive(hi) && i.is_alive(next));
+    CHECK(!i.is_alive(lo));
+    CHECK(i.size() == 2);
+    auto const lo_again = i.reserve();
+    CHECK(lo_again.index() == lo.index());
+    CHECK(lo_again.generation() == lo.generation() + 1);
+}
+
 int main() {
     RUN_SUITE(test_create_returns_valid_handle);
     RUN_SUITE(test_get_returns_value_for_valid_handle);
@@ -221,5 +265,6 @@ int main() {
     RUN_SUITE(from_raw_round_trips_through_get);
     RUN_SUITE(handle_is_hashable);
     RUN_SUITE(concurrent_reserve_yields_unique_indices);
+    RUN_SUITE(release_returns_an_uncommitted_reservation);
     return REPORT();
 }
