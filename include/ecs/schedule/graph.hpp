@@ -35,7 +35,6 @@ inline void release(SystemRecord& s) noexcept {
     s.run           = nullptr;
     s.prepare_items = nullptr;
     s.finish_items  = nullptr;
-    s.abort_items   = nullptr;
 }
 
 // Charge one run to each system of a wave that just completed -- its edits are

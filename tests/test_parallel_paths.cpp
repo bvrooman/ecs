@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <exception>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -722,6 +723,67 @@ static void kernel_commands_replay_in_canonical_order() {
     CHECK(alive4 == alive1);     // destroys too: same swap-and-pop layout
 }
 
+// Commands from SERIAL systems: each records into its own private store,
+// drained at the wave's flush in wave order (registration order within a
+// wave), with a parallel system's per-item stores at that system's position.
+// The spawned rows must come out in exactly that order at any lane count --
+// through the thread-sharded buffer, their order followed which lane ran
+// which system.
+static void serial_commands_replay_in_wave_order() {
+    constexpr int kPer = 200;
+    auto serial        = [](int const k) {
+        return [k](Commands& cmd) {
+            for (int j = 0; j < kPer; ++j)
+                cmd.spawn(Spawned {k * 1'000 + j});
+        };
+    };
+    auto run_and_gather = [&](unsigned lanes) {
+        World w;
+        populate_mixed(w, 12'000);
+        Schedule s;
+        for (int k = 0; k < 4; ++k)
+            s.add_serial("s" + std::to_string(k), serial(k));
+        s.add_parallel("p", [](Query<Health const> q, Commands& cmd) {
+            q.for_each([&](auto& h) {
+                if (h.hp % 11 == 0)
+                    cmd.spawn(Spawned {-(h.hp + 1)}); // negative: told apart
+            });
+        });
+        for (int k = 4; k < 8; ++k)
+            s.add_serial("s" + std::to_string(k), serial(k));
+        CHECK(s.level_count() == 1); // no access conflict -> one shared wave
+        WorkerPool pool {lanes};
+        for (int t = 0; t < 3; ++t) // later ticks: stores rewound and reused
+            s.run(w, pool);
+        std::vector<int> spawned;
+        w.for_each<Spawned const>([&](auto& sp) { spawned.push_back(sp.v); });
+        return spawned;
+    };
+
+    // Each tick appends: s0..s3 in registration order, then the parallel
+    // system's spawns, then s4..s7.
+    std::vector<int> head, tail;
+    for (int k = 0; k < 8; ++k)
+        for (int j = 0; j < kPer; ++j)
+            (k < 4 ? head : tail).push_back(k * 1'000 + j);
+
+    auto const one = run_and_gather(1);
+    CHECK(one.size() % 3 == 0);
+    auto const per_tick = one.size() / 3;
+    CHECK(per_tick > head.size() + tail.size()); // the parallel system spawned
+    auto const mid = per_tick - head.size() - tail.size();
+    for (std::size_t t = 0; t < 3; ++t) {
+        auto const tick = one.begin() + std::ptrdiff_t(t * per_tick);
+        auto const p    = tick + std::ptrdiff_t(head.size());
+        auto const q    = p + std::ptrdiff_t(mid);
+        CHECK(std::equal(head.begin(), head.end(), tick));
+        CHECK(std::all_of(p, q, [](int const v) { return v < 0; }));
+        CHECK(std::equal(tail.begin(), tail.end(), q));
+    }
+    for (unsigned lanes : {2u, 4u})
+        CHECK(run_and_gather(lanes) == one);
+}
+
 // Bin: group-by with a barrier counting sort. Every bucket's contents must
 // equal the serial walk's per-bucket gather (values AND order) at any lane
 // count; reserve_buckets keeps empty buckets addressable.
@@ -905,8 +967,9 @@ static void bin_rejects_bucket_uint32_max() {
                                    cmd.spawn(Spawned {h.hp}); // per-item store
                            });
                        });
-        // Same wave, recording through the world's shared buffer: the edit the
-        // abort has to discard itself, or the next flush applies it.
+        // Same wave, a serial recorder with its own private store: the abort
+        // must keep its edit out of this flush, and the next run must not
+        // resurface it either.
         s.add_serial("seed", [](Commands& cmd) { cmd.spawn(Spawned {-1}); });
         CHECK(s.level_count() == 1);
 
@@ -1017,6 +1080,7 @@ int main() {
     RUN_SUITE(events_are_double_buffered_and_deterministic);
     RUN_SUITE(local_state_persists_across_ticks);
     RUN_SUITE(kernel_commands_replay_in_canonical_order);
+    RUN_SUITE(serial_commands_replay_in_wave_order);
     RUN_SUITE(bin_groups_match_serial_walk);
     RUN_SUITE(bin_bucket_count_follows_largest_bucket);
     RUN_SUITE(bin_rejects_bucket_uint32_max);

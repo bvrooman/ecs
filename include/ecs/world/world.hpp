@@ -48,9 +48,8 @@ namespace detail {
     template <class... Ts>
     inline constexpr bool are_distinct_v = are_distinct<Ts...>::value;
 
-    // The kernel-parameter policy (schedule/params/parallel.hpp), forward-
-    // declared so Commands can befriend its Commands& specialization (per-item
-    // command recording for parallel systems).
+    // The parallel-parameter policy (schedule/params/parallel.hpp),
+    // forward-declared so the per-item primitives can befriend it.
     template <class P>
     struct parallel_param;
 
@@ -59,6 +58,8 @@ namespace detail {
     template <class Build>
     struct ReservedSpawn;
 } // namespace detail
+
+class Commands; // world/commands.hpp; the mutation API over this World
 
 // Runtime (JS-host-driven) component operations live in dynamic/world_ops.hpp and
 // reuse World's generic archetype machinery via friendship -- forward-declared
@@ -293,8 +294,9 @@ public:
     }
 
 private:
-    friend class Commands;           // the mutation API; records into commands_
-    friend class Schedule;           // creates Commands and flushes at barriers
+    friend class Commands; // the mutation API; records into commands_
+    friend class Schedule; // creates the shared Commands for dynamic systems
+    friend class Wave;     // flushes, or on abort discards, each wave's commands
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
@@ -312,15 +314,17 @@ private:
         std::uint32_t row = 0;
     };
 
-    // Apply all recorded commands; driven by the Schedule at each barrier.
-    // `failed` receives the recording system of a command that throws.
-    void apply_commands(FlushAttrib* attrib = nullptr, SystemId* failed = nullptr) {
-        commands_.apply(*this, attrib, failed);
+    // Apply all recorded commands -- the thread-sharded ones, then the
+    // systems' private `stores` in the order given; driven by the schedule's
+    // Wave at each barrier. See CommandStore::apply for `report`.
+    void apply_commands(FlushReport& report,
+                        std::span<CommandStore* const> const stores) {
+        commands_.apply(*this, report, stores);
     }
 
-    // Drop all recorded commands unapplied; driven by the Schedule when a run
-    // aborts, so a failed run's edits cannot leak into the next run's flush.
-    // Dropped spawns hand their reserved entities back.
+    // Drop all recorded commands unapplied; driven by the schedule's Wave when
+    // a run aborts, so a failed run's edits cannot leak into the next run's
+    // flush. Dropped spawns hand their reserved entities back.
     void discard_commands() noexcept { commands_.discard(*this); }
 
     // Immediate mutation primitives, called only by the command closures at

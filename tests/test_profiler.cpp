@@ -273,9 +273,44 @@ static void flush_attributed_per_system() {
     CHECK(heavy_flush > cheap_flush); // and charged more than the cheap system
 }
 
+// The same attribution for a PARALLEL system's commands, which are recorded
+// into per-item private stores and drained at the wave's flush
+// rather than going through the thread-sharded buffer. Each item's commands
+// still carry the system as their source, so its flush time lands on it.
+static void parallel_flush_attributed_to_its_system() {
+    World w;
+    setup(w, [](Commands& c) {
+        for (int i = 0; i < 20'000; ++i)
+            c.spawn(Velocity {float(i), 0});
+    });
+    Schedule s;
+    s.add_serial("cheap", [](Commands& c) { c.spawn(Position {1, 0}); });
+    s.add_parallel("heavy", [](Query<Velocity const> q, Commands& c) {
+        q.for_each([&](auto& v) { c.spawn(Position {v.dx, 0}); });
+    });
+    CHECK(s.level_count() == 1); // no access conflict -> one shared wave
+
+    double heavy_flush = 0, cheap_flush = 0;
+    s.events().add([&](ScheduleEvent const& e) {
+        if (auto const* sw = std::get_if<sched_event::SystemWork>(&e)) {
+            if (sw->name == "heavy")
+                heavy_flush += sw->flush_us;
+            else if (sw->name == "cheap")
+                cheap_flush += sw->flush_us;
+        }
+    });
+    WorkerPool pool {4};
+    s.run(w, pool);
+
+    CHECK(w.count<Position const>() == 20'001); // both systems' spawns applied
+    CHECK(heavy_flush > 0.0);                   // private stores were timed
+    CHECK(heavy_flush > cheap_flush);           // and charged to their system
+}
+
 int main() {
     RUN_SUITE(report_summarizes_systems);
     RUN_SUITE(flush_attributed_per_system);
+    RUN_SUITE(parallel_flush_attributed_to_its_system);
     RUN_SUITE(trace_writes_one_row_per_system_per_tick);
     RUN_SUITE(fanned_wave_reports_real_busy_time);
     RUN_SUITE(report_and_trace_compose);

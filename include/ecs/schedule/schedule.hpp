@@ -230,11 +230,12 @@ public:
     // prepare/finish hook durations.
     //
     // Determinism: item contents and order are fixed; item-to-lane assignment
-    // is not. Commands recorded by PARALLEL systems replay in canonical order
-    // regardless (per-item stores enqueued at the barrier in ordinal order --
-    // see schedule/params/commands.hpp; spawn() handles are still reserved at
+    // is not. Commands recorded through a typed system's Commands& replay in
+    // canonical order regardless (private stores drained at the flush in
+    // wave order, a parallel system's per item in ordinal order -- see
+    // schedule/params/commands.hpp; spawn() handles are still reserved at
     // record time, so the IDs themselves remain timing-dependent). Commands
-    // recorded by serial systems keep the thread-sharded path, so their
+    // recorded by DYNAMIC systems keep the thread-sharded path, so their
     // cross-shard replay order -- already unspecified -- varies run to run.
     // A 1-lane pool claims items in list order and is fully deterministic.
     //
@@ -265,9 +266,7 @@ public:
                 try {
                     run_wave(plan, world, cmds, pool);
                 } catch (...) {
-                    events_.emit(TickAbort {plan.id,
-                                            std::exchange(failed_system_,
-                                                          SystemId::none())});
+                    events_.emit(TickAbort {plan.id, plan.failed_system()});
                     throw;
                 }
                 retire_spent(plan);
@@ -435,11 +434,6 @@ private:
                 detail::finish_all<Param, Args>(*states, w, Seq {});
             };
         }
-        if constexpr (Info::any_abortable) {
-            sys.abort_items = [states](World& w) {
-                detail::abort_all<Param, Args>(*states, w, Seq {});
-            };
-        }
         return register_system(std::move(sys));
     }
 
@@ -541,51 +535,36 @@ private:
     }
 
     // Build and execute one wave's item list; on a throw, drop the aborted
-    // wave's recorded edits and note the failing system for run()'s TickAbort.
+    // wave's recorded edits (the wave keeps the failing system for run()'s
+    // TickAbort).
     void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
         using namespace sched_event;
         events_.emit(WaveBegin {plan.id, plan.size()});
-        flush_attrib_.clear();
-        auto& wave            = plan.build(systems_, world, tick_);
-        auto flush_us         = 0.0;
-        SystemId failed_flush = SystemId::none();
+        auto& wave = plan.build(systems_, world, tick_);
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
-            auto const tf = detail::sched_clock::now();
-            world.apply_commands(&flush_attrib_, &failed_flush);
-            flush_us = detail::elapsed_us(tf);
+            wave.flush(world);
         } catch (...) {
-            // A hook or work item names itself; otherwise it was a command,
-            // charged to the system that recorded it.
-            failed_system_ = wave.failed_system() != SystemId::none()
-                                 ? wave.failed_system()
-                                 : failed_flush;
-            // Drop every edit the wave recorded -- including any still in
-            // parallel systems' per-item stores -- handing reserved entities
-            // back to the world.
-            for (auto const id : plan)
-                if (auto& abort = systems_[id].abort_items)
-                    abort(world);
-            world.discard_commands();
+            wave.discard(world); // every unapplied edit, reservations returned
             throw;
         }
         auto const& plan_result = plan.result();
         auto const& wave_result = wave.result();
         for (auto id : plan) {
-            auto const fit  = flush_attrib_.find(id);
-            auto const flsh = fit != flush_attrib_.end() ? fit->second : 0.0;
             events_.emit(SystemWork {id,
                                      systems_[id].name,
                                      wave_result.busy_us[id],
                                      wave_result.prepare_us[id],
                                      wave_result.finish_us[id],
                                      wave_result.item_counts[id],
-                                     flsh});
+                                     wave.flush_us(id)});
         }
-        events_.emit(
-            WaveEnd {plan.id, flush_us, plan_result.build_us, plan_result.sort_us});
+        events_.emit(WaveEnd {plan.id,
+                              wave_result.flush_us,
+                              plan_result.build_us,
+                              plan_result.sort_us});
     }
 
     void rebuild() {
@@ -609,13 +588,9 @@ private:
     std::vector<SystemId> spent_;           // retire_spent scratch
     std::vector<SystemId> pending_release_; // removed mid-run; released at rebuild
     std::vector<WavePlan> wave_plans_;
-    FlushAttrib flush_attrib_; // per-system flush time, per wave
-    std::uint64_t tick_ = 0;   // run() count; part of Random's stream identity
-    // The system a throwing wave failed in, set by run_wave for run() to put in
-    // TickAbort; none() when the failure was not a system's (an observer, say).
-    SystemId failed_system_ = SystemId::none();
-    bool dirty_             = true;
-    bool running_           = false; // inside run(): remove() defers the release
+    std::uint64_t tick_ = 0; // run() count; part of Random's stream identity
+    bool dirty_         = true;
+    bool running_       = false; // inside run(): remove() defers the release
 };
 
 } // namespace ecs

@@ -18,6 +18,12 @@
 // thread's shard replay in record order; ordering *across* shards is
 // unspecified.
 //
+// A system that needs a canonical replay order records into a private
+// CommandStore instead. The buffer never holds those: whoever owns the flush
+// (the schedule's Wave) passes them to apply(), which drains them after the
+// shards, in the order given, with the same attribution and failure handling
+// as a shard.
+//
 // A command is a type-erased `void(World&)` callable. Each shard stores its
 // callables in a monotonic arena (CommandStore) -- a chain of fixed blocks the
 // callable is constructed into in place and never relocated, so a move-only or
@@ -41,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -88,6 +95,19 @@ namespace detail {
 // Per-system command-apply time accumulated by a flush; keys are whatever
 // recording_source() held when each command was recorded.
 using FlushAttrib = std::unordered_map<SystemId, double>;
+
+// What one flush reports: each recording system's apply time, and -- if a
+// command threw -- the system that recorded it (none() when nothing threw, or
+// the command was recorded outside any system).
+struct FlushReport {
+    FlushAttrib time;
+    SystemId failed = SystemId::none();
+
+    void clear() noexcept {
+        time.clear();
+        failed = SystemId::none();
+    }
+};
 
 class World; // defined in world.hpp
 
@@ -139,35 +159,29 @@ public:
         });
     }
 
-    // `failed`, when given, receives the recording system of a command that
-    // throws (the schedule names it in TickAbort).
-    void apply(World& world, FlushAttrib* attrib = nullptr, SystemId* failed = nullptr) {
+    // Apply time accumulates into report.time; a throwing command's recording
+    // system lands in report.failed (the schedule names it in TickAbort).
+    void apply(World& world, FlushReport& report) {
         // Invoke-and-destroy in ONE pass. If a command throws, the remaining
         // (uninvoked) commands are destroyed and the store rewound on unwind --
         // already-applied commands can never replay on the next flush (which
         // would duplicate spawns of the same reserved handle, double-destroy,
         // and replay adds).
+        //
+        // Apply time is attributed per recording source. Commands from one
+        // system are contiguous, so each run of same-source commands is timed
+        // as a batch -- a handful of clock reads, not one per command.
+        using clock   = std::chrono::steady_clock;
         std::size_t i = 0;
         try {
-            if (attrib == nullptr) {
-                for (; i < cmds_.size(); ++i) {
-                    auto const& c = cmds_[i];
-                    c.invoke(c.obj, world);
-                    c.destroy(c.obj, nullptr);
-                }
-            } else if (!cmds_.empty()) {
-                // Attribute apply time per recording source. Commands from one
-                // work item are contiguous (same source), so time each run
-                // rather than each command -- a handful of clock reads, not one
-                // per command.
-                using clock = std::chrono::steady_clock;
-                auto batch  = clock::now();
-                auto src    = cmds_[0].source;
+            if (!cmds_.empty()) {
+                auto batch = clock::now();
+                auto src   = cmds_[0].source;
                 for (; i < cmds_.size(); ++i) {
                     auto const& c = cmds_[i];
                     if (c.source != src) {
                         auto const now = clock::now();
-                        (*attrib)[src] +=
+                        report.time[src] +=
                             std::chrono::duration<double, std::micro>(now - batch)
                                 .count();
                         batch = now;
@@ -176,13 +190,13 @@ public:
                     c.invoke(c.obj, world);
                     c.destroy(c.obj, nullptr);
                 }
-                (*attrib)[src] +=
+                report.time[src] +=
                     std::chrono::duration<double, std::micro>(clock::now() - batch)
                         .count();
             }
         } catch (...) {
-            if (failed != nullptr)
-                *failed = cmds_[i].source;
+            if (i < cmds_.size()) // not a throw from the timing map
+                report.failed = cmds_[i].source;
             // The throwing command and everything after it never took effect.
             for (; i < cmds_.size(); ++i)
                 cmds_[i].destroy(cmds_[i].obj, &world);
@@ -286,25 +300,33 @@ public:
     }
 
     // Replay all recorded commands, then clear. Must be called when no systems
-    // are executing. Drains shards in creation order; within a shard, in record
-    // order. Takes each shard's (uncontended) mutex so a stray recording thread
-    // is excluded rather than racing the drain. `failed`: see CommandStore.
-    void apply(World& world, FlushAttrib* attrib = nullptr, SystemId* failed = nullptr) {
+    // are executing. Drains shards in creation order (within a shard, in record
+    // order), then `stores` -- private stores recorded outside the buffer -- in
+    // the order given. Takes each shard's (uncontended) mutex so a stray
+    // recording thread is excluded rather than racing the drain. See
+    // CommandStore::apply for `report`.
+    void apply(World& world,
+               FlushReport& report,
+               std::span<CommandStore* const> const stores = {}) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.apply(world, attrib, failed);
+                shard->store.apply(world, report);
             }
+            for (auto* const store : stores)
+                store->apply(world, report);
         } catch (...) {
-            // The throwing shard already cleaned itself up; discard the
-            // not-yet-drained shards too so no command from this failed flush
-            // replays on a later apply.
+            // The throwing store already cleaned itself up; discard the
+            // not-yet-drained shards and stores too so no command from this
+            // failed flush replays on a later apply.
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
                 shard->store.discard(world);
             }
+            for (auto* const store : stores)
+                store->discard(world);
             applying_.store(false, std::memory_order_relaxed);
             throw;
         }

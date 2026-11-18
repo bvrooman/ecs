@@ -49,15 +49,6 @@
 
 namespace ecs::detail {
 
-// Optional: a parameter whose per-item state can outlive an aborted wave
-// defines `static void abort(state&, World&) noexcept`, which the schedule
-// calls for every system of a wave that threw (after the throw, before the
-// tick unwinds). Commands& in a parallel system is the one that needs it: its
-// per-item stores would otherwise keep the aborted items' edits -- and their
-// reserved entities -- until that system next runs.
-template <class P>
-concept has_abort_hook = requires(typename P::state& s, World& w) { P::abort(s, w); };
-
 // Pack-level facts about a system's whole parameter list, computed under a
 // given parameter policy `Param` (serial_param or parallel_param).
 template <template <class> class Param, class Args>
@@ -67,8 +58,7 @@ struct params_info<Param, std::tuple<A...>> {
     static constexpr bool all_allowed = (Param<A>::allowed && ...);
     static constexpr bool any_stateful =
         (!std::is_same_v<typename Param<A>::state, no_state> || ...);
-    static constexpr bool any_abortable = (has_abort_hook<Param<A>> || ...);
-    using states                        = std::tuple<typename Param<A>::state...>;
+    using states = std::tuple<typename Param<A>::state...>;
 };
 
 template <template <class> class Param, class Args, std::size_t... I>
@@ -87,16 +77,6 @@ void prepare_all(States& st,
 template <template <class> class Param, class Args, class States, std::size_t... I>
 void finish_all(States& st, World& w, std::index_sequence<I...>) {
     (Param<std::tuple_element_t<I, Args>>::finish(std::get<I>(st), w), ...);
-}
-template <template <class> class Param, class Args, class States, std::size_t... I>
-void abort_all(States& st, World& w, std::index_sequence<I...>) noexcept {
-    (
-        [&] {
-            using P = Param<std::tuple_element_t<I, Args>>;
-            if constexpr (has_abort_hook<P>)
-                P::abort(std::get<I>(st), w);
-        }(),
-        ...);
 }
 
 template <template <class> class Param,

@@ -129,13 +129,11 @@ struct system_param<ResMut<T>> {
     static void declare(SystemAccess& a) { a.res_writes.push_back(resource_id<T>); }
     static ResMut<T> bind(World& w, Commands&, WorkItem const&) { return ResMut<T>(w); }
 };
-template <>
-struct system_param<Commands&> {
-    // A side channel: no tracked component/resource access. We still flag it
-    // so tooling can surface that the system records commands.
-    static void declare(SystemAccess& a) { a.commands = true; }
-    static Commands& bind(World&, Commands& c, WorkItem const&) { return c; }
-};
+// Commands& is deliberately not routed through system_param: it needs a
+// private store per recorder, so serial_param<Commands&> and
+// parallel_param<Commands&> (schedule/params/commands.hpp) own its whole
+// protocol.
+//
 // Read-only ad-hoc access: WorldView reads everything but writes nothing,
 // so it runs in parallel with other readers and is serialized only against
 // writers.
@@ -210,13 +208,17 @@ inline double elapsed_us(sched_clock::time_point const t0) {
     return std::chrono::duration<double, std::micro>(sched_clock::now() - t0).count();
 }
 
-// Identity a wave hands to stateful parameters' prepare hooks: which
-// system is preparing and which schedule tick this is. Random derives its
-// per-item stream seeds from these (deterministic, lane-count-independent);
-// most parameters ignore it.
+// What a wave hands to stateful parameters' prepare hooks: which system is
+// preparing and which schedule tick this is -- Random derives its per-item
+// stream seeds from these (deterministic, lane-count-independent) -- and the
+// wave's list of private command stores. A parameter that records into its own
+// stores (Commands&) appends them here, in drain order; the wave drains them at
+// its flush, after the thread-sharded commands, and discards them if it
+// aborts. Most parameters ignore all three.
 struct WaveContext {
-    SystemId system    = {};
-    std::uint64_t tick = 0;
+    SystemId system                    = {};
+    std::uint64_t tick                 = 0;
+    std::vector<CommandStore*>* stores = nullptr;
 };
 
 // A memoized query match list, keyed by (world instance, archetype
@@ -241,7 +243,6 @@ using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
-using AbortItemsFn  = move_only_function<void(World&)>;
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
@@ -255,9 +256,6 @@ struct SystemRecord {
     RunFn run;
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
-    // Drops per-item state when the system's wave throws (see
-    // params/protocol.hpp: has_abort_hook). Null for most systems.
-    AbortItemsFn abort_items;
     Signature query_sig = Signature::null();
     MatchCache match; // parallel systems: memoized query_sig match list
     Phase phase = 0;
