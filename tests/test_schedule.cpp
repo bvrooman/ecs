@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <variant>
@@ -421,6 +422,141 @@ static void tick_abort_names_the_failing_system() {
     }
 }
 
+// A system that is done -- retired by times{n} or removed -- releases what it
+// owns (captures, Local<T>, per-item state) instead of holding it until the
+// Schedule dies. A removal made from inside a running tick waits for the tick to
+// end: the system may still run in it, and may be the one removing itself.
+struct LocalProbe {
+    inline static int alive = 0;
+    LocalProbe() { ++alive; }
+    ~LocalProbe() { --alive; }
+    LocalProbe(LocalProbe const&)            = delete;
+    LocalProbe& operator=(LocalProbe const&) = delete;
+};
+static void retired_and_removed_systems_release_their_state() {
+    World w;
+    setup(w, [](Commands& cmd) { cmd.spawn(Position {}); });
+    auto const token = std::make_shared<int>(0); // each system below holds a copy
+    Schedule s;
+    s.add_serial("keep", [](Query<Position const>) {});
+
+    // Retired by its budget: released as soon as its one run is done.
+    s.add_serial("once", [token](Local<LocalProbe>) {}, times {1});
+    CHECK(token.use_count() == 2);
+    CHECK(LocalProbe::alive == 1);
+    s.run(w);
+    CHECK(token.use_count() == 1);
+    CHECK(LocalProbe::alive == 0);
+
+    // Removed between ticks: released by remove() itself.
+    auto const removed = s.add_serial("removed", [token] {});
+    CHECK(token.use_count() == 2);
+    CHECK(s.remove(removed));
+    CHECK(token.use_count() == 1);
+
+    // Removed from inside a tick, by another system and by itself: each still
+    // runs that tick, so neither is released until the next run() begins.
+    int victim_runs = 0, self_runs = 0;
+    SystemId victim = SystemId::none(), self = SystemId::none();
+    s.add_serial("remover", [&s, &victim](Query<Position>) { (void)s.remove(victim); });
+    victim = s.add_serial("victim", [token, &victim_runs](Query<Position const>) {
+        ++victim_runs; // reads what remover writes: a later wave
+    });
+    self   = s.add_serial("self", [token, &s, &self, &self_runs](Commands&) {
+        ++self_runs;
+        (void)s.remove(self);
+    });
+    CHECK(token.use_count() == 3);
+    s.run(w);
+    CHECK(victim_runs == 1);
+    CHECK(self_runs == 1);
+    CHECK(token.use_count() == 3); // still owned: the tick was running
+    s.run(w);
+    CHECK(token.use_count() == 1); // released as the next run() began
+    CHECK(victim_runs == 1);
+    CHECK(self_runs == 1);
+    CHECK(s.size() == 2); // keep + remover
+}
+
+// A times{n} budget is charged when the system's wave completes, not at the end
+// of the tick. If a later wave aborts the tick, a one-shot whose wave already
+// flushed has run -- its edits are in the world -- and must not run again (it
+// used to, doubling a setup's spawns). A one-shot in the aborted wave itself is
+// not charged: its edits were discarded, so it runs again next tick.
+static void budgets_are_charged_per_completed_wave() {
+    World w;
+    Schedule s;
+    int setup_runs = 0, retry_runs = 0;
+    bool fail = true;
+    s.add_serial(
+        "setup",
+        [&](Commands& cmd) {
+            ++setup_runs;
+            for (int i = 0; i < 3; ++i)
+                cmd.spawn(Position {});
+        },
+        phase {-1},
+        times {1});
+    s.add_serial(
+        "retry",
+        [&](Commands& cmd) {
+            ++retry_runs;
+            cmd.spawn(Velocity {});
+        },
+        times {1});
+    s.add_serial("fails", [&](Commands&) {
+        if (fail)
+            throw std::runtime_error("fails");
+    });
+
+    bool threw = false;
+    try {
+        s.run(w);
+    } catch (std::runtime_error const&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(w.count<Position>() == 3); // setup's wave flushed before the abort
+    CHECK(w.count<Velocity>() == 0); // retry's spawn went with its wave
+    fail = false;
+    s.run(w);
+    s.run(w);
+    CHECK(setup_runs == 1); // charged when its wave flushed: not run again
+    CHECK(retry_runs == 2); // not charged in the aborted wave: ran once more
+    CHECK(w.count<Position>() == 3);
+    CHECK(w.count<Velocity>() == 1);
+    CHECK(s.size() == 1); // fails
+}
+
+// Per-wave results are zeroed per DUE system rather than per system ever
+// registered, so retired systems cost nothing -- and a system that skips ticks
+// still reports each due tick afresh, not accumulated.
+static void system_work_reports_each_due_tick_afresh() {
+    World w;
+    setup(w, [](Commands& cmd) {
+        for (int i = 0; i < 3000; ++i)
+            cmd.spawn(Position {});
+    });
+    Schedule s;
+    auto const sometimes = s.add_parallel(
+        "sometimes",
+        [](Query<Position> q) { q.for_each([](auto& p) { p.x += 1; }); },
+        every {2},
+        grain {1000});
+    for (int i = 0; i < 50; ++i) // tombstones once the first tick retires them
+        s.add_serial("once", [] {}, times {1});
+    std::vector<std::uint32_t> items;
+    auto const sub =
+        s.events().subscribe(event::observer([&](sched_event::SystemWork const& e) {
+            if (e.id == sometimes)
+                items.push_back(e.items);
+        }));
+    for (int t = 0; t < 6; ++t)
+        s.run(w);
+    CHECK((items == std::vector<std::uint32_t> {3, 3, 3}));
+    CHECK(s.size() == 1);
+}
+
 // Registration options are an order-independent pack: each add_* form accepts
 // phase/every/times in any order, and omitting one uses its default. A parallel
 // system takes them too -- it can be one-shot like a serial one.
@@ -753,6 +889,9 @@ int main() {
     RUN_SUITE(flush_failure_releases_unapplied_spawns);
     RUN_SUITE(aborted_runs_release_reserved_entities);
     RUN_SUITE(tick_abort_names_the_failing_system);
+    RUN_SUITE(retired_and_removed_systems_release_their_state);
+    RUN_SUITE(budgets_are_charged_per_completed_wave);
+    RUN_SUITE(system_work_reports_each_due_tick_afresh);
     RUN_SUITE(registration_options_are_order_independent);
     RUN_SUITE(wave_ordinals_are_plan_positions);
     RUN_SUITE(multiple_observers_notified_in_order);

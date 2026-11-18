@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <exception>
 #include <ranges>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -89,20 +90,30 @@ private:
 };
 
 // Per-system wave outcomes, indexed by SystemId and sized to the system count.
-// reset() clears via assign() (reusing capacity, no reallocation once warm), so
-// a steady-state run allocates nothing; a system that produced no work items
-// simply keeps its zeroed slot -- no keyed lookup that could miss.
+// Only the wave's DUE systems' slots are meaningful for a tick (they are all
+// anyone reads); reset() zeroes just those, so a schedule that has retired
+// thousands of one-shots pays per due system, not per system ever registered.
+// The vectors only grow, so a steady-state run allocates nothing; a due system
+// that produced no work items simply keeps its zeroed slot.
 struct WaveResult {
     detail::IdVector<SystemId, double> prepare_us;
     detail::IdVector<SystemId, double> finish_us;
     detail::IdVector<SystemId, double> busy_us;
     detail::IdVector<SystemId, uint32_t> item_counts;
 
-    void reset(std::size_t const n) {
-        prepare_us.assign(n, 0.0);
-        finish_us.assign(n, 0.0);
-        busy_us.assign(n, 0.0);
-        item_counts.assign(n, 0u);
+    void reset(std::size_t const n, std::span<SystemId const> const due) {
+        if (busy_us.size() < n) {
+            prepare_us.resize(n, 0.0);
+            finish_us.resize(n, 0.0);
+            busy_us.resize(n, 0.0);
+            item_counts.resize(n, 0u);
+        }
+        for (auto const id : due) {
+            prepare_us[id]  = 0.0;
+            finish_us[id]   = 0.0;
+            busy_us[id]     = 0.0;
+            item_counts[id] = 0u;
+        }
     }
 };
 
@@ -216,13 +227,13 @@ private:
     friend class WavePlan;
 
     // Start a fresh tick: keep buffer capacity, drop the previous tick's
-    // contents, and zero the per-system result slots. `n` is the system count
+    // contents, and zero the due systems' result slots. `n` is the system count
     // (the result IdVectors are sized to hold every SystemId).
-    void reset(std::size_t const n) {
+    void reset(std::size_t const n, std::span<SystemId const> const due) {
         items_.clear();
         prepare_.clear();
         finish_.clear();
-        result_.reset(n);
+        result_.reset(n, due);
         failed_ = SystemId::none();
         state_  = State::New;
     }
@@ -278,6 +289,10 @@ public:
     }
     auto begin() const { return due_.begin(); }
     auto end() const { return due_.end(); }
+    [[nodiscard]]
+    std::span<SystemId const> due() const noexcept {
+        return due_;
+    }
 
     // Compute this tick's due subset (tick % every == 0). Returns the due count;
     // due_ is reused, so this allocates nothing in steady state.
@@ -295,7 +310,7 @@ public:
     // deterministic tie-break (a 1-lane run replays identically). Requires
     // prepare() to have populated due_ this tick.
     Wave& build(SystemVector& systems, World const& world, std::uint64_t const tick) {
-        wave_.reset(systems.size());
+        wave_.reset(systems.size(), due_);
         wave_.id           = id;
         auto& items        = wave_.items_;
         auto& prepare      = wave_.prepare_;
