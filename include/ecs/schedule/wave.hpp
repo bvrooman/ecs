@@ -8,12 +8,15 @@
 #include <ecs/strong_id.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <ranges>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -72,7 +75,7 @@ public:
     bool finish(World& world) const {
         if (!*fn_)
             return false;
-        detail::recording_source() = system;
+        detail::RecordingAs const recording {system};
         (*fn_)(world);
         return true;
     }
@@ -87,20 +90,30 @@ private:
 };
 
 // Per-system wave outcomes, indexed by SystemId and sized to the system count.
-// reset() clears via assign() (reusing capacity, no reallocation once warm), so
-// a steady-state run allocates nothing; a system that produced no work items
-// simply keeps its zeroed slot -- no keyed lookup that could miss.
+// Only the wave's DUE systems' slots are meaningful for a tick (they are all
+// anyone reads); reset() zeroes just those, so a schedule that has retired
+// thousands of one-shots pays per due system, not per system ever registered.
+// The vectors only grow, so a steady-state run allocates nothing; a due system
+// that produced no work items simply keeps its zeroed slot.
 struct WaveResult {
     detail::IdVector<SystemId, double> prepare_us;
     detail::IdVector<SystemId, double> finish_us;
     detail::IdVector<SystemId, double> busy_us;
     detail::IdVector<SystemId, uint32_t> item_counts;
 
-    void reset(std::size_t const n) {
-        prepare_us.assign(n, 0.0);
-        finish_us.assign(n, 0.0);
-        busy_us.assign(n, 0.0);
-        item_counts.assign(n, 0u);
+    void reset(std::size_t const n, std::span<SystemId const> const due) {
+        if (busy_us.size() < n) {
+            prepare_us.resize(n, 0.0);
+            finish_us.resize(n, 0.0);
+            busy_us.resize(n, 0.0);
+            item_counts.resize(n, 0u);
+        }
+        for (auto const id : due) {
+            prepare_us[id]  = 0.0;
+            finish_us[id]   = 0.0;
+            busy_us[id]     = 0.0;
+            item_counts[id] = 0u;
+        }
     }
 };
 
@@ -127,25 +140,52 @@ public:
             auto items    = items_ | std::views::filter([&](auto const& item) {
                              return item.system == ctx.system;
                             });
-            if (ctx.prepare(world, items, rows_scratch_))
-                result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
+            try {
+                if (ctx.prepare(world, items, rows_scratch_))
+                    result_.prepare_us[ctx.system] = detail::elapsed_us(t0);
+            } catch (...) {
+                failed_ = ctx.system;
+                throw;
+            }
         }
         state_ = State::Prepared;
     }
 
     // Execute the item list: each item is claimed by whichever lane is free.
     // Each item's busy time is rolled up per system into result_.
+    //
+    // The first item to throw ends the wave: items not yet started are skipped
+    // (the tick is aborting) and that exception is rethrown after the join, so
+    // failed_system() names the system whose exception escapes. With several
+    // lanes, which items had started -- and so which direct component writes
+    // happened -- depends on timing, as does the culprit when two items throw.
+    // One lane runs items in list order, so it stops at exactly the same item
+    // every time.
     void run(SystemVector& systems, World& world, Commands& cmds, WorkerPool& pool) {
         assert(state_ == State::Prepared);
-        using clock  = std::chrono::steady_clock;
+        using clock = std::chrono::steady_clock;
+        std::atomic<bool> failed {false};
+        std::exception_ptr error;
         auto run_one = [&](WorkItem& item) {
-            auto& system               = systems[item.system];
-            detail::recording_source() = system.id;
-            auto const t0              = clock::now();
-            system.run(world, cmds, item);
+            if (failed.load(std::memory_order_relaxed))
+                return;
+            auto& system = systems[item.system];
+            detail::RecordingAs const recording {system.id};
+            auto const t0 = clock::now();
+            try {
+                system.run(world, cmds, item);
+            } catch (...) {
+                if (!failed.exchange(true, std::memory_order_acq_rel)) {
+                    error   = std::current_exception();
+                    failed_ = item.system;
+                }
+                return;
+            }
             item.busy_us = detail::elapsed_us(t0);
         };
         pool.for_each(items_, run_one);
+        if (error)
+            std::rethrow_exception(error);
         for (auto const& item : items_) {
             result_.busy_us[item.system] += item.busy_us;
             result_.item_counts[item.system]++;
@@ -159,8 +199,13 @@ public:
         assert(state_ == State::Ran);
         for (auto const& ctx : finish_) {
             auto const t0 = detail::sched_clock::now();
-            if (ctx.finish(world))
-                result_.finish_us[ctx.system] = detail::elapsed_us(t0);
+            try {
+                if (ctx.finish(world))
+                    result_.finish_us[ctx.system] = detail::elapsed_us(t0);
+            } catch (...) {
+                failed_ = ctx.system;
+                throw;
+            }
         }
         state_ = State::Finished;
     }
@@ -171,18 +216,26 @@ public:
         return result_;
     }
 
+    // The system whose prepare hook, work item, or finish hook threw this
+    // tick; none() if none did.
+    [[nodiscard]]
+    SystemId failed_system() const noexcept {
+        return failed_;
+    }
+
 private:
     friend class WavePlan;
 
     // Start a fresh tick: keep buffer capacity, drop the previous tick's
-    // contents, and zero the per-system result slots. `n` is the system count
+    // contents, and zero the due systems' result slots. `n` is the system count
     // (the result IdVectors are sized to hold every SystemId).
-    void reset(std::size_t const n) {
+    void reset(std::size_t const n, std::span<SystemId const> const due) {
         items_.clear();
         prepare_.clear();
         finish_.clear();
-        result_.reset(n);
-        state_ = State::New;
+        result_.reset(n, due);
+        failed_ = SystemId::none();
+        state_  = State::New;
     }
 
     std::vector<WorkItem> items_;
@@ -190,6 +243,7 @@ private:
     std::vector<FinishContext> finish_;
     std::vector<std::uint32_t> rows_scratch_; // shared prepare-hook scratch
     WaveResult result_;
+    SystemId failed_ = SystemId::none(); // see failed_system()
 
     enum class State { New, Prepared, Ran, Finished };
     State state_ = State::New;
@@ -235,6 +289,10 @@ public:
     }
     auto begin() const { return due_.begin(); }
     auto end() const { return due_.end(); }
+    [[nodiscard]]
+    std::span<SystemId const> due() const noexcept {
+        return due_;
+    }
 
     // Compute this tick's due subset (tick % every == 0). Returns the due count;
     // due_ is reused, so this allocates nothing in steady state.
@@ -252,7 +310,7 @@ public:
     // deterministic tie-break (a 1-lane run replays identically). Requires
     // prepare() to have populated due_ this tick.
     Wave& build(SystemVector& systems, World const& world, std::uint64_t const tick) {
-        wave_.reset(systems.size());
+        wave_.reset(systems.size(), due_);
         wave_.id           = id;
         auto& items        = wave_.items_;
         auto& prepare      = wave_.prepare_;

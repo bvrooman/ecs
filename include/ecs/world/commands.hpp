@@ -39,13 +39,17 @@ public:
     // spawn returns a usable handle immediately (alive after the next flush).
     // At flush the entity is placed directly into its final archetype.
     // Perfect-forwarded: an rvalue component moves into the capture and again
-    // into storage at flush -- no copies for heap-owning fields.
+    // into storage at flush -- no copies for heap-owning fields. If the spawn
+    // never applies (the run aborts first), the handle stays dead and its slot
+    // is reused.
     template <class... Cs>
     Entity spawn(Cs&&... comps) {
         Entity const e = world_.reserve();
-        record([e, ... comps = std::forward<Cs>(comps)](World& w) mutable {
-            w.spawn_now<std::decay_t<Cs>...>(e, std::move(comps)...);
-        });
+        auto build     = [... comps = std::forward<Cs>(comps)](World& w,
+                                                               Entity self) mutable {
+            w.spawn_now<std::decay_t<Cs>...>(self, std::move(comps)...);
+        };
+        record(detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
         return e;
     }
 

@@ -66,12 +66,28 @@ namespace detail {
     // set by the executor around each work item and around each single-threaded
     // barrier finish hook, read by CommandStore::record so each command carries
     // its recording system. That lets apply() attribute the flush time per
-    // system (see Schedule's per-system flush reporting). A default SystemId{}
-    // (id 0) means "unattributed" (setup outside a run, etc.).
+    // system (see Schedule's per-system flush reporting) and name the system
+    // whose command threw. SystemId::none() means "unattributed": recorded
+    // outside any system (a host's deferred spawn, say).
     inline SystemId& recording_source() noexcept {
-        thread_local SystemId src {};
+        thread_local SystemId src = SystemId::none();
         return src;
     }
+
+    // Scope the calling thread's recording source to one system, restoring the
+    // previous source on exit (thrown or not), so commands recorded after the
+    // system finishes are not charged to it.
+    class RecordingAs {
+    public:
+        explicit RecordingAs(SystemId const id) noexcept
+            : prev_(std::exchange(recording_source(), id)) {}
+        ~RecordingAs() { recording_source() = prev_; }
+        RecordingAs(RecordingAs const&)            = delete;
+        RecordingAs& operator=(RecordingAs const&) = delete;
+
+    private:
+        SystemId prev_;
+    };
 } // namespace detail
 
 // Per-system command-apply time accumulated by a flush; keys are whatever
@@ -85,13 +101,18 @@ class World; // defined in world.hpp
 // it; apply() invokes then destroys each in order and rewinds the arena (blocks
 // retained), so a steady-state tick allocates nothing. Single-threaded: a
 // CommandBuffer shard owns one and serializes access with its mutex.
+//
+// A command dropped WITHOUT running -- discarded, or left over when an earlier
+// command of the same apply() threw -- is told so before it is destroyed, if
+// the callable has a member `void on_unapplied(World&) noexcept`. A spawn uses
+// it to hand its reserved entity back (see detail::ReservedSpawn).
 class CommandStore {
 public:
     CommandStore() = default;
-    // A store may die holding never-applied commands (e.g. a kernel item's
-    // private store after an aborted run): destroy their captures rather
-    // than leak them.
-    ~CommandStore() { discard(); }
+    // A store may die holding never-applied commands: destroy their captures
+    // rather than leak them. With no World at hand, a reserved entity among
+    // them stays reserved -- discard(world) first where that matters.
+    ~CommandStore() { destroy_all(nullptr); }
     CommandStore(CommandStore const&)            = delete;
     CommandStore& operator=(CommandStore const&) = delete;
 
@@ -111,12 +132,21 @@ public:
         cmds_.push_back(Cmd {
             obj,
             [](void* o, World& w) { (*static_cast<Fn*>(o))(w); },
-            [](void* o) noexcept { static_cast<Fn*>(o)->~Fn(); },
+            [](void* o, World* unapplied) noexcept {
+                auto* const fn = static_cast<Fn*>(o);
+                if constexpr (requires(Fn& c, World& w) { c.on_unapplied(w); }) {
+                    if (unapplied != nullptr)
+                        fn->on_unapplied(*unapplied);
+                }
+                fn->~Fn();
+            },
             detail::recording_source(), // the system recording this command
         });
     }
 
-    void apply(World& world, FlushAttrib& attrib) {
+    // `failed`, when given, receives the recording system of a command that
+    // throws (the schedule names it in TickAbort).
+    void apply(World& world, FlushAttrib& attrib, SystemId* failed = nullptr) {
         // Invoke-and-destroy in ONE pass. If a command throws, the remaining
         // (uninvoked) commands are destroyed and the store rewound on unwind --
         // already-applied commands can never replay on the next flush (which
@@ -143,15 +173,18 @@ public:
                         src   = c.source;
                     }
                     c.invoke(c.obj, world);
-                    c.destroy(c.obj);
+                    c.destroy(c.obj, nullptr);
                 }
                 attrib[src] +=
                     std::chrono::duration<double, std::micro>(clock::now() - batch)
                         .count();
             }
         } catch (...) {
+            if (failed != nullptr && i < cmds_.size()) // not the timing map's throw
+                *failed = cmds_[i].source;
+            // The throwing command and everything after it never took effect.
             for (; i < cmds_.size(); ++i)
-                cmds_[i].destroy(cmds_[i].obj);
+                cmds_[i].destroy(cmds_[i].obj, &world);
             rewind();
             throw;
         }
@@ -160,12 +193,9 @@ public:
 
     // Destroy every pending command WITHOUT invoking it and rewind. Used when a
     // run aborts (a system threw): the aborted wave's edits must not leak into
-    // the next run's first flush.
-    void discard() noexcept {
-        for (auto const& c : cmds_)
-            c.destroy(c.obj);
-        rewind();
-    }
+    // the next run's first flush. `world` is the World the commands were
+    // recorded against, so a dropped spawn can hand its reserved entity back.
+    void discard(World& world) noexcept { destroy_all(&world); }
 
     [[nodiscard]]
     std::size_t size() const noexcept {
@@ -177,7 +207,9 @@ private:
     struct Cmd {
         void* obj;
         void (*invoke)(void*, World&);
-        void (*destroy)(void*) noexcept;
+        // Destroys the callable; a non-null World means it is being dropped
+        // without having run (see the class comment).
+        void (*destroy)(void*, World* unapplied) noexcept;
         SystemId source; // the system that recorded it (flush attribution)
     };
     struct Block {
@@ -185,6 +217,14 @@ private:
         std::size_t cap;
     };
     static constexpr std::size_t kBlock = 64 * 1024;
+
+    // Destroy every pending command without invoking it, then rewind. A
+    // non-null `unapplied` is told about each one (see the class comment).
+    void destroy_all(World* unapplied) noexcept {
+        for (auto const& c : cmds_)
+            c.destroy(c.obj, unapplied);
+        rewind();
+    }
 
     // Forget the recorded commands and rewind the block chain; blocks and the
     // cmds_ capacity are retained for reuse.
@@ -260,17 +300,17 @@ public:
     // are executing. Drains shards in creation order (within a shard, in record
     // order), then the spliced stores in splice order. Takes each shard's
     // (uncontended) mutex so a stray recording thread is excluded rather than
-    // racing the drain.
-    void apply(World& world, FlushAttrib& attrib) {
+    // racing the drain. `failed`: see CommandStore.
+    void apply(World& world, FlushAttrib& attrib, SystemId* failed = nullptr) {
         auto lock = std::lock_guard(create_mutex_);
         applying_.store(true, std::memory_order_relaxed);
         try {
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.apply(world, attrib);
+                shard->store.apply(world, attrib, failed);
             }
             for (auto* store : spliced_)
-                store->apply(world, attrib);
+                store->apply(world, attrib, failed);
             spliced_.clear();
         } catch (...) {
             // The throwing store already cleaned itself up; discard the
@@ -278,10 +318,10 @@ public:
             // this failed flush replays on a later apply.
             for (auto const& shard : shards_) {
                 std::lock_guard shard_lock(shard->mutex);
-                shard->store.discard();
+                shard->store.discard(world);
             }
             for (auto* store : spliced_)
-                store->discard();
+                store->discard(world);
             spliced_.clear();
             applying_.store(false, std::memory_order_relaxed);
             throw;
@@ -290,14 +330,14 @@ public:
     }
 
     // Drop every pending command without applying it (see CommandStore::discard).
-    void discard() noexcept {
+    void discard(World& world) noexcept {
         auto lock = std::lock_guard(create_mutex_);
         for (auto const& shard : shards_) {
             std::lock_guard shard_lock(shard->mutex);
-            shard->store.discard();
+            shard->store.discard(world);
         }
         for (auto* store : spliced_)
-            store->discard();
+            store->discard(world);
         spliced_.clear();
     }
 

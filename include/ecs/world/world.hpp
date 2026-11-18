@@ -57,6 +57,11 @@ namespace detail {
     struct parallel_param;
     template <class P>
     struct serial_param;
+
+    // A recorded spawn (defined after World), befriended so a dropped one can
+    // hand its reservation back.
+    template <class Build>
+    struct ReservedSpawn;
 } // namespace detail
 
 class Commands; // world/commands.hpp; the mutation API over this World
@@ -301,6 +306,8 @@ private:
     friend struct dynamic::WorldOps; // runtime component path (dynamic/world_ops.hpp)
     template <class... Cs>
     friend class Query; // needs mutable columns for its declared writes
+    template <class Build>
+    friend struct detail::ReservedSpawn; // hands a dropped spawn's handle back
 
     // Mutable archetype access for the friends above.
     auto& archetypes() { return archetypes_; }
@@ -314,7 +321,10 @@ private:
     };
 
     // Apply all recorded commands; driven by the Schedule at each barrier.
-    void apply_commands(FlushAttrib& attrib) { commands_.apply(*this, attrib); }
+    // `failed` receives the recording system of a command that throws.
+    void apply_commands(FlushAttrib& attrib, SystemId* failed = nullptr) {
+        commands_.apply(*this, attrib, failed);
+    }
 
     // Queue a system's private command store to drain at the next flush,
     // after the thread-sharded commands. Called at the barrier by the
@@ -323,7 +333,8 @@ private:
 
     // Drop all recorded commands unapplied; driven by the Schedule when a run
     // aborts, so a failed run's edits cannot leak into the next run's flush.
-    void discard_commands() noexcept { commands_.discard(); }
+    // Dropped spawns hand their reserved entities back.
+    void discard_commands() noexcept { commands_.discard(*this); }
 
     // Immediate mutation primitives, called only by the command closures at
     // flush time -- so they always run with exclusive, single-threaded access.
@@ -411,6 +422,19 @@ private:
     // generation, or freshly minted at generation 0) without touching the dense
     // record table, which spawn_now materializes at the barrier.
     Entity reserve() { return entities_.reserve(); }
+
+    // Give back a handle from reserve() whose spawn will never materialize --
+    // its command was dropped unapplied (an aborted run, or a flush that threw
+    // first). The generation is bumped, so the handle spawn() returned stays
+    // dead even once the slot is reused. Barrier only, like the *_now
+    // primitives. Runs on unwind paths, so it does not throw: out of memory
+    // growing the slot table, the slot stays reserved (one index is lost).
+    void release_reservation(Entity const e) noexcept {
+        try {
+            (void)entities_.release(e);
+        } catch (...) {
+        }
+    }
 
     // Place a reserved entity directly into its final archetype with all of its
     // components in one step -- no empty-archetype materialization and no
@@ -575,6 +599,21 @@ private:
     WorldId const instance_id_ = WorldId::next();
     std::atomic<std::uint64_t> archetype_gen_ {0};
 };
+
+namespace detail {
+    // The command a spawn records: run, it materializes the entity reserve()
+    // handed out; dropped without running (see CommandStore), it hands the
+    // reservation back, so the slot is reused and the handle the caller got
+    // never comes alive. `build` is void(World&, Entity).
+    template <class Build>
+    struct ReservedSpawn {
+        Entity entity;
+        Build build;
+
+        void operator()(World& w) { build(w, entity); }
+        void on_unapplied(World& w) noexcept { w.release_reservation(entity); }
+    };
+} // namespace detail
 
 // --- ad-hoc read-only iteration: definitions (declared on World above) -------
 // Out-of-class so count() sees matching_archetypes()' deduced return type; the

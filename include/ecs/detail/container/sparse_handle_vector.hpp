@@ -26,7 +26,8 @@
 //   reserve()   -- LOCK-FREE, concurrent during a wave. Claims a slot +
 //                  generation without materializing the payload.
 //   commit()    -- SINGLE-THREADED (barrier). Constructs the payload in its slot
-//   destroy()      / resets it. Call only when no reserve() runs concurrently.
+//   destroy()      / resets it, or (release) returns a reservation that will
+//   release()      never commit. Call only when no reserve() runs concurrently.
 //   get()       -- read-only; safe concurrently with reserve() during a wave.
 //   is_alive()
 
@@ -145,6 +146,25 @@ public:
         return handle;
     }
 
+    // Give back the slot of a handle that was reserved but never committed (its
+    // spawn was dropped before it materialized), bumping the generation so the
+    // handle -- and any copy of it -- can never be alive. Barrier only. Returns
+    // false, changing nothing, for a handle that is committed or was already
+    // released.
+    bool release(handle_type handle) {
+        auto const slot_index = handle.index();
+        if (slot_index >= slots_.size()) { // a minted index that never committed
+            slots_.resize(slot_index + 1);
+        }
+        auto& slot = slots_[slot_index];
+        if (slot.value.has_value() || slot.generation != handle.generation()) {
+            return false;
+        }
+        ++slot.generation;
+        slots_alloc_.recycle(slot_index);
+        return true;
+    }
+
     // Remove a live handle: reset its payload (releasing its resources), bump the
     // generation, and recycle the slot. Barrier only. No swap-and-pop -- the slot
     // stays put, so no other handle is disturbed. Returns false for a dead handle.
@@ -156,10 +176,7 @@ public:
         slot.value.reset();
         ++slot.generation;
         --live_;
-        // Reconcile the slots reserve() claimed during the wave before recycling
-        // this one (IndexRecycler contract); idempotent once at rest.
-        slots_alloc_.compact();
-        slots_alloc_.free(handle.index());
+        slots_alloc_.recycle(handle.index());
         return true;
     }
 

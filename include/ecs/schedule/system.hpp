@@ -239,6 +239,7 @@ using RunFn = move_only_function<void(World&, Commands&, WorkItem const&)>;
 using PrepareItemsFn =
     move_only_function<void(World&, std::span<std::uint32_t const>, WaveContext const&)>;
 using FinishItemsFn = move_only_function<void(World&)>;
+using AbortItemsFn  = move_only_function<void(World&)>;
 
 // One registered system, in either of its two forms.
 struct SystemRecord {
@@ -252,6 +253,9 @@ struct SystemRecord {
     RunFn run;
     PrepareItemsFn prepare_items;
     FinishItemsFn finish_items;
+    // Drops per-item state when the system's wave throws (see
+    // params/protocol.hpp: has_abort_hook). Null for most systems.
+    AbortItemsFn abort_items;
     Signature query_sig = Signature::null();
     MatchCache match; // parallel systems: memoized query_sig match list
     Phase phase = 0;
@@ -262,9 +266,11 @@ struct SystemRecord {
     // spend a system's budget before it has run.
     std::uint64_t times = 0;
     std::uint64_t runs  = 0;
-    // Tombstone: a removed (or spent) system. Its slot is retained so
-    // every other system keeps its position -- and a SystemId, being that
-    // position, stays valid. Skipped by leveling, wave building, and size().
+    // Tombstone: a removed (or spent) system. Its callables are released (see
+    // detail::release in graph.hpp) but its slot is retained, so every other
+    // system keeps its position -- and a SystemId, being that position, stays
+    // valid. Not in the schedule's live list, so leveling, wave building, and
+    // size() never visit it.
     bool dead = false;
     // Cadence: the system runs only on ticks where tick % every == 0 (every==1
     // is every tick). A skipped system contributes no work items that tick;

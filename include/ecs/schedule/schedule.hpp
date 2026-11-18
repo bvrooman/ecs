@@ -172,22 +172,31 @@ public:
     // Tombstoned, not erased: the slot stays put so every other system keeps its
     // position, and a SystemId (which IS that position) is never invalidated by
     // an unrelated removal.
-    bool remove(SystemId id) {
-        for (auto& s : systems_)
-            if (s.id == id && !s.dead) {
-                s.dead = true;
-                dirty_ = true;
-                return true;
-            }
-        return false;
+    //
+    // The system's callables -- its captures, Local<T> state, and per-item
+    // state -- are destroyed now, or, when remove() is called from inside a
+    // running tick (a system removing itself or another), at the start of the
+    // next run(): the current tick may still run it (removal takes effect next
+    // tick).
+    bool remove(SystemId const id) {
+        if (id.value >= systems_.size() || systems_[id].dead)
+            return false;
+        auto& s = systems_[id];
+        s.dead  = true;
+        dirty_  = true;
+        live_.erase(std::ranges::lower_bound(live_, id));
+        if (running_)
+            pending_release_.push_back(id);
+        else
+            detail::release(s);
+        return true;
     }
 
     // Live (non-tombstoned) system count. Removed and spent one-shot systems
     // retain their slot but do not count here.
     [[nodiscard]]
     std::size_t size() const noexcept {
-        return static_cast<std::size_t>(
-            std::ranges::count_if(systems_, [](System const& s) { return !s.dead; }));
+        return live_.size();
     }
     // Number of sequential waves (barriers) a run() executes: ascending
     // (phase, conflict-level) groups.
@@ -230,16 +239,25 @@ public:
     // cross-shard replay order -- already unspecified -- varies run to run.
     // A 1-lane pool claims items in list order and is fully deterministic.
     //
-    // Recorded edits flush at each wave barrier; one-shot systems are removed
-    // afterwards. A system that throws (in its body or a parallel item)
-    // propagates out of run(); the aborted run's recorded edits are DISCARDED
-    // (they must not leak into a later run's first flush, possibly of a
-    // different schedule sharing this world) and a TickAbort event is emitted
-    // in place of the remaining End events.
+    // Recorded edits flush at each wave barrier, and a times{n} system whose
+    // budget is spent retires as soon as its wave has flushed -- even if a
+    // later wave then aborts the tick, since its edits have already landed.
+    //
+    // A system that throws (in its body or a parallel item) propagates out of
+    // run(); the aborted wave's recorded edits are DISCARDED (they must not
+    // leak into a later run's first flush, possibly of a different schedule
+    // sharing this world), entities its spawns reserved are handed back (their
+    // handles stay dead), and a TickAbort event naming the failing system is
+    // emitted in place of the remaining End events.
     void run(World& world, WorkerPool& pool) {
         rebuild();
         ++tick_; // seeds Random streams; a fresh tick is a fresh stream
         using namespace sched_event;
+        running_ = true;
+        struct Running {
+            bool& flag;
+            ~Running() { flag = false; }
+        } const running {running_};
         events_.emit(TickBegin {wave_plans_.size()});
         auto cmds = Commands {world};
         for (auto& plan : wave_plans_) {
@@ -248,13 +266,15 @@ public:
                 try {
                     run_wave(plan, world, cmds, pool);
                 } catch (...) {
-                    events_.emit(TickAbort {plan.id, SystemId::none()});
+                    events_.emit(TickAbort {plan.id,
+                                            std::exchange(failed_system_,
+                                                          SystemId::none())});
                     throw;
                 }
+                retire_spent(plan);
             }
         }
         events_.emit(TickEnd {});
-        detail::prune_expired(systems_, tick_, dirty_);
     }
 
     [[nodiscard]]
@@ -297,8 +317,25 @@ private:
         detail::normalize_access(sys.access);
         auto const id   = systems_.push_back(std::move(sys));
         systems_[id].id = id;
-        dirty_          = true;
+        live_.push_back(id); // ids only grow, so live_ stays sorted
+        dirty_ = true;
         return id;
+    }
+
+    // After a wave completed: charge its due systems a run and retire the
+    // ones whose times{n} budget is spent. A retired system's callables are
+    // destroyed right away -- its wave is done, and nothing else runs it.
+    void retire_spent(WavePlan const& plan) {
+        spent_.clear();
+        detail::charge_runs(systems_, plan.due(), spent_);
+        for (auto const id : spent_) {
+            auto& s = systems_[id];
+            s.dead  = true;
+            live_.erase(std::ranges::lower_bound(live_, id));
+            detail::release(s);
+        }
+        if (!spent_.empty())
+            dirty_ = true;
     }
 
     // Shared body of add_dynamic_serial / add_dynamic_parallel: assemble a
@@ -397,6 +434,11 @@ private:
             };
             sys.finish_items = [states](World& w) {
                 detail::finish_all<Param, Args>(*states, w, Seq {});
+            };
+        }
+        if constexpr (Info::any_abortable) {
+            sys.abort_items = [states](World& w) {
+                detail::abort_all<Param, Args>(*states, w, Seq {});
             };
         }
         return register_system(std::move(sys));
@@ -499,22 +541,34 @@ private:
         return SystemId::none(); // reached only when a static_assert above fired
     }
 
-    // Build and execute one wave's item list; on a throw, discard the aborted
-    // run's recorded edits and emit TickAbort (see run()).
+    // Build and execute one wave's item list; on a throw, drop the aborted
+    // wave's recorded edits and note the failing system for run()'s TickAbort.
     void run_wave(WavePlan& plan, World& world, Commands& cmds, WorkerPool& pool) {
         using namespace sched_event;
         events_.emit(WaveBegin {plan.id, plan.size()});
         flush_attrib_.clear();
-        auto& wave    = plan.build(systems_, world, tick_);
-        auto flush_us = 0.0;
+        auto& wave            = plan.build(systems_, world, tick_);
+        auto flush_us         = 0.0;
+        SystemId failed_flush = SystemId::none();
         try {
             wave.prepare(world);
             wave.run(systems_, world, cmds, pool);
             wave.finish(world);
             auto const tf = detail::sched_clock::now();
-            world.apply_commands(flush_attrib_);
+            world.apply_commands(flush_attrib_, &failed_flush);
             flush_us = detail::elapsed_us(tf);
         } catch (...) {
+            // A hook or work item names itself; otherwise it was a command,
+            // charged to the system that recorded it.
+            failed_system_ = wave.failed_system() != SystemId::none()
+                                 ? wave.failed_system()
+                                 : failed_flush;
+            // Drop every edit the wave recorded -- including any still in
+            // parallel systems' per-item stores -- handing reserved entities
+            // back to the world.
+            for (auto const id : plan)
+                if (auto& abort = systems_[id].abort_items)
+                    abort(world);
             world.discard_commands();
             throw;
         }
@@ -538,18 +592,31 @@ private:
     void rebuild() {
         if (!dirty_)
             return;
-        detail::assign_levels(systems_);
-        detail::build_wave_plans(systems_, wave_plans_);
+        // Systems removed mid-run could still run that tick; it is over now.
+        for (auto const id : pending_release_)
+            detail::release(systems_[id]);
+        pending_release_.clear();
+        detail::assign_levels(systems_, live_);
+        detail::build_wave_plans(systems_, live_, wave_plans_);
         dirty_ = false;
     }
 
     event::Emitter<ScheduleEvent> events_;
     using SystemVector = detail::SystemVector;
     SystemVector systems_;
+    // The live systems' ids, ascending: what leveling, wave building and size()
+    // walk, so removed and retired systems cost nothing after they die.
+    std::vector<SystemId> live_;
+    std::vector<SystemId> spent_;           // retire_spent scratch
+    std::vector<SystemId> pending_release_; // removed mid-run; released at rebuild
     std::vector<WavePlan> wave_plans_;
     FlushAttrib flush_attrib_; // per-system flush time, per wave
     std::uint64_t tick_ = 0;   // run() count; part of Random's stream identity
-    bool dirty_         = true;
+    // The system a throwing wave failed in, set by run_wave for run() to put in
+    // TickAbort; none() when the failure was not a system's (an observer, say).
+    SystemId failed_system_ = SystemId::none();
+    bool dirty_             = true;
+    bool running_           = false; // inside run(): remove() defers the release
 };
 
 } // namespace ecs

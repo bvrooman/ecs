@@ -156,9 +156,11 @@ struct WorldOps {
     static Entity spawn_deferred(World& w, Bundle bundle) {
         require_valid_bundle(bundle);
         Entity const e = w.reserve();
-        w.commands_.record([e, bundle = std::move(bundle)](World& world) {
-            place(world, e, bundle);
-        });
+        auto build     = [bundle = std::move(bundle)](World& world, Entity self) {
+            place(world, self, bundle);
+        };
+        w.commands_.record(
+            ecs::detail::ReservedSpawn<decltype(build)> {e, std::move(build)});
         return e;
     }
 

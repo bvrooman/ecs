@@ -67,10 +67,17 @@ namespace detail {
                 s.slot  = std::make_unique<command_slot>(w);
                 s.world = &w;
             }
-            // Normally empty here (spliced and drained at the previous
-            // barrier); after an aborted run it may still hold the aborted
-            // wave's recordings, which must not leak into this run.
-            s.slot->store.discard();
+            // Empty here: drained at the previous barrier, or dropped by
+            // abort() if that wave threw. Discarding is a cheap guarantee that
+            // nothing recorded earlier leaks into this run.
+            s.slot->store.discard(w);
+        }
+
+        // The wave threw before (or while) this store reached the flush: drop
+        // the system's edits now, handing their reserved entities back to `w`.
+        static void abort(state& s, World& w) noexcept {
+            if (s.world == &w) // bound to another world: empty (see parallel)
+                s.slot->store.discard(w);
         }
 
         // Single-threaded, before the wave's flush.
@@ -105,10 +112,23 @@ namespace detail {
             }
             while (s.slots.size() < rows.size())
                 s.slots.push_back(std::make_unique<command_slot>(w));
-            // As in serial_param<Commands&>: drop an aborted run's leftovers.
+            // As in serial_param<Commands&>: all stores are empty here.
             for (auto const& slot : s.slots)
-                slot->store.discard();
+                slot->store.discard(w);
             s.active = rows.size();
+        }
+
+        // The wave threw before (or while) these stores reached the flush: drop
+        // the items' edits now, handing their reserved entities back to `w`, so
+        // nothing waits on this system running again.
+        static void abort(state& s, World& w) noexcept {
+            // Slots still bound to another world hold nothing: they were drained
+            // or aborted there, and prepare() rebinds them before any item here
+            // records.
+            if (s.world != &w)
+                return;
+            for (auto const& slot : s.slots)
+                slot->store.discard(w);
         }
 
         // Single-threaded, before the wave's flush: splice each item's store
