@@ -44,9 +44,26 @@ static void compact_drops_claimed_tail() {
     CHECK(r.allocate() == 2); // then mints anew
 }
 
+// recycle() is compact() then free(): after a wave claimed a recycled index,
+// recycling another slot must not resurrect the claimed one.
+static void recycle_compacts_before_freeing() {
+    IndexRecycler r;
+    (void)r.allocate(); // 0
+    (void)r.allocate(); // 1
+    (void)r.allocate(); // 2
+    r.free(0);
+    r.free(1);                // free = [0, 1]
+    CHECK(r.allocate() == 1); // a wave claims 1 (now live elsewhere)
+    r.recycle(2);             // slot 2 dies at the barrier
+    CHECK(r.allocate() == 2); // most recently recycled first
+    CHECK(r.allocate() == 0); // then the other freed slot
+    CHECK(r.allocate() == 3); // 1 was not resurrected: mint anew
+}
+
 int main() {
     RUN_SUITE(mints_new_indices);
     RUN_SUITE(recycles_before_minting);
     RUN_SUITE(compact_drops_claimed_tail);
+    RUN_SUITE(recycle_compacts_before_freeing);
     return REPORT();
 }

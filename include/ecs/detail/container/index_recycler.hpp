@@ -15,7 +15,8 @@
 //                  are safe.
 //   free()      -- SINGLE-THREADED. Returns an index for reuse. Call only when
 //   compact()      no allocate() can run concurrently (e.g. the schedule's
-//                  flush barrier, world-quiescent).
+//   recycle()      flush barrier, world-quiescent). recycle() is compact() then
+//                  free(): the one call a container makes when a slot dies.
 //
 // The rest-state invariant is `cursor == free.size()`: free() re-publishes it,
 // and compact() restores it after a wave by dropping the tail that allocate()
@@ -65,6 +66,15 @@ public:
     // `cursor == free.size()` rest state. Single-threaded (barrier only), before
     // the wave's free()s run.
     void compact() { free_.resize(cursor_.load(std::memory_order_acquire)); }
+
+    // Return a dead slot's index at the barrier: compact(), then free(). What a
+    // container calls when a slot dies -- free() alone, after a wave, would
+    // resurrect the indices allocate() claimed during it. compact() is
+    // idempotent once at rest, so recycling many slots in a row stays cheap.
+    void recycle(index_type const index) {
+        compact();
+        free(index);
+    }
 
 private:
     std::vector<index_type> free_;     // recycled indices; frozen while allocating
